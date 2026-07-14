@@ -1,0 +1,14 @@
+{
+  "source": "log-core hash-chain.test.ts (pinned)",
+  "sha256": [
+    { "input": "hello world", "hex": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9" },
+    { "input": "", "hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+  ],
+  "chain": [
+    {
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "envelope": { "seq": 0, "t": 0, "wall": "2026-01-01T00:00:00.000Z", "kind": "session.end", "data": { "reason": "test" } },
+      "hash": "d33cad1d38b90b26a2f7b1181801805233bf4332eca5bc6d4ff4e1b677683625"
+    }
+  ]
+}

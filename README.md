@@ -48,6 +48,13 @@ Kotlin + Gradle, using the IntelliJ Platform Gradle Plugin.
 - `CLAUDE.md` — conventions and standing instructions for development.
 - The recorder product spec (`docs/prd.md`) lives in the Provenance monorepo.
 
+### Conformance
+
+`core/`'s output is verified byte-for-byte against Provenance's `log-core` via
+pinned vectors in `core/src/test/resources/conformance/vectors.json`. A failing
+conformance test means the format has drifted — fix the implementation, never
+the vectors.
+
 ## License
 
 TBD.
