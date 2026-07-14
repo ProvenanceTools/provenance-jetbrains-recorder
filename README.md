@@ -6,8 +6,9 @@ student works on a course assignment. It is the JetBrains counterpart to the
 submission bundle in the **same format**, so the same Provenance analyzer and
 server ingest and validate it regardless of which editor produced it.
 
-> **Status:** pre-implementation. The architecture is designed
-> (`docs/design.md`); code has not landed yet.
+> **Status:** in progress. `core/` (the format port) and the `recorder/` plugin
+> scaffold — activation, manifest verification, and the recording status-bar
+> widget — have landed. Document/paste/VFS event wiring and bundle seal are next.
 
 ## What it does
 
@@ -34,13 +35,18 @@ output stays byte-for-byte compatible. See `docs/design.md` for the full design.
 Kotlin + Gradle, using the IntelliJ Platform Gradle Plugin.
 
 ```sh
-./gradlew buildPlugin   # produce the distributable plugin .zip
-./gradlew runIde        # launch a sandbox IDE with the plugin loaded
-./gradlew test          # unit + conformance tests
+./gradlew :recorder:buildPlugin   # produce the sideload-able plugin .zip
+./gradlew :recorder:runIde        # launch a sandbox IDE with the plugin loaded
+./gradlew :recorder:test          # recorder unit + platform-fixture tests
+./gradlew :core:test              # format unit + conformance tests
 ```
 
-(Build tasks are placeholders until the Gradle project lands; see
-`docs/design.md` §8 for the build sequence.)
+As of Plan 3, `:recorder:buildPlugin` / `:recorder:runIde` / `:recorder:test`
+are real. The plugin activates only on a workspace with a valid, course-signed
+`.provenance-manifest` at the root (PRD §4.1) — on any other folder it does
+nothing observable. To sideload for manual testing: Settings → Plugins → gear
+icon → Install Plugin from Disk → the `.zip` from `recorder/build/distributions/`.
+Marketplace publishing and the production course-key embedding are Plan 9.
 
 ## Documentation
 
