@@ -12,6 +12,7 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <!-- postStartupActivity / statusBarWidgetFactory registrations land in Tasks 5 and 6 -->
+        <postStartupActivity implementation="dev.provenance.recorder.activation.RecorderActivationActivity"/>
+        <!-- statusBarWidgetFactory registration lands in Task 6 -->
     </extensions>
 </idea-plugin>
