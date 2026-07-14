@@ -52,7 +52,7 @@ This is Plan 3 of the series derived from `docs/design.md`.
 | Headless plugin tests | `BasePlatformTestCase` (`com.intellij.testFramework.fixtures`), Gradle `testFramework(TestFrameworkType.Platform)` dependency | [testing-plugins.html](https://plugins.jetbrains.com/docs/intellij/testing-plugins.html); dependency wiring per `tools-intellij-platform-gradle-plugin-testing-extension.html` (found via search, not independently fetched — **VERIFY AT EXECUTION**) |
 | API discovery during implementation | IntelliJ Platform Explorer (`jb.gg/ipe`) — cross-plugin EP usage search | [explore-api.html](https://plugins.jetbrains.com/docs/intellij/explore-api.html) |
 
-**Toolchain baseline (VERIFY AT EXECUTION before Task 1):** research surfaced JDK 17 as the baseline for IntelliJ Platform 2022.3–2024.x targets, JDK 21 for 2025.1+; Gradle ≥ 8.13 for the 2.x Gradle plugin. This plan defaults to **JDK 17** and an **IntelliJ Community (`intellijIdeaCommunity`) 2024.2.x** compile target as the conservative, currently-documented pairing — confirm the actual current stable IC release and its required JDK against `https://www.jetbrains.com/idea/download/other.html` or the IntelliJ Platform Explorer before running Task 1, and adjust `jvmToolchain(...)` / the `intellijIdeaCommunity(...)` version string accordingly. This is a build-config detail, not a format decision, so adjusting it does not require the "stop and ask" escalation — just note what was actually used in the Task 1 commit.
+**Toolchain baseline (CORRECTED — verbatim docs now local at `~/projects/intellij-sdk-docs`):** IntelliJ IDEA is now a **single unified distribution**. Per `tools_intellij_platform_gradle_plugin_dependencies_extension.md`, the platform dependency is declared with **`intellijIdea("<version>")`** for the unified distribution (2025.3+); `intellijIdeaCommunity(...)`/`intellijIdeaUltimate(...)` are documented as *"for versions earlier than 2025.3"* only — do **not** use them for a new plugin. Cross-IDE reach is preserved by depending only on `com.intellij.modules.platform`, not IDEA-specific modules. JDK: 17 for ≤2024.x platform targets, 21 for 2025.1+. The rest of this repo settled on Gradle 9.6.1 / Kotlin 2.4.10 / JVM-17 bytecode on the installed JDK 25 — reuse that where compatible with the chosen platform version. Confirm the exact current platform version and required JDK from the LOCAL docs (`~/projects/intellij-sdk-docs/topics/appendix/tools/intellij_platform_gradle_plugin/`) and the `code_samples/` build files, not WebFetch. This is a build-config detail, not a format decision — note what was actually used in the Task 1 commit.
 
 ---
 
@@ -126,7 +126,7 @@ dependencies {
     implementation(project(":core"))
 
     intellijPlatform {
-        intellijIdeaCommunity(providers.gradleProperty("platformVersion"))
+        intellijIdea(providers.gradleProperty("platformVersion")) // unified distribution (2025.3+); NOT intellijIdeaCommunity() which is pre-2025.3 only
         bundledModule("com.intellij.modules.platform") // VERIFY AT EXECUTION: confirm this is how 2.x expresses a platform-module dependency vs. plugin.xml `<depends>` alone
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
@@ -154,7 +154,7 @@ kotlin {
 }
 ```
 
-**VERIFY AT EXECUTION note:** the exact DSL member names (`intellijIdeaCommunity(...)`, `bundledModule(...)`, `testFramework(...)`, `pluginConfiguration { }`) are as documented/found via search on 2026-07-14; the Gradle plugin's Kotlin DSL surface has churned across 2.x minor releases (`configuring-gradle.html`). If any of these don't resolve, check `https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html` and `configuring-gradle.html` for the current member names before inventing alternatives — this is exactly the kind of drift CLAUDE.md says to stop and reconcile against source, not route around.
+**VERIFY AT EXECUTION note (read the LOCAL verbatim docs, not WebFetch):** the DSL member names (`intellijIdea(...)`, `bundledModule(...)`, `testFramework(...)`, `pluginConfiguration { }`) have churned across 2.x minor releases. Confirm every one against `~/projects/intellij-sdk-docs/topics/appendix/tools/intellij_platform_gradle_plugin/*_dependencies_extension.md` / `*_extension.md` / `*_tasks.md` and the real `~/projects/intellij-sdk-docs/code_samples/` build files before inventing alternatives. Note (confirmed in the local docs): `intellijIdea()` is the unified-distribution accessor; `intellijIdeaCommunity()`/`intellijIdeaUltimate()` are pre-2025.3 only.
 
 - [ ] **Step 5: Create the `plugin.xml` skeleton**
 
