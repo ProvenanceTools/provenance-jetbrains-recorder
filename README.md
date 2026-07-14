@@ -5,8 +5,7 @@ student works on a course assignment. It is the JetBrains counterpart to the
 [Provenance](https://github.com/) VS Code recorder: it produces a sealed
 submission bundle in the **same format**, so the same Provenance analyzer and
 server ingest and validate it regardless of which editor produced it. It ships
-under the same **Provenance Recorder** name as the VS Code extension — brand
-consistency is a trust property for a student-facing integrity tool.
+under the same **Provenance Recorder** name as the VS Code extension.
 
 > **Status:** built and working, not yet Marketplace-published. `core/` (the
 > format port) and the full `recorder/` wiring — activation, manifest
@@ -14,8 +13,8 @@ consistency is a trust property for a student-facing integrity tool.
 > detection, the hash chain, signed checkpoints, chain recovery, bundle seal,
 > and disk-full degraded mode — have all landed. `core:test` and
 > `recorder:test` are green (105 and 235 tests respectively), and sealed
-> bundles produced by the plugin pass all 8 of the real Provenance
-> analysis-core validation checks end-to-end — not a mock. A sideloadable
+> bundles produced by the plugin pass all 8 of the Provenance
+> analysis-core validation checks end-to-end. A sideloadable
 > plugin `.zip` builds today via `./gradlew :recorder:buildPlugin`. What
 > remains is distribution: a
 > signed Marketplace release needs operator secrets (Marketplace token,
@@ -40,9 +39,8 @@ The log format — event envelope, hash chain, JCS canonicalization, ed25519
 signing, and bundle/manifest shapes — is defined by the Provenance monorepo's
 `log-core` package. This repo is an independent Kotlin implementation of that
 same format, verified against golden conformance vectors so the two editors'
-output stays byte-for-byte compatible. It is a **port of the wiring, not a new
-product** — the format is a fixed contract this repo does not redesign. See
-`docs/design.md` for the full design.
+output stays byte-for-byte compatible. The format is a fixed contract this repo
+implements rather than redesigns. See `docs/design.md` for the full design.
 
 ## Install
 
@@ -196,7 +194,7 @@ headlessly — they need a running windowed IDE (`:recorder:runIde`) — and are
 
 `core/`'s output is verified byte-for-byte against Provenance's `log-core` via
 vectors in `core/src/test/resources/conformance/` (plus a golden sealed bundle).
-These are **generated, not hand-authored** — regenerate them from the monorepo:
+These are generated, not hand-authored — regenerate them from the monorepo:
 
 ```sh
 cd ../provenance
@@ -207,6 +205,16 @@ node --experimental-strip-types tools/export-conformance-vectors.ts \
 Never hand-edit a vector file. A failing conformance test after regenerating means
 the format has drifted — fix `core/`'s implementation, never the vectors.
 
+## Trademarks
+
+JetBrains®, IntelliJ IDEA®, and the IntelliJ Platform are trademarks or
+registered trademarks of JetBrains s.r.o. This plugin is an independent
+project and is not affiliated with or endorsed by JetBrains s.r.o.
+
 ## License
 
-See [`LICENSE`](LICENSE).
+See [`LICENSE`](LICENSE). This plugin bundles a small number of third-party
+libraries in its distributed `.zip` (Bouncy Castle, the Kotlin standard
+library, kotlinx.serialization, JetBrains `annotations`, and
+`java-json-canonicalization`); their licenses and required notices are
+reproduced in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).

@@ -2,3 +2,11 @@ Provenance Recorder for JetBrains
 Copyright 2026 Aaryan Mehta
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product's distributed plugin .zip bundles third-party components under
+their own licenses; see THIRD-PARTY-NOTICES.txt for the full list and
+required attribution notices.
+
+JetBrains®, IntelliJ IDEA®, and the IntelliJ Platform are trademarks or
+registered trademarks of JetBrains s.r.o. This project is an independent
+project and is not affiliated with or endorsed by JetBrains s.r.o.

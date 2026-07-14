@@ -1,0 +1,165 @@
+THIRD-PARTY NOTICES
+====================
+
+The Provenance Recorder for JetBrains plugin (packaged as
+recorder/build/distributions/recorder.zip and its lib/ directory) bundles the
+third-party components below, each redistributed under its own license as
+reproduced here.
+
+The plugin's own code (core/, recorder/) is licensed under the Apache License,
+Version 2.0 — see LICENSE and NOTICE at the repository root. This list covers
+the jars bundled in recorder.zip -> recorder/lib/; it does not include the
+IntelliJ Platform SDK (a provided dependency, not bundled) or this project's
+own core.jar / recorder-*.jar.
+
+--------------------------------------------------------------------------
+1. Bouncy Castle Provider (bcprov-jdk18on)
+--------------------------------------------------------------------------
+Coordinate:  org.bouncycastle:bcprov-jdk18on:1.81
+Bundled as:  recorder/lib/bcprov-jdk18on-1.81.jar
+Homepage:    https://www.bouncycastle.org/download/bouncy-castle-java/
+License:     Bouncy Castle Licence (MIT-style permission license)
+
+  Copyright (c) 2000-2023 The Legion of the Bouncy Castle Inc.
+  (https://www.bouncycastle.org)
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------------------------------
+2. java-json-canonicalization
+--------------------------------------------------------------------------
+Coordinate:  io.github.erdtman:java-json-canonicalization:1.1
+Bundled as:  recorder/lib/java-json-canonicalization-1.1.jar
+Homepage:    https://github.com/erdtman/java-json-canonicalization
+License:     Apache License, Version 2.0
+Authors:     Anders Rundgren (cyberphone), Samuel Erdtman (erdtman)
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may
+  not use this file except in compliance with the License. You may obtain
+  a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  No NOTICE file is present in this artifact.
+
+--------------------------------------------------------------------------
+3. Kotlin Standard Library (kotlin-stdlib)
+--------------------------------------------------------------------------
+Coordinate:  org.jetbrains.kotlin:kotlin-stdlib:2.4.10
+Bundled as:  recorder/lib/kotlin-stdlib-2.4.10.jar
+Homepage:    https://kotlinlang.org/
+License:     Apache License, Version 2.0
+Vendor:      JetBrains
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may
+  not use this file except in compliance with the License. You may obtain
+  a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  No NOTICE file is present in this artifact.
+
+--------------------------------------------------------------------------
+4. kotlinx.serialization core (kotlinx-serialization-core-jvm)
+--------------------------------------------------------------------------
+Coordinate:  org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.11.0
+Bundled as:  recorder/lib/kotlinx-serialization-core-jvm-1.11.0.jar
+Homepage:    https://github.com/Kotlin/kotlinx.serialization
+License:     Apache License, Version 2.0
+Vendor:      JetBrains
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may
+  not use this file except in compliance with the License. You may obtain
+  a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  No NOTICE file is present in this artifact.
+
+--------------------------------------------------------------------------
+5. kotlinx.serialization JSON (kotlinx-serialization-json-jvm)
+--------------------------------------------------------------------------
+Coordinate:  org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0
+Bundled as:  recorder/lib/kotlinx-serialization-json-jvm-1.11.0.jar
+Homepage:    https://github.com/Kotlin/kotlinx.serialization
+License:     Apache License, Version 2.0
+Vendor:      JetBrains
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may
+  not use this file except in compliance with the License. You may obtain
+  a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  No NOTICE file is present in this artifact.
+
+--------------------------------------------------------------------------
+6. IntelliJ IDEA Annotations (annotations)
+--------------------------------------------------------------------------
+Coordinate:  org.jetbrains:annotations:13.0
+Bundled as:  recorder/lib/annotations-13.0.jar
+             (transitive dependency of kotlin-stdlib)
+Homepage:    http://www.jetbrains.org
+License:     The Apache Software License, Version 2.0
+Developer:   JetBrains
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may
+  not use this file except in compliance with the License. You may obtain
+  a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  No NOTICE file is present in this artifact.
+
+--------------------------------------------------------------------------
+
+Full Apache License, Version 2.0 text: http://www.apache.org/licenses/LICENSE-2.0
+(also at the repository root in LICENSE, which is this plugin's own license and
+the license of items 2-6 above).

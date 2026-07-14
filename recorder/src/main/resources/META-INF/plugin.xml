@@ -1,12 +1,101 @@
 <idea-plugin>
     <id>com.provenance.recorder</id>
     <name>Provenance Recorder</name>
-    <vendor email="provenance@example.edu" url="https://example.edu">Provenance</vendor>
+    <vendor email="aaryanm@berkeley.edu" url="https://aaryanmehta.com">Aaryan Mehta</vendor>
 
     <description><![CDATA[
-    Records a tamper-evident log of editing activity for an activated course
-    assignment. Activates only on a workspace with a valid, course-signed
-    .provenance-manifest. See the Provenance project documentation.
+    <p>
+      Provenance Recorder keeps an honesty log of how your code came together
+      while you work on a course assignment. You submit it alongside your code
+      so your work can be reviewed as a <em>process</em>, not just a final file.
+    </p>
+    <p>
+      It only runs in assignment folders that have been authorized for
+      recording &mdash; a project containing a valid, course-signed
+      <code>.provenance-manifest</code>. In every other project the plugin does
+      nothing: no recording, no indicator, no UI.
+    </p>
+    <p><b>What you'll see</b></p>
+    <ul>
+      <li>A <b>&ldquo;Provenance: recording&rdquo;</b> indicator in the status
+          bar whenever the plugin is active &mdash; the only visible change. No
+          popups, no toolbars, no slowdowns.</li>
+      <li>A hidden <code>.provenance/</code> folder in the assignment where the
+          log lives. Don't delete, commit, or edit it &mdash; the seal command
+          bundles it for you.</li>
+    </ul>
+    <p>
+      Recording is meant to be fully transparent &mdash; there are no hidden
+      signals. While you work in an authorized assignment, the plugin writes a
+      timestamped, tamper-evident log of the editing process. Here is
+      <b>everything</b> it captures:
+    </p>
+    <p><b>Your files and edits</b></p>
+    <ul>
+      <li>The full text of every edit you make in the assignment files &mdash;
+          the exact characters inserted or deleted, and where.</li>
+      <li>The contents of an assignment file when it is opened (for files up to
+          64&nbsp;KB; larger files are recorded as a cryptographic hash plus a
+          line count).</li>
+      <li>A cryptographic hash of each file every time you save.</li>
+    </ul>
+    <p><b>Pastes</b></p>
+    <ul>
+      <li>Every paste into an assignment file: its location, length, a hash, and
+          the pasted text itself (its beginning and end for very large pastes)
+          &mdash; what makes it possible to tell which code came from outside
+          your own typing.</li>
+    </ul>
+    <p><b>Where your attention is</b></p>
+    <ul>
+      <li>Which file is focused and when you switch between files; your cursor
+          position and any text you select.</li>
+      <li>When the IDE window gains or loses focus, and how long you've been idle
+          (sampled on a periodic heartbeat).</li>
+    </ul>
+    <p><b>Terminal</b></p>
+    <ul>
+      <li>Commands you run in the IDE's integrated terminal, including the
+          command text and its exit code, plus which shell you're using.</li>
+    </ul>
+    <p><b>Your environment</b></p>
+    <ul>
+      <li>The list of installed plugins (and which are enabled), plus a note
+          whenever a plugin activates.</li>
+      <li>Your IDE version and operating-system platform, and the recorder's own
+          version.</li>
+      <li>A one-way fingerprint of your machine &mdash; not your name, email, or
+          IP address, just a value used to notice if one submission was recorded
+          across different computers.</li>
+    </ul>
+    <p><b>Changes made outside your typing</b></p>
+    <ul>
+      <li>When an assignment file changes by something other than your
+          keystrokes &mdash; a formatter, a script, git, or an external editor
+          &mdash; the before/after hashes, the size of the change, and (for
+          small files) the new contents.</li>
+      <li>Git operations such as commits and checkouts.</li>
+    </ul>
+    <p><b>Session and integrity bookkeeping</b></p>
+    <ul>
+      <li>Session boundaries and the links between sessions when you reopen the
+          project, the assignment manifest's signature, and a per-session
+          signing key that makes the log tamper-evident.</li>
+      <li>Internal health signals: clock changes, paste anomalies, breaks in the
+          log's hash chain, and any time the recorder enters a degraded mode or
+          recovers a corrupted log.</li>
+    </ul>
+    <p>
+      The log is stored <b>only on your computer</b> until you upload the sealed
+      <code>.zip</code> yourself; the plugin makes <b>no network requests</b>.
+    </p>
+    <p><b>Submitting your work</b></p>
+    <p>
+      When you're done, run <b>Tools &rarr; Provenance: Prepare Submission
+      Bundle</b>. A sealed <code>.zip</code> is produced next to your
+      assignment &mdash; upload it with your code per your assignment's
+      instructions.
+    </p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
