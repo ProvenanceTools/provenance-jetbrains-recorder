@@ -131,6 +131,34 @@ fun DocChangePayload.toJsonObject(): JsonObject = buildJsonObject {
     put("source", source)
 }
 
+/**
+ * paste event payload (recorder PRD §4.3). Mirrors log-core's PastePayload
+ * (events.ts:95-103). A `paste`-kind event is inherently the high-confidence
+ * shape — there is deliberately NO `source` field (unlike DocChangePayload).
+ * content is inlined for small pastes; content_head/content_tail carry a 512-char
+ * truncation for large ones (the builder in recorder/paste enforces which).
+ */
+data class PastePayload(
+    val path: String,
+    val range: Range,
+    val length: Long,
+    val sha256: String,
+    val content: String? = null,
+    val contentHead: String? = null,
+    val contentTail: String? = null,
+)
+
+fun PastePayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("path", path)
+    put("range", range.toJsonObject())
+    put("length", length)
+    put("sha256", sha256)
+    // Optional fields (events.ts:95-103): omitted when null, never emitted as JSON null.
+    if (content != null) put("content", content)
+    if (contentHead != null) put("content_head", contentHead)
+    if (contentTail != null) put("content_tail", contentTail)
+}
+
 data class DocSavePayload(val path: String, val sha256: String)
 
 fun DocSavePayload.toJsonObject(): JsonObject = buildJsonObject {
