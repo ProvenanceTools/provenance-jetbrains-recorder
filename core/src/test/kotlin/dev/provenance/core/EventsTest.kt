@@ -144,6 +144,31 @@ class EventsTest {
     }
 
     @Test
+    fun `terminal open payload has exactly the pinned fields`() {
+        val obj = TerminalOpenPayload("term-0", "/bin/zsh", true).toJsonObject()
+        assertEquals("term-0", obj["terminal_id"]!!.jsonPrimitive.content)
+        assertEquals("/bin/zsh", obj["shell"]!!.jsonPrimitive.content)
+        assertEquals(true, obj["shell_integration"]!!.jsonPrimitive.boolean)
+        assertEquals(setOf("terminal_id", "shell", "shell_integration"), obj.keys)
+    }
+
+    @Test
+    fun `terminal command payload omits exit_code when null`() {
+        val obj = TerminalCommandPayload("term-0", "ls -la", null).toJsonObject()
+        assertEquals("term-0", obj["terminal_id"]!!.jsonPrimitive.content)
+        assertEquals("ls -la", obj["command"]!!.jsonPrimitive.content)
+        assertFalse(obj.containsKey("exit_code"))
+        assertEquals(setOf("terminal_id", "command"), obj.keys)
+    }
+
+    @Test
+    fun `terminal command payload includes exit_code when present`() {
+        val obj = TerminalCommandPayload("term-1", "pytest", 1).toJsonObject()
+        assertEquals(1L, obj["exit_code"]!!.jsonPrimitive.long)
+        assertEquals(setOf("terminal_id", "command", "exit_code"), obj.keys)
+    }
+
+    @Test
     fun `fs external_change payload emits all optional fields when present`() {
         val p = FsExternalChangePayload(
             path = "big.txt",

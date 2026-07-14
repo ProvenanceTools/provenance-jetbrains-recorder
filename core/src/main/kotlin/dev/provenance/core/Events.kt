@@ -221,3 +221,30 @@ fun FsExternalChangePayload.toJsonObject(): JsonObject = buildJsonObject {
     if (newContentHead != null) put("new_content_head", newContentHead)
     if (newContentTail != null) put("new_content_tail", newContentTail)
 }
+
+/**
+ * terminal.open payload (recorder PRD §4.4). Mirrors log-core's TerminalOpenPayload
+ * (events.ts:116-120). Emitted once per terminal when its shell-integration status is
+ * known. [shellIntegration] is best-effort: many shells never resolve integration, in
+ * which case the recorder records the gap (false) rather than failing (PRD §4.4).
+ */
+data class TerminalOpenPayload(val terminalId: String, val shell: String, val shellIntegration: Boolean)
+
+fun TerminalOpenPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("terminal_id", terminalId)
+    put("shell", shell)
+    put("shell_integration", shellIntegration)
+}
+
+/**
+ * terminal.command payload (recorder PRD §4.4). Mirrors log-core's TerminalCommandPayload
+ * (events.ts:122-126). [exitCode] is optional — omitted when null, never emitted as JSON
+ * null — because shell integration may report a command with no exit code available.
+ */
+data class TerminalCommandPayload(val terminalId: String, val command: String, val exitCode: Int?)
+
+fun TerminalCommandPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("terminal_id", terminalId)
+    put("command", command)
+    if (exitCode != null) put("exit_code", exitCode)
+}
