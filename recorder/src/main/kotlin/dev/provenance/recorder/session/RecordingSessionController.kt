@@ -29,6 +29,7 @@ import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.DocWiring
 import dev.provenance.recorder.wiring.Heartbeat
+import dev.provenance.recorder.wiring.SelectionWiring
 import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import com.intellij.openapi.vfs.VirtualFile
@@ -269,6 +270,17 @@ class RecordingSessionController(
                 record("paste", it.toJsonObject())
             },
             pasteCorrelator = pasteCorrelator,
+        )
+
+        // Step 8c: selection.change wiring (PRD §4.2) — caret + selection listeners on the same
+        // global editor multicaster, scoped by the same recordability filter as DocWiring.
+        SelectionWiring(
+            provenanceDir = activated.provenanceDir,
+            workspaceRoot = activated.workspaceRoot,
+            emitSelectionChange = { record("selection.change", it.toJsonObject()) },
+            parentDisposable = parentDisposable,
+            localFsOf = localFsOf,
+            nioPathOf = nioPathOf,
         )
 
         // Ensure a graceful end if the parent is disposed without an explicit endSession.

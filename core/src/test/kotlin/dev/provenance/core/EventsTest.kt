@@ -228,6 +228,23 @@ class EventsTest {
     }
 
     @Test
+    fun `selection change payload emits path, range and was_selection`() {
+        val obj = SelectionChangePayload(
+            path = "hw.py",
+            range = Range(Position(1, 2), Position(3, 4)),
+            wasSelection = true,
+        ).toJsonObject()
+        assertEquals("hw.py", obj["path"]!!.jsonPrimitive.content)
+        assertEquals(true, obj["was_selection"]!!.jsonPrimitive.boolean)
+        val range = obj["range"]!!.jsonObject
+        assertEquals(1L, range["start"]!!.jsonObject["line"]!!.jsonPrimitive.long)
+        assertEquals(2L, range["start"]!!.jsonObject["character"]!!.jsonPrimitive.long)
+        assertEquals(3L, range["end"]!!.jsonObject["line"]!!.jsonPrimitive.long)
+        assertEquals(4L, range["end"]!!.jsonObject["character"]!!.jsonPrimitive.long)
+        assertEquals(setOf("path", "range", "was_selection"), obj.keys)
+    }
+
+    @Test
     fun `ext activate payload emits id and version`() {
         val obj = ExtActivatePayload(id = "com.example.copilot", version = "1.2.3").toJsonObject()
         assertEquals("com.example.copilot", obj["id"]!!.jsonPrimitive.content)

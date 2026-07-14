@@ -184,6 +184,20 @@ fun DocClosePayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
+ * selection.change payload (recorder PRD §4.2). Mirrors log-core's SelectionChangePayload
+ * (events.ts:105-109) and the VS Code doc-events.ts transformSelectionChange. [range] is the
+ * primary caret/selection extent; [wasSelection] is false for a bare cursor move (start == end),
+ * true when text is actually selected.
+ */
+data class SelectionChangePayload(val path: String, val range: Range, val wasSelection: Boolean)
+
+fun SelectionChangePayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("path", path)
+    put("range", range.toJsonObject())
+    put("was_selection", wasSelection)
+}
+
+/**
  * focus.change payload (recorder PRD §4.2). Mirrors log-core's FocusChangePayload
  * (events.ts:111-114) and the VS Code doc-events.ts transformFocusChange, which emits only
  * `gained`. [reason] is an always-optional field in the format contract (omitted when null,
