@@ -25,6 +25,17 @@ dependencies {
     intellijPlatform {
         intellijIdea(providers.gradleProperty("platformVersion"))
         testFramework(TestFrameworkType.Platform)
+
+        // Compile-time visibility only, for the optional terminal/git wiring (Plan 7).
+        // These plugins ship with the platform SDK we already depend on — bundledPlugins
+        // just exposes their types on the compile classpath; they are NOT hard runtime
+        // dependencies. Runtime gating is done structurally via the optional
+        // <depends optional="true" config-file="..."> entries in plugin.xml, so a class
+        // referencing terminal/Git4Idea types is never classloaded on an IDE lacking them.
+        // 'org.jetbrains.plugins.terminal' provides the Reworked Terminal API
+        // (com.intellij.terminal.frontend.* / org.jetbrains.plugins.terminal.view.*);
+        // 'Git4Idea' provides git4idea.repo.*.
+        bundledPlugins("org.jetbrains.plugins.terminal", "Git4Idea")
     }
 
     // The IntelliJ Platform test framework (BasePlatformTestCase and friends) is

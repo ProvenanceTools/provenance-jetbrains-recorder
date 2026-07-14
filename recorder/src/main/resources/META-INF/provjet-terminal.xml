@@ -1,0 +1,11 @@
+<idea-plugin>
+    <!--
+      Loaded ONLY when org.jetbrains.plugins.terminal is present (see the optional
+      <depends> in plugin.xml). Registers the sole class that references terminal-plugin
+      types; on IDEs without the Terminal plugin this descriptor is skipped and the class
+      is never classloaded.
+    -->
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="dev.provenance.recorder.wiring.terminal.TerminalWiringStartupActivity"/>
+    </extensions>
+</idea-plugin>

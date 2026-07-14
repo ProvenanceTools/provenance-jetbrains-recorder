@@ -11,6 +11,16 @@
 
     <depends>com.intellij.modules.platform</depends>
 
+    <!--
+      Optional, structurally-gated wiring (Plan 7). Each config-file is loaded ONLY when
+      the named plugin is present; the classes it registers reference that plugin's types
+      directly, so they are never classloaded on an IDE lacking the plugin (avoiding
+      NoClassDefFoundError — the documented pattern, stronger than a runtime guard).
+      Terminal/Git absence therefore degrades gracefully: the signal is simply not emitted.
+    -->
+    <depends optional="true" config-file="provjet-terminal.xml">org.jetbrains.plugins.terminal</depends>
+    <depends optional="true" config-file="provjet-git.xml">Git4Idea</depends>
+
     <extensions defaultExtensionNs="com.intellij">
         <postStartupActivity implementation="dev.provenance.recorder.activation.RecorderActivationActivity"/>
         <statusBarWidgetFactory

@@ -1,0 +1,10 @@
+<idea-plugin>
+    <!--
+      Loaded ONLY when Git4Idea is present (see the optional <depends> in plugin.xml).
+      Registers the sole class that references Git4Idea types; on IDEs without Git4Idea
+      this descriptor is skipped and the class is never classloaded.
+    -->
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="dev.provenance.recorder.wiring.git.GitWiringStartupActivity"/>
+    </extensions>
+</idea-plugin>
