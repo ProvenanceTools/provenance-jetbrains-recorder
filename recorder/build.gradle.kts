@@ -15,6 +15,12 @@ repositories {
 
 dependencies {
     implementation(project(":core"))
+    // core exposes kotlinx-serialization JsonObject in its public API (Envelope.data,
+    // *Payload.toJsonObject()) but depends on it via `implementation`, so it is not
+    // on our compile classpath transitively — declare it here too. Pinned to core's
+    // 1.11.0 (settled build matrix). No serialization plugin needed: we only call
+    // library builders (buildJsonObject/put), never define @Serializable types.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
     intellijPlatform {
         intellijIdea(providers.gradleProperty("platformVersion"))
