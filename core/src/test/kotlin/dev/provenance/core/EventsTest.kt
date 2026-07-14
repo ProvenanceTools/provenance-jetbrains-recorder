@@ -169,6 +169,21 @@ class EventsTest {
     }
 
     @Test
+    fun `git event omits commit_sha when null`() {
+        val obj = GitEventPayload("state_change", null).toJsonObject()
+        assertEquals("state_change", obj["operation"]!!.jsonPrimitive.content)
+        assertFalse(obj.containsKey("commit_sha"))
+        assertEquals(setOf("operation"), obj.keys)
+    }
+
+    @Test
+    fun `git event includes commit_sha when present`() {
+        val obj = GitEventPayload("state_change", "deadbeef").toJsonObject()
+        assertEquals("deadbeef", obj["commit_sha"]!!.jsonPrimitive.content)
+        assertEquals(setOf("operation", "commit_sha"), obj.keys)
+    }
+
+    @Test
     fun `fs external_change payload emits all optional fields when present`() {
         val p = FsExternalChangePayload(
             path = "big.txt",

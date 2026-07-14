@@ -248,3 +248,18 @@ fun TerminalCommandPayload.toJsonObject(): JsonObject = buildJsonObject {
     put("command", command)
     if (exitCode != null) put("exit_code", exitCode)
 }
+
+/**
+ * git.event payload (recorder PRD §4.4). Mirrors log-core's GitEventPayload
+ * (events.ts:188-191) and the VS Code git-wiring.ts, which always emits
+ * `operation: "state_change"` regardless of the underlying git operation (commit /
+ * checkout / branch switch / index change all look the same through the change topic).
+ * Matched exactly per this repo's "port the wiring, not a new product" mandate.
+ * [commitSha] is optional — omitted when null (no HEAD yet, e.g. an empty repo).
+ */
+data class GitEventPayload(val operation: String, val commitSha: String?)
+
+fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("operation", operation)
+    if (commitSha != null) put("commit_sha", commitSha)
+}
