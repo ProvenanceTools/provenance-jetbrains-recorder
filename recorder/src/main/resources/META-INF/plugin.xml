@@ -34,4 +34,17 @@
             action="EditorPaste"
             implementationClass="dev.provenance.recorder.wiring.paste.PasteInterceptHandlerFactory"/>
     </extensions>
+
+    <actions>
+        <!-- UI trigger for the bundle seal (PRD §4.6), the JetBrains analogue of the VS Code
+             recorder's provenance.prepareSubmissionBundle command. Enabled only while a session
+             is active; the seal work runs off the EDT (see PrepareSubmissionBundleAction). -->
+        <action
+            id="dev.provenance.recorder.PrepareSubmissionBundle"
+            class="dev.provenance.recorder.commands.PrepareSubmissionBundleAction"
+            text="Provenance: Prepare Submission Bundle"
+            description="Seal the recorded provenance log and reviewed files into a submission bundle.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

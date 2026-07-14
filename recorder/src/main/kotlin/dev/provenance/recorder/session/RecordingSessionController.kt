@@ -289,6 +289,16 @@ class RecordingSessionController(
     /** Force a flush of buffered .slog bytes (used by tests and the seal path). */
     fun flush() = writer.flush()
 
+    /**
+     * Public append seam for coordinator-sourced events (fs.external_change / terminal.* /
+     * git.event), wired by RecorderSessionManager. Routes through the exact same guarded
+     * path as the internal doc.* emitters: dropped after endSession(), otherwise chained +
+     * routed through the disk-full/checkpoint logic. The manager holds every such coordinator
+     * on the session Disposable, so nothing calls this after the session ends in practice;
+     * the `ended` guard in [record] is the belt-and-suspenders for a late teardown event.
+     */
+    fun append(kind: String, data: JsonObject) = record(kind, data)
+
     companion object {
         private val LOG = Logger.getInstance(RecordingSessionController::class.java)
 

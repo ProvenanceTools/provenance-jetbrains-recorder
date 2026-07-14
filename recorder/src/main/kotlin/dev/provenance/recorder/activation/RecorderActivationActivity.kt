@@ -4,6 +4,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.impl.status.widget.StatusBarWidgetsManager
+import dev.provenance.recorder.session.RecorderSessionManager
 
 /**
  * Runs once per project open. PRD §4.1: activate only when the workspace-root
@@ -26,7 +27,13 @@ class RecorderActivationActivity internal constructor(
         val result = loader(project, COURSE_PUBLIC_KEY_HEX)
         val state = project.service<RecorderState>()
         when (result) {
-            is ManifestActivation.Active -> state.activate(result.manifest)
+            is ManifestActivation.Active -> {
+                state.activate(result.manifest)
+                // Privacy gate satisfied: start recording for this project. The session manager
+                // runs startup chain-recovery, opens .provenance/, and wires every signal into a
+                // live RecordingSessionController. No-ops if a session is already active.
+                project.service<RecorderSessionManager>().startFromActivation(result.manifest)
+            }
             is ManifestActivation.Inactive -> state.deactivate()
         }
         refreshStatusBarWidget(project)
