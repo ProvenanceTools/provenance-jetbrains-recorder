@@ -25,6 +25,7 @@ import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.startup.recoverPreviousSession
 import dev.provenance.recorder.watch.ExternalChangeCoordinator
 import dev.provenance.recorder.watch.VfsExternalChangeListener
+import dev.provenance.recorder.wiring.snapshot.PluginSnapshotWiring
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
 import java.nio.file.Path
@@ -137,8 +138,28 @@ class RecorderSessionManager(private val project: Project) : Disposable {
 
         wireExternalChange(controller, activated, tagger, vfsDispatch, sessionDisposable)
         wireTerminalAndGit(controller, tagger, sessionDisposable)
+        wireExtSnapshot(controller, scheduler, sessionDisposable)
 
         return ActiveSession(controller, activated, sessionDisposable).also { activeSession = it }
+    }
+
+    /**
+     * ext.snapshot enumeration of installed IntelliJ plugins (recorder PRD §4.4), mirroring the
+     * VS Code recorder's extension-snapshot.ts: one snapshot immediately at session start, then a
+     * periodic re-emit every 5 min. [PluginManagerCore] is core-platform (always present), so no
+     * optional-dependency gating — this always-on signal lives directly on the session Disposable.
+     * The periodic tick uses the same injected [FlushScheduler] as Heartbeat/PasteAnomalyTicker.
+     */
+    private fun wireExtSnapshot(
+        controller: RecordingSessionController,
+        scheduler: FlushScheduler,
+        sessionDisposable: Disposable,
+    ) {
+        val snapshot = PluginSnapshotWiring.fromPlatform(
+            emit = { controller.append("ext.snapshot", it.toJsonObject()) },
+            scheduler = scheduler,
+        )
+        Disposer.register(sessionDisposable, snapshot)
     }
 
     private fun wireExternalChange(

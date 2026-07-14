@@ -122,6 +122,14 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertEquals("a single keystroke must log exactly one doc.change", 1, docChanges)
     }
 
+    fun testExtSnapshotIsWiredAndEmitsAtSessionStart() {
+        val m = manager()
+        val session = start(m)
+        // PluginSnapshotWiring emits one snapshot immediately at construction (session start);
+        // wiring it into the manager's session Disposable is what puts it in the live .slog.
+        assertTrue("ext.snapshot must be emitted at session start", kinds(session).contains("ext.snapshot"))
+    }
+
     fun testStopEndsSessionClearsSeamsAndIsIdempotent() {
         val m = manager()
         val session = start(m)
