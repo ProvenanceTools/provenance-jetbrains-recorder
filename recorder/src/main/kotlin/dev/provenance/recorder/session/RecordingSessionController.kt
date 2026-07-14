@@ -26,6 +26,7 @@ import dev.provenance.recorder.io.MetaWriter
 import dev.provenance.recorder.io.SessionWriter
 import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.startup.RecoveryDecision
+import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.DocWiring
 import dev.provenance.recorder.wiring.Heartbeat
 import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
@@ -221,6 +222,16 @@ class RecordingSessionController(
             intervalMs = heartbeatIntervalMs,
             scheduler = scheduler,
         )
+
+        // Step 8b: clock.skew watcher (PRD §4.2) — monotonic vs wall drift. Uses the session
+        // clock's monotonic reading and the JVM wall clock; the injected scheduler drives ticks.
+        val clockSkewWatcher = ClockSkewWatcher(
+            emit = { record("clock.skew", it.toJsonObject()) },
+            getMonotonicMs = { clock.now() },
+            getWallMs = { System.currentTimeMillis() },
+            scheduler = scheduler,
+        )
+        Disposer.register(parentDisposable, clockSkewWatcher)
 
         // Step 7b: three-signal paste detection (Plan 6). The correlator is shared
         // between the EditorPaste action wrapper (signal 2, via RecorderPasteState,

@@ -279,6 +279,18 @@ fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
+ * clock.skew payload (recorder PRD §4.2: "Wall clock jumps non-monotonically — delta_ms").
+ * Mirrors log-core's ClockSkewPayload (events.ts:193-195) and the VS Code clock-watcher.ts.
+ * [deltaMs] is (wall elapsed − monotonic elapsed) since the last reference point: positive
+ * when the wall clock jumped forward relative to the monotonic clock, negative when backward.
+ */
+data class ClockSkewPayload(val deltaMs: Long)
+
+fun ClockSkewPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("delta_ms", deltaMs)
+}
+
+/**
  * One entry in an ext.snapshot's `extensions` array. On the JetBrains host these are
  * installed IntelliJ *plugins*, but the wire field stays `extensions` (and each entry's
  * keys stay id/version/enabled) because that is the log-core contract — the analyzer is

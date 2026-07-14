@@ -228,6 +228,13 @@ class EventsTest {
     }
 
     @Test
+    fun `clock skew payload emits delta_ms`() {
+        val obj = ClockSkewPayload(deltaMs = -750).toJsonObject()
+        assertEquals(-750L, obj["delta_ms"]!!.jsonPrimitive.long)
+        assertEquals(setOf("delta_ms"), obj.keys)
+    }
+
+    @Test
     fun `focus change payload emits gained and omits reason when null`() {
         val obj = FocusChangePayload(gained = true).toJsonObject()
         assertEquals(true, obj["gained"]!!.jsonPrimitive.boolean)
