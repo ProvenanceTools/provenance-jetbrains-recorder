@@ -48,6 +48,38 @@ nothing observable. To sideload for manual testing: Settings → Plugins → gea
 icon → Install Plugin from Disk → the `.zip` from `recorder/build/distributions/`.
 Marketplace publishing and the production course-key embedding are Plan 9.
 
+## External-change detection — manual verification checklist
+
+External-change detection (PRD §4.5) is the port's highest-risk subsystem. Its
+direction, dedup (`isFromSave`), payload shape, create/delete/reload paths, and the
+feeder/reload interaction are all covered by the headless `:recorder:test` suite
+against a real `LocalFileSystem` temp dir. The items below **cannot** be exercised
+headlessly — they need a running windowed IDE (`:recorder:runIde`) — and are
+**unchecked until run manually at least once** on the IDE versions the plugin targets:
+
+- [ ] **Frame-activation refresh fires for files changed while unfocused.** In a
+  `runIde` sandbox with a manifest-activated project: alt-tab away, edit a watched file
+  in an external editor (or `echo >>` from a terminal), alt-tab back, and confirm an
+  `fs.external_change` appears in the session log within a few seconds — no manual
+  "Reload from disk" needed.
+- [ ] **Native watcher while the IDE stays focused.** Edit a watched file externally
+  (second-monitor terminal, or Claude Code in an integrated terminal panel) *without*
+  switching focus; confirm the native OS file watcher alone delivers the event, since
+  students may never alt-tab away.
+- [ ] **Latency.** Time the gap between an external write and the event's `wall`
+  timestamp, both same-window-terminal and alt-tab; confirm it is not multi-second
+  (would look suspicious in replay).
+- [ ] **"Synchronize files on frame activation" disabled.** Confirm the native watcher
+  still covers detection and it does not silently degrade to "only on next IDE restart".
+- [ ] **`isFromSave()` tags every real editor save.** Confirm a normal Ctrl+S in the
+  running IDE produces VFS events with `isFromSave() == true` for the saved file across
+  target IDE versions (the `SavingRequestor` opt-in is an implementation detail, not a
+  version-pinned contract; `ExternalChangeTimingTest` will catch a regression when
+  next run against a newer platform).
+- [ ] **Network/container filesystems** (note only): if course infra ever runs student
+  IDEs against a network-mounted or containerized FS, confirm the native watcher works
+  there — a known IntelliJ weak spot, unrelated to this plugin's code.
+
 ## Documentation
 
 - `docs/design.md` — the approved architecture and design.
