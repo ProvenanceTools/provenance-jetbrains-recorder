@@ -295,3 +295,27 @@ fun ExtSnapshotPayload.toJsonObject(): JsonObject = buildJsonObject {
         },
     )
 }
+
+/**
+ * recorder.degraded payload (recorder PRD §4.8). Mirrors log-core's RecorderDegradedPayload
+ * (events.ts:209-211). Emitted once when the recorder transitions into disk-full degraded
+ * mode; [reason] is currently always "disk_full" (any write error is treated as disk-full
+ * for v1, matching disk-full-handler.ts).
+ */
+data class RecorderDegradedPayload(val reason: String)
+
+fun RecorderDegradedPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("reason", reason)
+}
+
+/**
+ * recorder.recovered_from_corruption payload (recorder PRD §4.6, §4.8). Mirrors log-core's
+ * RecorderRecoveredFromCorruptionPayload (events.ts:213-215). Emitted into the new session
+ * when a prior session's .slog failed to validate and was quarantined; [quarantinedPath] is
+ * where the corrupt file was moved (`<slog>.corrupt-<ISO>`) so the analyzer can inspect it.
+ */
+data class RecorderRecoveredFromCorruptionPayload(val quarantinedPath: String)
+
+fun RecorderRecoveredFromCorruptionPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("quarantined_path", quarantinedPath)
+}

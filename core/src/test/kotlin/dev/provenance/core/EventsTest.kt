@@ -226,4 +226,20 @@ class EventsTest {
         assertEquals("tail", obj["new_content_tail"]!!.jsonPrimitive.content)
         assertFalse(obj.containsKey("new_content"))
     }
+
+    @Test
+    fun `recorder degraded payload emits reason`() {
+        val obj = RecorderDegradedPayload(reason = "disk_full").toJsonObject()
+        assertEquals("disk_full", obj["reason"]!!.jsonPrimitive.content)
+        assertEquals(1, obj.size)
+    }
+
+    @Test
+    fun `recorder recovered_from_corruption payload emits quarantined_path`() {
+        val obj = RecorderRecoveredFromCorruptionPayload(
+            quarantinedPath = "/prov/s.slog.corrupt-2026-07-14T10-20-30-500Z",
+        ).toJsonObject()
+        assertEquals("/prov/s.slog.corrupt-2026-07-14T10-20-30-500Z", obj["quarantined_path"]!!.jsonPrimitive.content)
+        assertEquals(1, obj.size)
+    }
 }
