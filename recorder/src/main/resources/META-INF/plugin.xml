@@ -1,0 +1,17 @@
+<idea-plugin>
+    <id>edu.berkeley.provenance.recorder</id>
+    <name>Provenance Recorder</name>
+    <vendor email="provenance@example.edu" url="https://example.edu">Provenance</vendor>
+
+    <description><![CDATA[
+    Records a tamper-evident log of editing activity for an activated course
+    assignment. Activates only on a workspace with a valid, course-signed
+    .provenance-manifest. See the Provenance project documentation.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- postStartupActivity / statusBarWidgetFactory registrations land in Tasks 5 and 6 -->
+    </extensions>
+</idea-plugin>
