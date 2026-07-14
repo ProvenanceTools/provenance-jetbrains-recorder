@@ -159,6 +159,17 @@ fun PastePayload.toJsonObject(): JsonObject = buildJsonObject {
     if (contentTail != null) put("content_tail", contentTail)
 }
 
+/**
+ * paste.anomaly payload (recorder PRD §4.3). Mirrors log-core's PasteAnomalyPayload
+ * (events.ts:199-202). Deltas since the last periodic check, not cumulative totals.
+ */
+data class PasteAnomalyPayload(val interceptedCount: Int, val largeInsertCount: Int)
+
+fun PasteAnomalyPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("intercepted_count", interceptedCount)
+    put("large_insert_count", largeInsertCount)
+}
+
 data class DocSavePayload(val path: String, val sha256: String)
 
 fun DocSavePayload.toJsonObject(): JsonObject = buildJsonObject {
