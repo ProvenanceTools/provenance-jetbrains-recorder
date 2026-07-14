@@ -15,9 +15,10 @@ import java.nio.file.Path
  * reload from an absent change `reason` plus a clean-buffer flag; IntelliJ tells us
  * directly, so there is no heuristic and no would-be-doc.change to suppress.
  *
- * VERIFY AT EXECUTION: confirm that a real silent reload delivers fileContentReloaded and
- * does NOT also drive DocumentListener.documentChanged (which would double-handle with
- * the expected-model feeder). See VfsReloadDocumentChangeInteractionTest.
+ * Note on the feeder interaction: a reload DOES also drive DocumentListener.documentChanged
+ * (confirmed headlessly by ExternalChangeCoordinatorTest). The coordinator's expected-model
+ * feeder guards against double-handling by skipping document changes that leave the buffer
+ * SAVED (a reload syncs the buffer to disk), so only this path reconciles a reload.
  */
 class DocumentReloadExternalChangeListener(
     private val workspaceRoot: Path,
