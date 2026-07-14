@@ -4,11 +4,23 @@ A JetBrains IDE plugin that records a tamper-evident `.provenance` log while a
 student works on a course assignment. It is the JetBrains counterpart to the
 [Provenance](https://github.com/) VS Code recorder: it produces a sealed
 submission bundle in the **same format**, so the same Provenance analyzer and
-server ingest and validate it regardless of which editor produced it.
+server ingest and validate it regardless of which editor produced it. It ships
+under the same **Provenance Recorder** name as the VS Code extension — brand
+consistency is a trust property for a student-facing integrity tool.
 
-> **Status:** in progress. `core/` (the format port) and the `recorder/` plugin
-> scaffold — activation, manifest verification, and the recording status-bar
-> widget — have landed. Document/paste/VFS event wiring and bundle seal are next.
+> **Status:** built and working, not yet Marketplace-published. `core/` (the
+> format port) and the full `recorder/` wiring — activation, manifest
+> verification, document/paste/VFS/terminal/git event capture, external-change
+> detection, the hash chain, signed checkpoints, chain recovery, bundle seal,
+> and disk-full degraded mode — have all landed. `core:test` and
+> `recorder:test` are green (105 and 235 tests respectively), and sealed
+> bundles produced by the plugin pass all 8 of the real Provenance
+> analysis-core validation checks end-to-end — not a mock. A sideloadable
+> plugin `.zip` builds today via `./gradlew :recorder:buildPlugin`. What
+> remains is distribution: a
+> signed Marketplace release needs operator secrets (Marketplace token,
+> code-signing certificate, the real course public key) that only a human can
+> supply — see "Production release" below.
 
 ## What it does
 
@@ -28,7 +40,26 @@ The log format — event envelope, hash chain, JCS canonicalization, ed25519
 signing, and bundle/manifest shapes — is defined by the Provenance monorepo's
 `log-core` package. This repo is an independent Kotlin implementation of that
 same format, verified against golden conformance vectors so the two editors'
-output stays byte-for-byte compatible. See `docs/design.md` for the full design.
+output stays byte-for-byte compatible. It is a **port of the wiring, not a new
+product** — the format is a fixed contract this repo does not redesign. See
+`docs/design.md` for the full design.
+
+## Install
+
+**Sideload (available now).**
+
+```sh
+./gradlew :recorder:buildPlugin
+```
+
+Then in the IDE: **Settings → Plugins → gear icon → Install Plugin from
+Disk…**, and pick the `.zip` from `recorder/build/distributions/`. This is the
+dev-key build — see "Production release" below for what changes in a signed
+Marketplace release.
+
+**JetBrains Marketplace (coming).** Not yet published. The Gradle wiring for a
+signed release (`buildProd`/`publishProd`) is in place; only the operator
+secrets are missing. See "Production release" below.
 
 ## Building
 
@@ -41,17 +72,15 @@ Kotlin + Gradle, using the IntelliJ Platform Gradle Plugin.
 ./gradlew :core:test              # format unit + conformance tests
 ```
 
-As of Plan 3, `:recorder:buildPlugin` / `:recorder:runIde` / `:recorder:test`
-are real. The plugin activates only on a workspace with a valid, course-signed
-`.provenance-manifest` at the root (PRD §4.1) — on any other folder it does
-nothing observable. To sideload for manual testing: Settings → Plugins → gear
-icon → Install Plugin from Disk → the `.zip` from `recorder/build/distributions/`.
-See "Production release" below for the signed Marketplace build.
+See "Install" above for how to load the built plugin into an IDE, and
+"Production release" below for the signed Marketplace build.
 
 ## Production release (JetBrains Marketplace)
 
-Marketplace is the primary distribution channel; the sideload `.zip` above is for
-early testing only. The production build embeds the **real** course public key (so
+Marketplace is the intended primary distribution channel once a course is
+ready to publish; the sideload `.zip` above is for early testing and
+self-hosted course builds in the meantime. The production build embeds the
+**real** course public key (so
 the plugin trusts only manifests signed by the course offline key) and ships a
 **signed** artifact. Every step that needs a real secret or is a one-way decision
 is marked — **an agent cannot run those; a human operator must.** The Gradle wiring
@@ -91,10 +120,9 @@ local/testing installs; a real release needs its own entry (see below).
    ```
    Store `chain.crt` contents as `CERTIFICATE_CHAIN`, `private.pem` contents as
    `PRIVATE_KEY`, and the passphrase as `PRIVATE_KEY_PASSWORD`. Never commit these.
-3. **Plugin id.** `edu.berkeley.provenance.recorder` (in `plugin.xml` /
-   `RECORDER_PLUGIN_ID`) is a permanent identity once published — Marketplace and
-   auto-update channels key off it forever. Confirm it with the course before the
-   first publish.
+3. **Plugin id.** The reverse-DNS id declared in `plugin.xml` is a permanent
+   identity once published — Marketplace and auto-update channels key off it
+   forever. Confirm it with the course before the first publish.
 4. **The first publication must be uploaded manually** through the Marketplace web UI
    (per JetBrains docs); `publishPlugin` automation only works for subsequent versions
    of an already-registered plugin. Build the signed zip
@@ -181,4 +209,4 @@ the format has drifted — fix `core/`'s implementation, never the vectors.
 
 ## License
 
-TBD.
+See [`LICENSE`](LICENSE).
