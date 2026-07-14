@@ -228,6 +228,22 @@ class EventsTest {
     }
 
     @Test
+    fun `focus change payload emits gained and omits reason when null`() {
+        val obj = FocusChangePayload(gained = true).toJsonObject()
+        assertEquals(true, obj["gained"]!!.jsonPrimitive.boolean)
+        assertFalse(obj.containsKey("reason"))
+        assertEquals(setOf("gained"), obj.keys)
+    }
+
+    @Test
+    fun `focus change payload includes reason when present`() {
+        val obj = FocusChangePayload(gained = false, reason = "manual").toJsonObject()
+        assertEquals(false, obj["gained"]!!.jsonPrimitive.boolean)
+        assertEquals("manual", obj["reason"]!!.jsonPrimitive.content)
+        assertEquals(setOf("gained", "reason"), obj.keys)
+    }
+
+    @Test
     fun `recorder degraded payload emits reason`() {
         val obj = RecorderDegradedPayload(reason = "disk_full").toJsonObject()
         assertEquals("disk_full", obj["reason"]!!.jsonPrimitive.content)

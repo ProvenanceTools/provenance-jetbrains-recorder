@@ -11,6 +11,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.util.concurrency.AppExecutorUtil
 import dev.provenance.core.Clock
+import dev.provenance.core.FocusChangePayload
 import dev.provenance.core.Manifest
 import dev.provenance.core.RecorderDegradedPayload
 import dev.provenance.core.SessionEndPayload
@@ -199,8 +200,17 @@ class RecordingSessionController(
         ApplicationManager.getApplication().messageBus.connect(parentDisposable).subscribe(
             ApplicationActivationListener.TOPIC,
             object : ApplicationActivationListener {
-                override fun applicationActivated(ideFrame: IdeFrame) = focused.set(true)
-                override fun applicationDeactivated(ideFrame: IdeFrame) = focused.set(false)
+                // Feed the heartbeat's focus flag AND emit a discrete focus.change (PRD §4.2),
+                // mirroring the VS Code recorder's emitFocusChange on window-state transitions.
+                override fun applicationActivated(ideFrame: IdeFrame) {
+                    focused.set(true)
+                    record("focus.change", FocusChangePayload(gained = true).toJsonObject())
+                }
+
+                override fun applicationDeactivated(ideFrame: IdeFrame) {
+                    focused.set(false)
+                    record("focus.change", FocusChangePayload(gained = false).toJsonObject())
+                }
             },
         )
         heartbeat = Heartbeat(

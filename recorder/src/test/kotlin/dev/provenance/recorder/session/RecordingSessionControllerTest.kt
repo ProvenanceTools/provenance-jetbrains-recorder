@@ -8,6 +8,7 @@ import dev.provenance.core.ParseResult
 import dev.provenance.core.GENESIS_PREV_HASH
 import dev.provenance.core.parseEntries
 import dev.provenance.recorder.io.FlushScheduler
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
@@ -96,6 +97,25 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         val change = entries.firstOrNull { it.kind == "doc.change" }
         assertNotNull("expected a doc.change entry", change)
         assertEquals("session.start", entries[0].kind)
+    }
+
+    fun testFocusTransitionsEmitDiscreteFocusChangeEvents() {
+        val c = controller()
+        // The light fixture has no real IdeFrame; the listener ignores the frame arg, so a
+        // no-op proxy satisfies the non-null parameter without a real window.
+        val frame = java.lang.reflect.Proxy.newProxyInstance(
+            com.intellij.openapi.wm.IdeFrame::class.java.classLoader,
+            arrayOf(com.intellij.openapi.wm.IdeFrame::class.java),
+        ) { _, _, _ -> null } as com.intellij.openapi.wm.IdeFrame
+        val publisher = com.intellij.openapi.application.ApplicationManager.getApplication()
+            .messageBus.syncPublisher(com.intellij.openapi.application.ApplicationActivationListener.TOPIC)
+        publisher.applicationDeactivated(frame)
+        publisher.applicationActivated(frame)
+
+        val focus = readEntries(c).filter { it.kind == "focus.change" }
+        assertEquals("both transitions must emit a discrete focus.change", 2, focus.size)
+        assertEquals(false, focus[0].data["gained"]!!.jsonPrimitive.boolean)
+        assertEquals(true, focus[1].data["gained"]!!.jsonPrimitive.boolean)
     }
 
     fun testEndSessionAppendsSessionEndAndWriterUnusable() {

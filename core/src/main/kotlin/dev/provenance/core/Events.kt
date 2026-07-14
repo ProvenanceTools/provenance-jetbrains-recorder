@@ -184,6 +184,20 @@ fun DocClosePayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
+ * focus.change payload (recorder PRD §4.2). Mirrors log-core's FocusChangePayload
+ * (events.ts:111-114) and the VS Code doc-events.ts transformFocusChange, which emits only
+ * `gained`. [reason] is an always-optional field in the format contract (omitted when null,
+ * never emitted as JSON null); the VS Code recorder never populates it, and neither does this
+ * host — kept for shape parity so a future analyzer field never requires a format bump.
+ */
+data class FocusChangePayload(val gained: Boolean, val reason: String? = null)
+
+fun FocusChangePayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("gained", gained)
+    if (reason != null) put("reason", reason)
+}
+
+/**
  * fs.external_change payload (recorder PRD §4.5). Mirrors log-core's
  * FsExternalChangePayload (events.ts:137). Field names are already snake_case on
  * the wire — no camel→snake remap beyond the Kotlin property names.
