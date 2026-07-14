@@ -26,10 +26,12 @@ import git4idea.repo.GitRepositoryChangeListener
  * onDidOpenRepository/onDidCloseRepository tracking to port — one subscription covers all.
  *
  * The emit seam is the project-scoped [RecorderGitState] (core-only types, main-path
- * safe), null until a session activates. NOTE (pending the external-change plan): the VS
- * Code git-wiring.ts marks a git-explanation tag here to suppress fs.external_change false
- * positives from checkout/reset rewriting files (PRD §4.5). That tagger is not wired in
- * this plan; when it lands, mark it from this exact point.
+ * safe), null until a session activates. The git-explanation tag that suppresses
+ * fs.external_change false positives from checkout/reset rewriting files (PRD §4.5, the VS
+ * Code git-wiring.ts markGit() behavior) is applied by the session-scoped ExplanationTagger
+ * inside the [RecorderGitState.emit] callback that RecorderSessionManager installs — i.e. on
+ * every git.event this activity emits — keeping the tagger out of this structurally-gated
+ * class (which must reference only Git4Idea types + the core-typed seam).
  */
 class GitWiringStartupActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
