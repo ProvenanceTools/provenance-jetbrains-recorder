@@ -2,6 +2,7 @@ package dev.provenance.recorder
 
 import dev.provenance.core.Canonical
 import dev.provenance.core.Ed25519
+import dev.provenance.core.Manifest
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -48,6 +49,30 @@ object HeavyTestManifests {
             putJsonArray("files_under_review") { filesUnderReview.forEach { add(it) } }
             put("sig", sig)
         }.toString()
+    }
+
+    /**
+     * The same valid, course-signed manifest as a parsed core [Manifest] object, for tests
+     * that drive [dev.provenance.recorder.session.RecorderSessionManager.start] directly
+     * (which takes an already-verified manifest rather than file text).
+     */
+    fun signedManifestObject(
+        assignmentId: String = "hw03",
+        semester: String = "fa26",
+        issuedAt: String = "2026-07-14T00:00:00Z",
+        filesUnderReview: List<String> = listOf("hw.py"),
+    ): Manifest {
+        val priv = Ed25519.hexToBytes(COURSE_PRIV_SEED_HEX)
+        val payload = buildJsonObject {
+            put("assignment_id", assignmentId)
+            put("semester", semester)
+            put("issued_at", issuedAt)
+            putJsonArray("files_under_review") { filesUnderReview.forEach { add(it) } }
+        }.toString()
+        val sig = Ed25519.bytesToHex(
+            Ed25519.sign(Canonical.canonicalize(payload).toByteArray(Charsets.UTF_8), priv),
+        )
+        return Manifest(assignmentId, semester, issuedAt, filesUnderReview, sig)
     }
 
     /**
