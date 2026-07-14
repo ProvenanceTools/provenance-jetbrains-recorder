@@ -21,6 +21,7 @@ import dev.provenance.core.ParseResult
 import dev.provenance.core.Sha256
 import dev.provenance.core.TerminalOpenPayload
 import dev.provenance.core.parseEntries
+import dev.provenance.core.toJsonObject
 import dev.provenance.core.validateChain
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.io.FlushScheduler
@@ -182,6 +183,47 @@ class AllSignalsLiveGateTest : BasePlatformTestCase() {
         assertEquals("exactly one fs.external_change (registry-reset dedup holds)", 1, ext.size)
         assertEquals("git op must explain the external change", "git", ext[0].data["explanation"]?.jsonPrimitive?.content)
         assertEquals(Sha256.hex(externalContent), ext[0].data["new_hash"]?.jsonPrimitive?.content)
+
+        // (5) The newly-ported signals — exercise each so the sealed bundle carries every new event
+        // kind and the analyzer gate proves they don't break chain/monotonic/validation.
+        //   ext.snapshot — already auto-emitted at session start (PluginSnapshotWiring).
+        assertTrue("ext.snapshot recorded at session start", kinds.contains("ext.snapshot"))
+        //   focus.change — publish IDE (de)activation on the app bus.
+        val frame = java.lang.reflect.Proxy.newProxyInstance(
+            com.intellij.openapi.wm.IdeFrame::class.java.classLoader,
+            arrayOf(com.intellij.openapi.wm.IdeFrame::class.java),
+        ) { _, _, _ -> null } as com.intellij.openapi.wm.IdeFrame
+        ApplicationManager.getApplication().messageBus
+            .syncPublisher(com.intellij.openapi.application.ApplicationActivationListener.TOPIC)
+            .applicationDeactivated(frame)
+        //   ext.activate — publish a dynamic plugin load on the app bus.
+        val descriptor = java.lang.reflect.Proxy.newProxyInstance(
+            com.intellij.ide.plugins.IdeaPluginDescriptor::class.java.classLoader,
+            arrayOf(com.intellij.ide.plugins.IdeaPluginDescriptor::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "getPluginId" -> com.intellij.openapi.extensions.PluginId.getId("com.example.copilot")
+                "getVersion" -> "1.2.3"
+                else -> null
+            }
+        } as com.intellij.ide.plugins.IdeaPluginDescriptor
+        ApplicationManager.getApplication().messageBus
+            .syncPublisher(com.intellij.ide.plugins.DynamicPluginListener.TOPIC)
+            .pluginLoaded(descriptor)
+        //   selection.change + clock.skew — through the same chained append path the wiring uses.
+        session.controller.append(
+            "selection.change",
+            dev.provenance.recorder.events.buildSelectionChangePayload("hw.py", 1, 0, 2, 0, wasSelection = true).toJsonObject(),
+        )
+        session.controller.append("clock.skew", dev.provenance.core.ClockSkewPayload(1500).toJsonObject())
+
+        session.controller.flush()
+        val allEntries = readEntries(session.controller.slogPath)
+        val allKinds = allEntries.map { it.kind }
+        assertEquals("chain valid across every new signal kind", ChainCheck.Valid, validateChain(allEntries))
+        for (k in listOf("ext.snapshot", "focus.change", "ext.activate", "selection.change", "clock.skew")) {
+            assertTrue("$k recorded", allKinds.contains(k))
+        }
 
         // Seal through the manager's real seal seam (deterministic hash + timestamp).
         val result = manager.sealActiveSession(
