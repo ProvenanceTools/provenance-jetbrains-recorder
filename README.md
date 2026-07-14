@@ -46,7 +46,85 @@ are real. The plugin activates only on a workspace with a valid, course-signed
 `.provenance-manifest` at the root (PRD §4.1) — on any other folder it does
 nothing observable. To sideload for manual testing: Settings → Plugins → gear
 icon → Install Plugin from Disk → the `.zip` from `recorder/build/distributions/`.
-Marketplace publishing and the production course-key embedding are Plan 9.
+See "Production release" below for the signed Marketplace build.
+
+## Production release (JetBrains Marketplace)
+
+Marketplace is the primary distribution channel; the sideload `.zip` above is for
+early testing only. The production build embeds the **real** course public key (so
+the plugin trusts only manifests signed by the course offline key) and ships a
+**signed** artifact. Every step that needs a real secret or is a one-way decision
+is marked — **an agent cannot run those; a human operator must.** The Gradle wiring
+is in place (`buildProd`/`publishProd`, `signPlugin`/`verifyPlugin`/`publishPlugin`);
+only the secrets are missing.
+
+### `extension_hash` (needed for the analyzer allowlist)
+
+Every submission's `extension_hash` must be on the analyzer allowlist
+(`packages/analysis-core/src/heuristics/config/known-good-extension-hashes.json` in
+the monorepo) or it is flagged. Compute it from the built distribution:
+
+```sh
+./gradlew :recorder:computeExtensionHash   # → recorder/build/extension-hash.txt (64-hex)
+```
+
+It is a reproducible SHA-256 over the *extracted* plugin file tree (sorted
+`<relpath>\0<bytes>`, the same algorithm the seal command uses at runtime), not a
+hash of the `.zip` bytes. The **dev** build (checked-in dev key, unsigned sideload)
+and the **prod** build (real course key, signed) produce **different** hashes —
+embedding a different course key changes compiled bytes. Add the value for whichever
+build students actually install. The dev-build hash is already in the allowlist for
+local/testing installs; a real release needs its own entry (see below).
+
+### One-time setup (REQUIRES OPERATOR SECRETS)
+
+1. **Marketplace token.** Create/confirm a JetBrains Account and generate a Personal
+   Access Token at <https://plugins.jetbrains.com/author/me/tokens>. Save it as
+   `PUBLISH_TOKEN` in your CI secret store — it is shown only once.
+   (<https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html>)
+2. **Code-signing certificate + key**
+   (<https://plugins.jetbrains.com/docs/intellij/plugin-signing.html>):
+   ```sh
+   openssl genpkey -aes-256-cbc -algorithm RSA -out private_encrypted.pem -pkeyopt rsa_keygen_bits:4096
+   openssl rsa -in private_encrypted.pem -out private.pem
+   openssl req -key private.pem -new -x509 -days 365 -out chain.crt
+   ```
+   Store `chain.crt` contents as `CERTIFICATE_CHAIN`, `private.pem` contents as
+   `PRIVATE_KEY`, and the passphrase as `PRIVATE_KEY_PASSWORD`. Never commit these.
+3. **Plugin id.** `edu.berkeley.provenance.recorder` (in `plugin.xml` /
+   `RECORDER_PLUGIN_ID`) is a permanent identity once published — Marketplace and
+   auto-update channels key off it forever. Confirm it with the course before the
+   first publish.
+4. **The first publication must be uploaded manually** through the Marketplace web UI
+   (per JetBrains docs); `publishPlugin` automation only works for subsequent versions
+   of an already-registered plugin. Build the signed zip
+   (`./gradlew :recorder:buildProd`, output under `recorder/build/distributions/`) and
+   upload it by hand the first time.
+
+### Every release (REQUIRES OPERATOR SECRETS)
+
+```sh
+export PROVENANCE_COURSE_PUBLIC_KEY_HEX=<64-hex production course public key>
+export CERTIFICATE_CHAIN="$(cat chain.crt)"
+export PRIVATE_KEY="$(cat private.pem)"
+export PRIVATE_KEY_PASSWORD=<passphrase>
+export PUBLISH_TOKEN=<Marketplace personal access token>
+
+# Bump `pluginVersion` in gradle.properties first — Marketplace rejects duplicates.
+./gradlew :recorder:buildProd     # embed key → build → sign → hash → revert key
+./gradlew :recorder:publishProd   # buildProd + verifyPlugin, then publishPlugin
+```
+
+`buildProd` always reverts `CoursePublicKey.kt` to the dev key afterward (even on
+failure), so the real key is never left in the working tree. After a release, copy
+`recorder/build/extension-hash.txt` into the monorepo allowlist:
+
+```sh
+cd ../provenance
+node scripts/update-extension-hash-allowlist.mjs --hash <hex-from-extension-hash.txt>
+```
+
+Every release needs its own allowlist entry, or its submissions get flagged.
 
 ## External-change detection — manual verification checklist
 
