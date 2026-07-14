@@ -21,9 +21,13 @@ dependencies {
         testFramework(TestFrameworkType.Platform)
     }
 
-    testImplementation(platform("org.junit:junit-bom:5.11.3"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // The IntelliJ Platform test framework (BasePlatformTestCase and friends) is
+    // JUnit 4 / JUnit 3 (junit.framework.TestCase)-based, and mixing in the JUnit 5
+    // Platform launcher makes IntelliJ's auto-registered JUnit5TestSessionListener
+    // fail to instantiate. We therefore run the whole recorder suite on JUnit 4 —
+    // matching the official IntelliJ Platform Gradle Plugin code samples — and do NOT
+    // call useJUnitPlatform(). Pure (non-platform) tests use org.junit.Test too.
+    testImplementation("junit:junit:4.13.2")
 }
 
 intellijPlatform {
@@ -33,10 +37,6 @@ intellijPlatform {
             sinceBuild = providers.gradleProperty("pluginSinceBuild")
         }
     }
-}
-
-tasks.test {
-    useJUnitPlatform()
 }
 
 // Mirror core/: only JDK 25 is installed and toolchain auto-provisioning is not
