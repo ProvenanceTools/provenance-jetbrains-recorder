@@ -8,6 +8,7 @@ plugins {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("io.github.erdtman:java-json-canonicalization:1.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.81")
 
     testImplementation(platform("org.junit:junit-bom:5.11.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
