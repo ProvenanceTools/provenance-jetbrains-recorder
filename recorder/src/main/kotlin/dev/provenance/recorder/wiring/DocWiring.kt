@@ -15,6 +15,7 @@ import dev.provenance.core.DocChangePayload
 import dev.provenance.core.DocClosePayload
 import dev.provenance.core.DocOpenPayload
 import dev.provenance.core.DocSavePayload
+import dev.provenance.core.PastePayload
 import dev.provenance.core.Position
 import dev.provenance.core.Range
 import dev.provenance.core.Sha256
@@ -23,6 +24,9 @@ import dev.provenance.recorder.events.buildDocChangePayload
 import dev.provenance.recorder.events.buildDocClosePayload
 import dev.provenance.recorder.events.buildDocOpenPayload
 import dev.provenance.recorder.events.buildDocSavePayload
+import dev.provenance.recorder.paste.PasteCorrelator
+import dev.provenance.recorder.paste.PasteDecision
+import dev.provenance.recorder.paste.toPastePayload
 import java.nio.file.Path
 import java.util.WeakHashMap
 
@@ -60,6 +64,15 @@ class DocWiring(
     private val manifestNames: Set<String> = MANIFEST_FILE_NAMES_FILTER,
     private val localFsOf: (VirtualFile) -> Boolean = { it.isInLocalFileSystem },
     private val nioPathOf: (VirtualFile) -> Path? = { runCatching { it.toNioPath() }.getOrNull() },
+    // Paste detection (Plan 6). When [pasteCorrelator] is null the listener behaves
+    // exactly as Plan 4 shipped (every change → doc.change source="typed"). When present,
+    // each change is classified: a paste-shaped single insert emits a `paste` event via
+    // [emitPaste]; everything else emits doc.change with the classified source
+    // (typed/paste_likely/paste_confirmed). Folding this INTO Plan 4's sole emitting
+    // DocumentListener — rather than adding a second one — is what keeps doc.change from
+    // being double-logged (see the Plan 6 reconciliation note).
+    private val emitPaste: (PastePayload) -> Unit = {},
+    private val pasteCorrelator: PasteCorrelator? = null,
 ) {
     private val pending = WeakHashMap<Document, Range>()
     private val seenPaths = mutableSetOf<String>()
@@ -82,7 +95,18 @@ class DocWiring(
                         range.end.line, range.end.character,
                         event.newFragment.toString(),
                     )
-                    emitDocChange(buildDocChangePayload(relativePath(vf), delta))
+                    val path = relativePath(vf)
+                    val correlator = pasteCorrelator
+                    if (correlator == null) {
+                        emitDocChange(buildDocChangePayload(path, delta))
+                        return
+                    }
+                    when (val decision = correlator.onDocChange(listOf(delta))) {
+                        is PasteDecision.EmitPaste ->
+                            emitPaste(decision.fields.toPastePayload(path, decision.range))
+                        is PasteDecision.EmitDocChange ->
+                            emitDocChange(buildDocChangePayload(path, delta, decision.source))
+                    }
                 }
             },
             parentDisposable,

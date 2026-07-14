@@ -17,5 +17,8 @@
             id="ProvenanceRecordingWidget"
             implementation="dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory"
             order="first"/>
+        <editorActionHandler
+            action="EditorPaste"
+            implementationClass="dev.provenance.recorder.wiring.paste.PasteInterceptHandlerFactory"/>
     </extensions>
 </idea-plugin>

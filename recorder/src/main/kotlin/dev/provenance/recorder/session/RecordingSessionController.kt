@@ -3,6 +3,7 @@ package dev.provenance.recorder.session
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationActivationListener
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
@@ -18,8 +19,11 @@ import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.io.MetaWriter
 import dev.provenance.recorder.io.SessionWriter
+import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.wiring.DocWiring
 import dev.provenance.recorder.wiring.Heartbeat
+import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
+import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import com.intellij.openapi.vfs.VirtualFile
 import java.nio.file.Files
 import java.nio.file.Path
@@ -78,6 +82,8 @@ class RecordingSessionController(
     private val meta: MetaWriter
     private val host: SessionHost
     private val heartbeat: Heartbeat
+    private val pasteTicker: PasteAnomalyTicker
+    private val pasteState: RecorderPasteState
     private var ended = false
 
     init {
@@ -135,6 +141,23 @@ class RecordingSessionController(
             scheduler = scheduler,
         )
 
+        // Step 7b: three-signal paste detection (Plan 6). The correlator is shared
+        // between the EditorPaste action wrapper (signal 2, via RecorderPasteState,
+        // resolved per keystroke by the plugin.xml-registered PasteInterceptHandlerFactory)
+        // and DocWiring's classifier (signal 1) + clipboard similarity (signal 3). Publishing
+        // it into the project-scoped RecorderPasteState is what activates signal 2; clearing
+        // it on endSession() is the privacy gate closing.
+        val pasteCorrelator = PasteCorrelator(getNow = { clock.now() })
+        pasteState = project.service<RecorderPasteState>()
+        pasteState.correlator = pasteCorrelator
+
+        pasteTicker = PasteAnomalyTicker(
+            correlator = pasteCorrelator,
+            emit = { record("paste.anomaly", it.toJsonObject()) },
+            scheduler = scheduler,
+        )
+        Disposer.register(parentDisposable, pasteTicker)
+
         DocWiring(
             project = project,
             provenanceDir = activated.provenanceDir,
@@ -149,6 +172,11 @@ class RecordingSessionController(
             parentDisposable = parentDisposable,
             localFsOf = localFsOf,
             nioPathOf = nioPathOf,
+            emitPaste = {
+                heartbeat.recordActivity()
+                record("paste", it.toJsonObject())
+            },
+            pasteCorrelator = pasteCorrelator,
         )
 
         // Ensure a graceful end if the parent is disposed without an explicit endSession.
@@ -171,6 +199,10 @@ class RecordingSessionController(
         try {
             host.emit("session.end", SessionEndPayload(reason).toJsonObject())
         } finally {
+            // Close the paste privacy gate first so a late EditorPaste during teardown
+            // resolves a null correlator (pure passthrough), not a disposed session.
+            pasteState.correlator = null
+            pasteTicker.dispose()
             heartbeat.dispose()
             writer.dispose()
             meta.dispose()
