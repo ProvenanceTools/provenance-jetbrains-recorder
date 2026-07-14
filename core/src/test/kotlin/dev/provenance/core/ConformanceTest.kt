@@ -102,4 +102,20 @@ class ConformanceTest {
         assertEquals(v["sig"]!!.jsonPrimitive.content, cp.sig)
         assertTrue(verifyCheckpoint(cp, v["session_pubkey_hex"]!!.jsonPrimitive.content))
     }
+
+    @Test
+    fun `golden bundle manifest conforms to the shared bundle-manifest shape`() {
+        // A complete sealed bundle built by analysis-core's test-support builder and exported
+        // as a sidecar. core/ has no zip loader yet, so the round-trip here validates the
+        // sealed BundleManifest against the shared shape rules; full zip parsing is future work.
+        val sidecar = vector("golden-bundle.json")
+        val manifest = sidecar["manifest"]!!.jsonObject
+        val result = validateBundleManifestShape(manifest.toString())
+        assertTrue(result.isSuccess, "golden bundle manifest should validate: ${result.exceptionOrNull()?.message}")
+
+        // The golden zip ships alongside for that future round-trip; assert it is present and
+        // non-empty so it can't silently vanish from the resources.
+        val zip = this::class.java.getResourceAsStream("/conformance/golden-bundle.zip")!!.readBytes()
+        assertTrue(zip.isNotEmpty())
+    }
 }

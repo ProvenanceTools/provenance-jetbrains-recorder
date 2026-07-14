@@ -167,9 +167,17 @@ headlessly — they need a running windowed IDE (`:recorder:runIde`) — and are
 ### Conformance
 
 `core/`'s output is verified byte-for-byte against Provenance's `log-core` via
-pinned vectors in `core/src/test/resources/conformance/vectors.json`. A failing
-conformance test means the format has drifted — fix the implementation, never
-the vectors.
+vectors in `core/src/test/resources/conformance/` (plus a golden sealed bundle).
+These are **generated, not hand-authored** — regenerate them from the monorepo:
+
+```sh
+cd ../provenance
+node --experimental-strip-types tools/export-conformance-vectors.ts \
+  --out ../provenance-jetbrains-recorder/core/src/test/resources/conformance
+```
+
+Never hand-edit a vector file. A failing conformance test after regenerating means
+the format has drifted — fix `core/`'s implementation, never the vectors.
 
 ## License
 
