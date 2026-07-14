@@ -1,6 +1,8 @@
 package dev.provenance.core
 
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 /**
  * Clock abstraction for testable, deterministic time handling.
@@ -16,6 +18,20 @@ interface Clock {
 }
 
 /**
+ * Format an Instant EXACTLY like JavaScript's Date.toISOString(): always
+ * `yyyy-MM-ddThh:mm:ss.SSSZ` with a fixed 3-digit millisecond field and a literal
+ * 'Z'. This fixed width is load-bearing: the analyzer's monotonic-wall check
+ * (PRD §5.4 check 6) compares `wall` strings LEXICOGRAPHICALLY, so a
+ * variable-precision format (Instant.toString() drops millis when zero) would
+ * sort "…00Z" after "…00.010Z" and read as a wall regression. Format parity with
+ * log-core's `new Date().toISOString()` is required, not cosmetic.
+ */
+internal val ISO_MILLIS_UTC: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
+
+internal fun formatWall(instant: Instant): String = ISO_MILLIS_UTC.format(instant)
+
+/**
  * Production clock. now() uses System.nanoTime()/1_000_000 — the JVM's monotonic
  * clock (the analogue of performance.now()); do NOT use currentTimeMillis() here,
  * it is wall-clock and can jump. wall() = Instant.now().toString() (ISO-8601 UTC).
@@ -23,7 +39,7 @@ interface Clock {
 class SystemClock : Clock {
     override fun now(): Long = System.nanoTime() / 1_000_000
 
-    override fun wall(): String = Instant.now().toString()
+    override fun wall(): String = formatWall(Instant.now())
 }
 
 /**
@@ -39,7 +55,7 @@ class FixedClock(
 
     override fun now(): Long = nowMs
 
-    override fun wall(): String = wallInstant.toString()
+    override fun wall(): String = formatWall(wallInstant)
 
     /** Advance both the monotonic clock and the wall clock by [ms] milliseconds. */
     fun advance(ms: Long) {
