@@ -1,200 +1,123 @@
-# Provenance Recorder for JetBrains
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/exports/lockup-dark.png" />
+  <img alt="Provenance for JetBrains IDEs" src="brand/exports/lockup-light.png" width="440" />
+</picture>
 
-A JetBrains IDE plugin that records a tamper-evident `.provenance` log while a
-student works on a course assignment. It is the JetBrains counterpart to the
-[Provenance](https://github.com/) VS Code recorder: it produces a sealed
-submission bundle in the **same format**, so the same Provenance analyzer and
-server ingest and validate it regardless of which editor produced it. It ships
-under the same **Provenance Recorder** name as the VS Code extension.
+**Provenance Recorder for JetBrains IDEs** records a tamper-evident log of how a student's
+code came into existence, and seals it into a signed submission bundle.
 
-> **Status:** built and working, not yet Marketplace-published. `core/` (the
-> format port) and the full `recorder/` wiring — activation, manifest
-> verification, document/paste/VFS/terminal/git event capture, external-change
-> detection, the hash chain, signed checkpoints, chain recovery, bundle seal,
-> and disk-full degraded mode — have all landed. `core:test` and
-> `recorder:test` are green (105 and 235 tests respectively), and sealed
-> bundles produced by the plugin pass all 8 of the Provenance
-> analysis-core validation checks end-to-end. A sideloadable
-> plugin `.zip` builds today via `./gradlew :recorder:buildPlugin`. What
-> remains is distribution: a
-> signed Marketplace release needs operator secrets (Marketplace token,
-> code-signing certificate, the real course public key) that only a human can
-> supply — see "Production release" below.
+It is the JetBrains counterpart to the
+[Provenance](https://github.com/itsgeagle/provenance) VS Code recorder, and ships under the
+same **Provenance Recorder** name. Both produce a bundle in the **same format**, so the
+Provenance analyzer and server ingest and validate a submission regardless of which editor
+produced it — they care only that it validates: hash chain intact, manifest signature
+verifies, `extension_hash` on the allowlist.
 
-## What it does
+This is a **port of the wiring, not a new product**. The event format, hash chain, JCS
+canonicalization, ed25519 signing, bundle and manifest shapes, signed checkpoints, and
+per-session keypair are all defined by the Provenance monorepo's `log-core` package. This
+repo reimplements that format in Kotlin and re-derives the editor-specific signal detection
+against the IntelliJ Platform SDK.
 
-While active on an activated assignment workspace, the plugin records a
-timestamped, hash-chained log of editing activity — document changes, file
-open/save/close, pastes, edits made outside the IDE, and session metadata — and
-seals it into a signed submission bundle at the end. The log is append-only and
-tamper-evident; casual edits to it are detectable.
+## How it works
 
-The plugin is **offline**: it makes no network calls during a session. It
-activates **only** on a workspace containing a valid, course-signed
-`.provenance-manifest`, and records only within that workspace.
+The plugin activates only on a workspace containing a valid, course-signed
+`.provenance-manifest`. From then on it records a timestamped, hash-chained log of editing
+activity, buffered and written atomically, and seals it into a signed bundle at the end of
+the session.
 
-## Relationship to Provenance
+The log format is a **fixed contract owned by the Provenance monorepo**, not by this repo.
+Parity is not assumed — it is tested. `core/`'s output is verified byte-for-byte against
+`log-core` using golden vectors exported from the monorepo, so both editors' bundles stay
+compatible down to the byte. If a conformance test fails, the implementation is wrong; the
+vectors are never edited to make it pass.
 
-The log format — event envelope, hash chain, JCS canonicalization, ed25519
-signing, and bundle/manifest shapes — is defined by the Provenance monorepo's
-`log-core` package. This repo is an independent Kotlin implementation of that
-same format, verified against golden conformance vectors so the two editors'
-output stays byte-for-byte compatible. The format is a fixed contract this repo
-implements rather than redesigns. See `docs/design.md` for the full design.
+```
+core/       pure-Kotlin port of the log format — no IntelliJ Platform imports
+recorder/   the plugin: IntelliJ wiring around core/
+```
+
+## What it records
+
+- **Document changes.** File open, save, close, and every edit, recorded from IntelliJ's
+  document-change firehose with per-event handler work kept minimal and the writer buffered.
+- **Pastes.** Detected by combining three signals — action interception (`$Paste` via
+  `AnActionListener`), the resulting document change, and clipboard content
+  (`CopyPasteManager`). IntelliJ has no single paste-command surface, so no one signal is
+  sufficient.
+- **External changes.** Edits made to watched files *outside* the IDE, detected via
+  `BulkFileListener` against an in-memory expected-content model. Only files listed in the
+  manifest's `files_under_review` get that model.
+- **Selection and caret movement.**
+- **Terminal and git activity**, where the host IDE exposes it. Git4Idea may be absent in
+  some IDEs or configurations; missing git integration is a degraded signal, not a crash.
+- **Session metadata and signed checkpoints** throughout the session, so a truncated log
+  still validates up to its last checkpoint.
+
+## Privacy & security
+
+- **Offline.** The plugin makes no network calls during a session.
+- **Scoped to the assignment workspace.** It activates only against a `.provenance-manifest`
+  that verifies with the course public key embedded at build time. Events for files outside
+  the workspace, and for non-`file` VFS schemes, are dropped. It never records a student's
+  user-level config or out-of-workspace scratch files.
+- **Append-only.** There is no update or delete on a log, anywhere. Exactly one chaining
+  function; every log-producing path goes through it.
+- **Signed at seal.** Each session gets its own ed25519 keypair, and the private key is
+  encrypted at rest under a key derived from the manifest signature. `manifest.json` and
+  `manifest.sig` are never modified after seal.
+- **Atomic writes.** Write-temp-then-rename. The live log file is never partially written.
+
+## Requirements
+
+- **JDK 17.**
+- **A JetBrains IDE on build 261 or newer** (2026.1+). The plugin targets the platform core
+  (`com.intellij.modules.platform`), so one artifact runs across JetBrains IDEs — and only
+  platform-common APIs are available to it.
+- **A course-signed `.provenance-manifest`** at the workspace root. Without one the plugin
+  stays inactive by design.
 
 ## Install
 
-**Sideload (available now).**
+**Sideload.** Available now:
 
 ```sh
 ./gradlew :recorder:buildPlugin
 ```
 
-Then in the IDE: **Settings → Plugins → gear icon → Install Plugin from
-Disk…**, and pick the `.zip` from `recorder/build/distributions/`. This is the
-dev-key build — see "Production release" below for what changes in a signed
-Marketplace release.
+Then in the IDE: **Settings → Plugins → gear icon → Install Plugin from Disk…**, and pick
+the `.zip` from `recorder/build/distributions/`. This is the **dev-key** build — it trusts
+manifests signed by the checked-in development key, not a real course key.
 
-**JetBrains Marketplace (coming).** Not yet published. The Gradle wiring for a
-signed release (`buildProd`/`publishProd`) is in place; only the operator
-secrets are missing. See "Production release" below.
+**JetBrains Marketplace.** Not yet published. The Gradle wiring for a signed release
+(`buildProd`/`publishProd`) is in place; what's missing is the operator secrets — a
+Marketplace token, a code-signing certificate, and the real course public key. See
+[Releasing](#releasing).
 
 ## Building
 
-Kotlin + Gradle, using the IntelliJ Platform Gradle Plugin.
+Kotlin and Gradle, using the IntelliJ Platform Gradle Plugin.
 
 ```sh
-./gradlew :recorder:buildPlugin   # produce the sideload-able plugin .zip
-./gradlew :recorder:runIde        # launch a sandbox IDE with the plugin loaded
-./gradlew :recorder:test          # recorder unit + platform-fixture tests
-./gradlew :core:test              # format unit + conformance tests
+git clone https://github.com/itsgeagle/provenance-jetbrains-recorder
+cd provenance-jetbrains-recorder
+
+./gradlew :core:test         # format unit + conformance tests
+./gradlew :recorder:test     # recorder unit + platform-fixture tests
+./gradlew :recorder:runIde   # sandbox IDE with the plugin loaded, for manual testing
 ```
 
-See "Install" above for how to load the built plugin into an IDE, and
-"Production release" below for the signed Marketplace build.
+Wiring tests use JUnit with IntelliJ test fixtures (`BasePlatformTestCase` /
+`LightPlatformTestCase`), mocking the platform at the seam. The event→log-entry transform is
+tested as a pure function, separately from the platform wiring. Clocks are injected, so no
+test asserts against wall-clock time.
 
-## Production release (JetBrains Marketplace)
+## Conformance
 
-Marketplace is the intended primary distribution channel once a course is
-ready to publish; the sideload `.zip` above is for early testing and
-self-hosted course builds in the meantime. The production build embeds the
-**real** course public key (so
-the plugin trusts only manifests signed by the course offline key) and ships a
-**signed** artifact. Every step that needs a real secret or is a one-way decision
-is marked — **an agent cannot run those; a human operator must.** The Gradle wiring
-is in place (`buildProd`/`publishProd`, `signPlugin`/`verifyPlugin`/`publishPlugin`);
-only the secrets are missing.
-
-### `extension_hash` (needed for the analyzer allowlist)
-
-Every submission's `extension_hash` must be on the analyzer allowlist
-(`packages/analysis-core/src/heuristics/config/known-good-extension-hashes.json` in
-the monorepo) or it is flagged. Compute it from the built distribution:
-
-```sh
-./gradlew :recorder:computeExtensionHash   # → recorder/build/extension-hash.txt (64-hex)
-```
-
-It is a reproducible SHA-256 over the *extracted* plugin file tree (sorted
-`<relpath>\0<bytes>`, the same algorithm the seal command uses at runtime), not a
-hash of the `.zip` bytes. The **dev** build (checked-in dev key, unsigned sideload)
-and the **prod** build (real course key, signed) produce **different** hashes —
-embedding a different course key changes compiled bytes. Add the value for whichever
-build students actually install. The dev-build hash is already in the allowlist for
-local/testing installs; a real release needs its own entry (see below).
-
-### One-time setup (REQUIRES OPERATOR SECRETS)
-
-1. **Marketplace token.** Create/confirm a JetBrains Account and generate a Personal
-   Access Token at <https://plugins.jetbrains.com/author/me/tokens>. Save it as
-   `PUBLISH_TOKEN` in your CI secret store — it is shown only once.
-   (<https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html>)
-2. **Code-signing certificate + key**
-   (<https://plugins.jetbrains.com/docs/intellij/plugin-signing.html>):
-   ```sh
-   openssl genpkey -aes-256-cbc -algorithm RSA -out private_encrypted.pem -pkeyopt rsa_keygen_bits:4096
-   openssl rsa -in private_encrypted.pem -out private.pem
-   openssl req -key private.pem -new -x509 -days 365 -out chain.crt
-   ```
-   Store `chain.crt` contents as `CERTIFICATE_CHAIN`, `private.pem` contents as
-   `PRIVATE_KEY`, and the passphrase as `PRIVATE_KEY_PASSWORD`. Never commit these.
-3. **Plugin id.** The reverse-DNS id declared in `plugin.xml` is a permanent
-   identity once published — Marketplace and auto-update channels key off it
-   forever. Confirm it with the course before the first publish.
-4. **The first publication must be uploaded manually** through the Marketplace web UI
-   (per JetBrains docs); `publishPlugin` automation only works for subsequent versions
-   of an already-registered plugin. Build the signed zip
-   (`./gradlew :recorder:buildProd`, output under `recorder/build/distributions/`) and
-   upload it by hand the first time.
-
-### Every release (REQUIRES OPERATOR SECRETS)
-
-```sh
-export PROVENANCE_COURSE_PUBLIC_KEY_HEX=<64-hex production course public key>
-export CERTIFICATE_CHAIN="$(cat chain.crt)"
-export PRIVATE_KEY="$(cat private.pem)"
-export PRIVATE_KEY_PASSWORD=<passphrase>
-export PUBLISH_TOKEN=<Marketplace personal access token>
-
-# Bump `pluginVersion` in gradle.properties first — Marketplace rejects duplicates.
-./gradlew :recorder:buildProd     # embed key → build → sign → hash → revert key
-./gradlew :recorder:publishProd   # buildProd + verifyPlugin, then publishPlugin
-```
-
-`buildProd` always reverts `CoursePublicKey.kt` to the dev key afterward (even on
-failure), so the real key is never left in the working tree. After a release, copy
-`recorder/build/extension-hash.txt` into the monorepo allowlist:
-
-```sh
-cd ../provenance
-node scripts/update-extension-hash-allowlist.mjs --hash <hex-from-extension-hash.txt>
-```
-
-Every release needs its own allowlist entry, or its submissions get flagged.
-
-## External-change detection — manual verification checklist
-
-External-change detection (PRD §4.5) is the port's highest-risk subsystem. Its
-direction, dedup (`isFromSave`), payload shape, create/delete/reload paths, and the
-feeder/reload interaction are all covered by the headless `:recorder:test` suite
-against a real `LocalFileSystem` temp dir. The items below **cannot** be exercised
-headlessly — they need a running windowed IDE (`:recorder:runIde`) — and are
-**unchecked until run manually at least once** on the IDE versions the plugin targets:
-
-- [ ] **Frame-activation refresh fires for files changed while unfocused.** In a
-  `runIde` sandbox with a manifest-activated project: alt-tab away, edit a watched file
-  in an external editor (or `echo >>` from a terminal), alt-tab back, and confirm an
-  `fs.external_change` appears in the session log within a few seconds — no manual
-  "Reload from disk" needed.
-- [ ] **Native watcher while the IDE stays focused.** Edit a watched file externally
-  (second-monitor terminal, or Claude Code in an integrated terminal panel) *without*
-  switching focus; confirm the native OS file watcher alone delivers the event, since
-  students may never alt-tab away.
-- [ ] **Latency.** Time the gap between an external write and the event's `wall`
-  timestamp, both same-window-terminal and alt-tab; confirm it is not multi-second
-  (would look suspicious in replay).
-- [ ] **"Synchronize files on frame activation" disabled.** Confirm the native watcher
-  still covers detection and it does not silently degrade to "only on next IDE restart".
-- [ ] **`isFromSave()` tags every real editor save.** Confirm a normal Ctrl+S in the
-  running IDE produces VFS events with `isFromSave() == true` for the saved file across
-  target IDE versions (the `SavingRequestor` opt-in is an implementation detail, not a
-  version-pinned contract; `ExternalChangeTimingTest` will catch a regression when
-  next run against a newer platform).
-- [ ] **Network/container filesystems** (note only): if course infra ever runs student
-  IDEs against a network-mounted or containerized FS, confirm the native watcher works
-  there — a known IntelliJ weak spot, unrelated to this plugin's code.
-
-## Documentation
-
-- `docs/design.md` — the approved architecture and design.
-- `CLAUDE.md` — conventions and standing instructions for development.
-- The recorder product spec (`docs/prd.md`) lives in the Provenance monorepo.
-
-### Conformance
-
-`core/`'s output is verified byte-for-byte against Provenance's `log-core` via
-vectors in `core/src/test/resources/conformance/` (plus a golden sealed bundle).
-These are generated, not hand-authored — regenerate them from the monorepo:
+Cross-language format parity is the non-negotiable gate. `core/`'s output is checked
+byte-for-byte against `log-core` using the vectors in
+`core/src/test/resources/conformance/`, plus a golden sealed bundle. These are generated,
+not hand-authored — regenerate them from the monorepo:
 
 ```sh
 cd ../provenance
@@ -202,19 +125,96 @@ node --experimental-strip-types tools/export-conformance-vectors.ts \
   --out ../provenance-jetbrains-recorder/core/src/test/resources/conformance
 ```
 
-Never hand-edit a vector file. A failing conformance test after regenerating means
-the format has drifted — fix `core/`'s implementation, never the vectors.
+**Never hand-edit a vector file.** A failing conformance test after regenerating means the
+implementation has drifted from the format — fix `core/`, never the vectors.
 
-## Trademarks
+## Repo layout
 
-JetBrains®, IntelliJ IDEA®, and the IntelliJ Platform are trademarks or
-registered trademarks of JetBrains s.r.o. This plugin is an independent
-project and is not affiliated with or endorsed by JetBrains s.r.o.
+```
+provenance-jetbrains-recorder/
+├── core/                                   # pure-Kotlin port of the log format
+│   └── src/test/resources/conformance/     # golden vectors exported from log-core
+├── recorder/                               # the plugin: IntelliJ wiring around core/
+├── docs/
+│   ├── design.md                           # the approved architecture and design
+│   ├── releasing.md                        # signed Marketplace release runbook
+│   ├── manual-verification.md              # checks that need a windowed IDE
+│   └── plans/                              # implementation plans
+├── CLAUDE.md                               # repo conventions
+├── gradle.properties                       # plugin version, platform version, since-build
+└── settings.gradle.kts                     # :core, :recorder
+```
+
+## Architecture rules (enforced)
+
+- **`core/` has zero IntelliJ Platform imports.** It knows about events, hashing,
+  canonicalization, signing, and bundles — nothing about editors. This mirrors `log-core`'s
+  zero-editor-dependency rule and keeps the conformance surface testable in isolation.
+- **`recorder/` depends on `core/` and the IntelliJ Platform SDK.** Activation, listeners,
+  paste detection, the session host, the status-bar widget, the seal command.
+- **The log format is a contract, not a design space.** It is pinned by test vectors in
+  `log-core` and by the golden vectors here. A change to accommodate JetBrains would be a
+  cross-repo, signed-contract decision owned by the monorepo — never made unilaterally here.
+- **JCS canonicalization uses `erdtman/java-json-canonicalization`**, the JVM twin of the
+  `canonicalize` npm library `log-core` uses. Never hand-rolled: whitespace, key ordering,
+  and number representation all matter.
+- **No background task without an explicit shutdown path.** Every listener, watcher, timer,
+  and coroutine has a `dispose()` / plugin-teardown hook.
+
+## Common commands
+
+| Command                                  | What it does                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `./gradlew :core:test`                   | Format unit + conformance tests.                                    |
+| `./gradlew :recorder:test`               | Recorder unit + platform-fixture tests.                             |
+| `./gradlew :recorder:buildPlugin`        | Build the sideloadable plugin `.zip`.                               |
+| `./gradlew :recorder:runIde`             | Launch a sandbox IDE with the plugin loaded.                        |
+| `./gradlew :recorder:computeExtensionHash` | Reproducible SHA-256 of the built distribution, for the allowlist. |
+| `./gradlew :recorder:buildProd`          | Embed course key → build → sign → hash → revert. Needs secrets.     |
+| `./gradlew :recorder:publishProd`        | `buildProd` + `verifyPlugin`, then publish. Needs secrets.          |
+
+## Releasing
+
+Cutting a signed Marketplace release, computing the `extension_hash` for the analyzer
+allowlist, and the operator secrets each step needs are documented in
+[`docs/releasing.md`](docs/releasing.md).
+
+Every release needs its own allowlist entry in the monorepo, or its submissions get flagged
+— the dev build and a production build hash differently, because embedding a different
+course key changes the compiled bytes.
+
+## Documentation
+
+| Document                                                     | What's in it                                     |
+| ------------------------------------------------------------ | ------------------------------------------------ |
+| [`docs/design.md`](docs/design.md)                           | The approved architecture and design.            |
+| [`docs/releasing.md`](docs/releasing.md)                     | Signed Marketplace release runbook.              |
+| [`docs/manual-verification.md`](docs/manual-verification.md) | External-change checks that need a windowed IDE. |
+| [`CLAUDE.md`](CLAUDE.md)                                     | Repo conventions and architecture rules.         |
+
+The recorder product spec (`docs/prd.md`) lives in the Provenance monorepo.
 
 ## License
 
-See [`LICENSE`](LICENSE). This plugin bundles a small number of third-party
-libraries in its distributed `.zip` (Bouncy Castle, the Kotlin standard
-library, kotlinx.serialization, JetBrains `annotations`, and
-`java-json-canonicalization`); their licenses and required notices are
-reproduced in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE).
+
+The distributed plugin `.zip` bundles a number of third-party open-source libraries (Bouncy
+Castle, the Kotlin standard library, kotlinx.serialization, JetBrains `annotations`, and
+`java-json-canonicalization`). Their licenses and required notices are reproduced in
+[`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
+
+## Trademarks
+
+JetBrains®, IntelliJ IDEA®, and the IntelliJ Platform are trademarks or registered
+trademarks of JetBrains s.r.o. This plugin is an independent project and is not affiliated
+with, endorsed by, or sponsored by JetBrains s.r.o.
+
+## Contributing
+
+Contributor conventions and architecture rules live in [`CLAUDE.md`](CLAUDE.md); the design
+is in [`docs/design.md`](docs/design.md). Read `CLAUDE.md` before making changes. The rule
+that matters most: **this repo implements the Provenance log format, it does not author
+it.** The format is pinned by conformance vectors, and loosening an assertion or editing a
+vector to make a test pass is not a coding decision — if the format appears to need a
+change, stop and ask.
