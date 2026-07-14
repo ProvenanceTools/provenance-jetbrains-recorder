@@ -11,9 +11,9 @@ import kotlinx.serialization.json.put
  * events.ts. Lives in core/ (not recorder/) because the payload shape is part of
  * the format contract, not editor-specific — mirrors where log-core places it.
  *
- * Only the kinds Plan 4 emits are ported: session.start/heartbeat/end,
- * doc.open/change/save/close. Later plans add paste, selection.change,
- * focus.change, fs.external_change, terminal.*, git.event, ext.*, recorder.* here.
+ * Plan 4 emits session.start/heartbeat/end, doc.open/change/save/close. Plan 5
+ * adds fs.external_change (below). Later plans add paste, selection.change,
+ * focus.change, terminal.*, git.event, ext.*, recorder.* here.
  */
 
 data class Position(val line: Long, val character: Long)
@@ -142,4 +142,43 @@ data class DocClosePayload(val path: String)
 
 fun DocClosePayload.toJsonObject(): JsonObject = buildJsonObject {
     put("path", path)
+}
+
+/**
+ * fs.external_change payload (recorder PRD §4.5). Mirrors log-core's
+ * FsExternalChangePayload (events.ts:137). Field names are already snake_case on
+ * the wire — no camel→snake remap beyond the Kotlin property names.
+ *
+ * [oldHash]/[newHash] direction is fixed: old = the expected-content model (what the
+ * editor believes the file held), new = on-disk reality at detection time. See
+ * dev.provenance.recorder.events.classifySavedContent, which enforces it.
+ *
+ * [explanation] ("formatter"/"git") is threaded through as an always-null optional in
+ * Plan 5; Plan 7's terminal/git wiring populates it.
+ */
+data class FsExternalChangePayload(
+    val path: String,
+    val oldHash: String,
+    val newHash: String,
+    val diffSize: Int,
+    val explanation: String? = null,
+    val operation: String? = null,
+    val newContentSize: Int? = null,
+    val newContent: String? = null,
+    val newContentHead: String? = null,
+    val newContentTail: String? = null,
+)
+
+fun FsExternalChangePayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("path", path)
+    put("old_hash", oldHash)
+    put("new_hash", newHash)
+    put("diff_size", diffSize)
+    // Optional fields (events.ts:137): omitted when null, never emitted as JSON null.
+    if (explanation != null) put("explanation", explanation)
+    if (operation != null) put("operation", operation)
+    if (newContentSize != null) put("new_content_size", newContentSize)
+    if (newContent != null) put("new_content", newContent)
+    if (newContentHead != null) put("new_content_head", newContentHead)
+    if (newContentTail != null) put("new_content_tail", newContentTail)
 }

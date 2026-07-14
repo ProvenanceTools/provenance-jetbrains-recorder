@@ -120,4 +120,46 @@ class EventsTest {
         val close = DocClosePayload(path = "hw.py").toJsonObject()
         assertEquals("hw.py", close["path"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun `fs external_change payload emits snake_case keys and omits null optionals`() {
+        val p = FsExternalChangePayload(
+            path = "hw.py",
+            oldHash = "a".repeat(64),
+            newHash = "b".repeat(64),
+            diffSize = 7,
+        )
+        val obj = p.toJsonObject()
+        assertEquals("hw.py", obj["path"]!!.jsonPrimitive.content)
+        assertEquals("a".repeat(64), obj["old_hash"]!!.jsonPrimitive.content)
+        assertEquals("b".repeat(64), obj["new_hash"]!!.jsonPrimitive.content)
+        assertEquals(7L, obj["diff_size"]!!.jsonPrimitive.long)
+        // Null optionals must be absent, not JSON null.
+        assertFalse(obj.containsKey("explanation"))
+        assertFalse(obj.containsKey("operation"))
+        assertFalse(obj.containsKey("new_content_size"))
+        assertFalse(obj.containsKey("new_content"))
+        assertFalse(obj.containsKey("new_content_head"))
+        assertFalse(obj.containsKey("new_content_tail"))
+    }
+
+    @Test
+    fun `fs external_change payload emits all optional fields when present`() {
+        val p = FsExternalChangePayload(
+            path = "big.txt",
+            oldHash = "a".repeat(64),
+            newHash = "b".repeat(64),
+            diffSize = 100,
+            operation = "modify",
+            newContentSize = 5000,
+            newContentHead = "head",
+            newContentTail = "tail",
+        )
+        val obj = p.toJsonObject()
+        assertEquals("modify", obj["operation"]!!.jsonPrimitive.content)
+        assertEquals(5000L, obj["new_content_size"]!!.jsonPrimitive.long)
+        assertEquals("head", obj["new_content_head"]!!.jsonPrimitive.content)
+        assertEquals("tail", obj["new_content_tail"]!!.jsonPrimitive.content)
+        assertFalse(obj.containsKey("new_content"))
+    }
 }
