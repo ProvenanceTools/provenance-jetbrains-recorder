@@ -1,5 +1,5 @@
 <idea-plugin>
-    <id>edu.berkeley.provenance.recorder</id>
+    <id>com.provenance.recorder</id>
     <name>Provenance Recorder</name>
     <vendor email="provenance@example.edu" url="https://example.edu">Provenance</vendor>
 

@@ -71,7 +71,7 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             ideVersion = "2026.1.4",
             platform = "darwin-arm64",
             recorderVersion = "0.1.0",
-            recorderExtensionId = "edu.berkeley.provenance.recorder",
+            recorderExtensionId = "com.provenance.recorder",
             clock = FixedClock(0),
             scheduler = NoopScheduler(),
             localFsOf = { true },

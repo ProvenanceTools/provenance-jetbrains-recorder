@@ -35,7 +35,7 @@ import java.nio.file.Path
 import java.time.Instant
 
 /** The stable reverse-DNS plugin id (see plugin.xml). Marketplace/auto-update key off it. */
-const val RECORDER_PLUGIN_ID = "edu.berkeley.provenance.recorder"
+const val RECORDER_PLUGIN_ID = "com.provenance.recorder"
 
 /**
  * Project-scoped owner of the *one* live recording session (CLAUDE.md: "one controller per
