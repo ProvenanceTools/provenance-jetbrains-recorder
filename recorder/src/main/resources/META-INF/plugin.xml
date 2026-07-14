@@ -22,6 +22,9 @@
     <depends optional="true" config-file="provjet-git.xml">Git4Idea</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Balloon group for disk-full degraded-mode disclosure (PRD §4.8). Resolved by id
+             string directly (DegradedModeNotifier.GROUP_ID); no NotificationGroupManager lookup. -->
+        <notificationGroup id="Provenance Recorder" displayType="BALLOON"/>
         <postStartupActivity implementation="dev.provenance.recorder.activation.RecorderActivationActivity"/>
         <statusBarWidgetFactory
             id="ProvenanceRecordingWidget"
