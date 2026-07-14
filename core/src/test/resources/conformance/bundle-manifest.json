@@ -1,0 +1,37 @@
+{
+  "session_pubkey_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+  "manifest": {
+    "format_version": "1.1",
+    "assignment_id": "hw3",
+    "semester": "fa25",
+    "extension_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sessions": [
+      {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "prev_session_id": null,
+        "slog_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "meta_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "session_id": "22222222-2222-4222-8222-222222222222",
+        "prev_session_id": "11111111-1111-4111-8111-111111111111",
+        "slog_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "meta_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ],
+    "submission_files": [
+      {
+        "path": "src/main.py",
+        "status": "present",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      {
+        "path": "src/missing.py",
+        "status": "missing",
+        "sha256": null
+      }
+    ]
+  },
+  "canonical_json": "{\"assignment_id\":\"hw3\",\"extension_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"format_version\":\"1.1\",\"semester\":\"fa25\",\"sessions\":[{\"meta_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"prev_session_id\":null,\"session_id\":\"11111111-1111-4111-8111-111111111111\",\"slog_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},{\"meta_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"prev_session_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"slog_sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}],\"submission_files\":[{\"path\":\"src/main.py\",\"sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"status\":\"present\"},{\"path\":\"src/missing.py\",\"sha256\":null,\"status\":\"missing\"}]}",
+  "signature_hex": "5357a631e8e7dcbdaebe4fd4107750b7f61621ca1cb0689be9bca1e2a220ada7eb8b4730c5c206536f049ddef06ac74c53f08a0e48952371312240b73923cd03"
+}
