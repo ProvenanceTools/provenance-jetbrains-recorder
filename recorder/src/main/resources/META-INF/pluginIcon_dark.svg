@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-label="Provenance">
+  <defs>
+    <clipPath id="topcross-dark"><rect x="14.375" y="8.75" width="5.938" height="5.938"/></clipPath>
+  </defs>
+  <!-- base ink link -->
+  <rect x="7.813" y="11.563" width="15" height="16.25" rx="5.313" fill="none" stroke="#fafafa" stroke-width="2.813"/>
+  <!-- accent link drawn over (covers ink at both crossings) -->
+  <rect x="17.188" y="11.563" width="15" height="16.25" rx="5.313" fill="none" stroke="#F97316" stroke-width="2.813"/>
+  <!-- redraw ink only at the top crossing so ink weaves over accent there -->
+  <g clip-path="url(#topcross-dark)">
+    <rect x="7.813" y="11.563" width="15" height="16.25" rx="5.313" fill="none" stroke="#fafafa" stroke-width="2.813"/>
+  </g>
+</svg>
