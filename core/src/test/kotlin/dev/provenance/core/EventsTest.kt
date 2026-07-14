@@ -184,6 +184,30 @@ class EventsTest {
     }
 
     @Test
+    fun `ext snapshot builds extensions array with id, version, enabled per entry`() {
+        val obj = ExtSnapshotPayload(
+            listOf(
+                ExtSnapshotEntry("Git4Idea", "261.1", true),
+                ExtSnapshotEntry("org.jetbrains.plugins.terminal", "261.1", false),
+            ),
+        ).toJsonObject()
+        val extensions = obj["extensions"]!!.jsonArray
+        assertEquals(2, extensions.size)
+        val first = extensions[0].jsonObject
+        assertEquals("Git4Idea", first["id"]!!.jsonPrimitive.content)
+        assertEquals("261.1", first["version"]!!.jsonPrimitive.content)
+        assertEquals(true, first["enabled"]!!.jsonPrimitive.boolean)
+        assertEquals(false, extensions[1].jsonObject["enabled"]!!.jsonPrimitive.boolean)
+        assertEquals(setOf("extensions"), obj.keys)
+    }
+
+    @Test
+    fun `ext snapshot with empty list yields empty extensions array`() {
+        val obj = ExtSnapshotPayload(emptyList()).toJsonObject()
+        assertEquals(0, obj["extensions"]!!.jsonArray.size)
+    }
+
+    @Test
     fun `fs external_change payload emits all optional fields when present`() {
         val p = FsExternalChangePayload(
             path = "big.txt",

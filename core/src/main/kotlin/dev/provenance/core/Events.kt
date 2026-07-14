@@ -263,3 +263,35 @@ fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
     put("operation", operation)
     if (commitSha != null) put("commit_sha", commitSha)
 }
+
+/**
+ * One entry in an ext.snapshot's `extensions` array. On the JetBrains host these are
+ * installed IntelliJ *plugins*, but the wire field stays `extensions` (and each entry's
+ * keys stay id/version/enabled) because that is the log-core contract — the analyzer is
+ * host-agnostic. Do NOT rename to "plugins".
+ */
+data class ExtSnapshotEntry(val id: String, val version: String, val enabled: Boolean)
+
+/**
+ * ext.snapshot payload (recorder PRD §4.4). Mirrors log-core's ExtSnapshotPayload
+ * (events.ts:128-130) and the VS Code extension-snapshot.ts. Emitted at session start
+ * and periodically thereafter.
+ */
+data class ExtSnapshotPayload(val extensions: List<ExtSnapshotEntry>)
+
+fun ExtSnapshotPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put(
+        "extensions",
+        buildJsonArray {
+            for (e in extensions) {
+                add(
+                    buildJsonObject {
+                        put("id", e.id)
+                        put("version", e.version)
+                        put("enabled", e.enabled)
+                    },
+                )
+            }
+        },
+    )
+}
