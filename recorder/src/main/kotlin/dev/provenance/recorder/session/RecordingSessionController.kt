@@ -64,6 +64,16 @@ class RecordingSessionController(
 ) {
     val sessionId: String = UUID.randomUUID().toString()
     val slogPath: Path
+
+    /**
+     * The active session's ed25519 private key. Held in memory for the lifetime of the
+     * session so the seal command (Task 11) can sign the bundle manifest with the key
+     * whose public half is recorded in session.start.session_pubkey (the analyzer's
+     * check 1 verifies the manifest signature against exactly that pubkey). Mirrors how
+     * extension.ts hands the active session's sessionPrivkey to sealBundle.
+     */
+    val sessionPrivkey: ByteArray
+
     private val writer: SessionWriter
     private val meta: MetaWriter
     private val host: SessionHost
@@ -74,6 +84,7 @@ class RecordingSessionController(
         Files.createDirectories(activated.provenanceDir)
         // Step 1: session keypair.
         val keypair = generateSessionKeypair()
+        sessionPrivkey = keypair.privateKey
 
         // Step 2: session.start payload.
         val ctx = buildRecorderContext(
@@ -116,7 +127,7 @@ class RecordingSessionController(
             },
         )
         heartbeat = Heartbeat(
-            emit = { host.emit("session.heartbeat", it.toJsonObject()) },
+            emit = { record("session.heartbeat", it.toJsonObject()) },
             clock = clock,
             focusedProvider = { focused.get() },
             getActiveFile = { FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.name },
@@ -128,13 +139,13 @@ class RecordingSessionController(
             project = project,
             provenanceDir = activated.provenanceDir,
             workspaceRoot = activated.workspaceRoot,
-            emitDocOpen = { host.emit("doc.open", it.toJsonObject()) },
+            emitDocOpen = { record("doc.open", it.toJsonObject()) },
             emitDocChange = {
                 heartbeat.recordActivity()
-                host.emit("doc.change", it.toJsonObject())
+                record("doc.change", it.toJsonObject())
             },
-            emitDocSave = { host.emit("doc.save", it.toJsonObject()) },
-            emitDocClose = { host.emit("doc.close", it.toJsonObject()) },
+            emitDocSave = { record("doc.save", it.toJsonObject()) },
+            emitDocClose = { record("doc.close", it.toJsonObject()) },
             parentDisposable = parentDisposable,
             localFsOf = localFsOf,
             nioPathOf = nioPathOf,
@@ -142,6 +153,15 @@ class RecordingSessionController(
 
         // Ensure a graceful end if the parent is disposed without an explicit endSession.
         Disposer.register(parentDisposable) { endSession("dispose") }
+    }
+
+    /**
+     * Route a wiring-sourced event to the session host, unless the session has already
+     * ended. After endSession() the writer is disposed; late events (e.g. a doc.close
+     * fired during editor/fixture teardown) must be dropped, not appended.
+     */
+    private fun record(kind: String, data: kotlinx.serialization.json.JsonObject) {
+        if (!ended) host.emit(kind, data)
     }
 
     /** Emit session.end, flush + dispose the writer, dispose the meta + heartbeat. Idempotent. */
