@@ -228,6 +228,14 @@ class EventsTest {
     }
 
     @Test
+    fun `ext activate payload emits id and version`() {
+        val obj = ExtActivatePayload(id = "com.example.copilot", version = "1.2.3").toJsonObject()
+        assertEquals("com.example.copilot", obj["id"]!!.jsonPrimitive.content)
+        assertEquals("1.2.3", obj["version"]!!.jsonPrimitive.content)
+        assertEquals(setOf("id", "version"), obj.keys)
+    }
+
+    @Test
     fun `clock skew payload emits delta_ms`() {
         val obj = ClockSkewPayload(deltaMs = -750).toJsonObject()
         assertEquals(-750L, obj["delta_ms"]!!.jsonPrimitive.long)

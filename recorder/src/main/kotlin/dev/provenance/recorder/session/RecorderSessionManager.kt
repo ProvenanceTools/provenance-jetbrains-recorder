@@ -1,8 +1,10 @@
 package dev.provenance.recorder.session
 
+import com.intellij.ide.plugins.DynamicPluginListener
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
@@ -25,6 +27,7 @@ import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.startup.recoverPreviousSession
 import dev.provenance.recorder.watch.ExternalChangeCoordinator
 import dev.provenance.recorder.watch.VfsExternalChangeListener
+import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
 import dev.provenance.recorder.wiring.snapshot.PluginSnapshotWiring
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
@@ -139,8 +142,22 @@ class RecorderSessionManager(private val project: Project) : Disposable {
         wireExternalChange(controller, activated, tagger, vfsDispatch, sessionDisposable)
         wireTerminalAndGit(controller, tagger, sessionDisposable)
         wireExtSnapshot(controller, scheduler, sessionDisposable)
+        wireExtActivate(controller, sessionDisposable)
 
         return ActiveSession(controller, activated, sessionDisposable).also { activeSession = it }
+    }
+
+    /**
+     * ext.activate on mid-session plugin loads (recorder PRD §4.2), the JetBrains analogue of the
+     * VS Code recorder's extension-activation poller. Subscribes a [DynamicPluginListener] on the
+     * application message bus, tied to the session Disposable (the privacy gate: the subscription
+     * exists only while a session is live). See [ExtActivateWiring] for the semantic mapping.
+     */
+    private fun wireExtActivate(controller: RecordingSessionController, sessionDisposable: Disposable) {
+        ApplicationManager.getApplication().messageBus.connect(sessionDisposable).subscribe(
+            DynamicPluginListener.TOPIC,
+            ExtActivateWiring.listener { controller.append("ext.activate", it.toJsonObject()) },
+        )
     }
 
     /**

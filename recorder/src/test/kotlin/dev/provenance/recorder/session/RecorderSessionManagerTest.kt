@@ -130,6 +130,27 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertTrue("ext.snapshot must be emitted at session start", kinds(session).contains("ext.snapshot"))
     }
 
+    fun testExtActivateIsWiredToDynamicPluginLoad() {
+        val m = manager()
+        val session = start(m)
+        // Simulate a mid-session plugin load on the application bus the manager subscribed to.
+        val descriptor = java.lang.reflect.Proxy.newProxyInstance(
+            com.intellij.ide.plugins.IdeaPluginDescriptor::class.java.classLoader,
+            arrayOf(com.intellij.ide.plugins.IdeaPluginDescriptor::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "getPluginId" -> com.intellij.openapi.extensions.PluginId.getId("com.example.copilot")
+                "getVersion" -> "1.2.3"
+                else -> null
+            }
+        } as com.intellij.ide.plugins.IdeaPluginDescriptor
+        com.intellij.openapi.application.ApplicationManager.getApplication().messageBus
+            .syncPublisher(com.intellij.ide.plugins.DynamicPluginListener.TOPIC)
+            .pluginLoaded(descriptor)
+
+        assertTrue("ext.activate must be recorded on a mid-session plugin load", kinds(session).contains("ext.activate"))
+    }
+
     fun testStopEndsSessionClearsSeamsAndIsIdempotent() {
         val m = manager()
         val session = start(m)

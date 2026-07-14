@@ -323,6 +323,19 @@ fun ExtSnapshotPayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
+ * ext.activate payload (recorder PRD §4.2: "Another extension activates while we're recording").
+ * Mirrors log-core's ExtActivatePayload (events.ts:132-135) and the VS Code extension-activation.ts.
+ * On the JetBrains host this is emitted when a *plugin* is dynamically loaded mid-session; the
+ * wire keys stay id/version (host-agnostic contract). Do NOT rename to "plugin".
+ */
+data class ExtActivatePayload(val id: String, val version: String)
+
+fun ExtActivatePayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("id", id)
+    put("version", version)
+}
+
+/**
  * recorder.degraded payload (recorder PRD §4.8). Mirrors log-core's RecorderDegradedPayload
  * (events.ts:209-211). Emitted once when the recorder transitions into disk-full degraded
  * mode; [reason] is currently always "disk_full" (any write error is treated as disk-full
