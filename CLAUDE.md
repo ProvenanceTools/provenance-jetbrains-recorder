@@ -6,7 +6,7 @@ Project conventions and standing instructions for Claude Code working in this re
 
 **provenance-jetbrains-recorder** (`provjet`): a JetBrains IDE plugin that records a tamper-evident `.provenance` log while a student works on an assignment, producing a sealed submission bundle that is **byte-for-byte format-compatible** with the one the VS Code recorder produces. It ships under the same **Provenance Recorder** name as the VS Code extension.
 
-This is a **port of the wiring, not a new product.** The event format, hash chain, JCS canonicalization, ed25519 signing, bundle/manifest shapes, signed checkpoints, and per-session keypair all already exist in the [Provenance monorepo](https://github.com/)'s `packages/log-core` (pure TypeScript). This repo:
+This is a **port of the wiring, not a new product.** The event format, hash chain, JCS canonicalization, ed25519 signing, bundle/manifest shapes, signed checkpoints, and per-session keypair all already exist in the [Provenance monorepo](https://github.com/ProvenanceTools/provenance)'s `packages/log-core` (pure TypeScript). This repo:
 
 1. Reimplements that format in Kotlin (`core/`), and
 2. Re-derives the editor-specific signal detection against the IntelliJ Platform SDK (`recorder/`).
