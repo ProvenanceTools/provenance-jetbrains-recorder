@@ -1,14 +1,12 @@
 package dev.provenance.recorder.session
 
 import com.intellij.ide.plugins.DynamicPluginListener
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.util.Disposer
@@ -22,15 +20,16 @@ import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.commands.sealBundle
 import dev.provenance.recorder.events.ExplanationTagger
 import dev.provenance.recorder.io.FlushScheduler
+import dev.provenance.recorder.plugin.ownPluginDescriptor
 import dev.provenance.recorder.startup.NioRecoveryDeps
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.startup.recoverPreviousSession
 import dev.provenance.recorder.watch.ExternalChangeCoordinator
 import dev.provenance.recorder.watch.VfsExternalChangeListener
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
-import dev.provenance.recorder.wiring.snapshot.PluginSnapshotWiring
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
+import org.jetbrains.annotations.TestOnly
 import java.nio.file.Path
 import java.time.Instant
 
@@ -85,7 +84,7 @@ class RecorderSessionManager(private val project: Project) : Disposable {
 
         val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString()))
 
-        val descriptor = PluginManagerCore.getPlugin(PluginId.getId(RECORDER_PLUGIN_ID))
+        val descriptor = ownPluginDescriptor()
         start(
             activated = ActivatedWorkspace(manifest, provenanceDir, workspaceRoot),
             recovery = recovery,
@@ -141,7 +140,17 @@ class RecorderSessionManager(private val project: Project) : Disposable {
 
         wireExternalChange(controller, activated, tagger, vfsDispatch, sessionDisposable)
         wireTerminalAndGit(controller, tagger, sessionDisposable)
-        wireExtSnapshot(controller, scheduler, sessionDisposable)
+        // NO ext.snapshot (PRD §4.4) — deliberately unwired on this host, not an oversight.
+        // Emitting it requires enumerating installed plugins, and as of 2026.2 (262) every
+        // enumeration API is @ApiStatus.Internal, which the Marketplace rejects on submission.
+        // The one public accessor, PluginManager.isPluginInstalled(PluginId), is
+        // `enabled || installed`: it cannot report a plugin's *enabled* state, which
+        // ai_extension_active keys on — so a probe-based snapshot could only guess `enabled`,
+        // and a guessed field in a tamper-evident log is worse than an absent one.
+        // CONSEQUENCE: this recorder cannot see an AI assistant that was already installed
+        // when the session began. wireExtActivate below only fires for mid-session plugin
+        // loads, so pre-installed assistants — the common case — go unreported. Restore this
+        // when JetBrains provides a public enumeration API (YouTrack issue pending).
         wireExtActivate(controller, sessionDisposable)
 
         return ActiveSession(controller, activated, sessionDisposable).also { activeSession = it }
@@ -158,25 +167,6 @@ class RecorderSessionManager(private val project: Project) : Disposable {
             DynamicPluginListener.TOPIC,
             ExtActivateWiring.listener { controller.append("ext.activate", it.toJsonObject()) },
         )
-    }
-
-    /**
-     * ext.snapshot enumeration of installed IntelliJ plugins (recorder PRD §4.4), mirroring the
-     * VS Code recorder's extension-snapshot.ts: one snapshot immediately at session start, then a
-     * periodic re-emit every 5 min. [PluginManagerCore] is core-platform (always present), so no
-     * optional-dependency gating — this always-on signal lives directly on the session Disposable.
-     * The periodic tick uses the same injected [FlushScheduler] as Heartbeat/PasteAnomalyTicker.
-     */
-    private fun wireExtSnapshot(
-        controller: RecordingSessionController,
-        scheduler: FlushScheduler,
-        sessionDisposable: Disposable,
-    ) {
-        val snapshot = PluginSnapshotWiring.fromPlatform(
-            emit = { controller.append("ext.snapshot", it.toJsonObject()) },
-            scheduler = scheduler,
-        )
-        Disposer.register(sessionDisposable, snapshot)
     }
 
     private fun wireExternalChange(
@@ -246,9 +236,24 @@ class RecorderSessionManager(private val project: Project) : Disposable {
      * distribution's extension hash. Returns [SealResult.NoSessions] if nothing is active.
      * The [computeExtensionHash]/[now] seams are injectable for deterministic tests.
      */
+    /**
+     * Test-only stand-in for the extension-hash seam.
+     *
+     * Production resolves the hash via [ownPluginDescriptor], which requires a real plugin class
+     * loader. Under the test harness plugin classes are loaded by `PathClassLoader`, so the
+     * descriptor is null and the hash cannot be computed — meaning tests that drive the *real*
+     * action (which calls [sealActiveSession] with defaults) cannot reach a bundle at all. They
+     * set this to supply a stand-in hash. Null in production; the real resolution is covered by
+     * the manual runIde pass in docs/manual-verification.md, not by CI.
+     */
+    @TestOnly
+    @Volatile
+    var extensionHashOverride: (() -> String)? = null
+
     fun sealActiveSession(
         now: () -> Instant = Instant::now,
-        computeExtensionHash: () -> String = { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
+        computeExtensionHash: () -> String =
+            extensionHashOverride ?: { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
     ): SealResult {
         val s = activeSession ?: return SealResult.NoSessions
         s.controller.flush()

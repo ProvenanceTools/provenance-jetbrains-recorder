@@ -122,12 +122,22 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertEquals("a single keystroke must log exactly one doc.change", 1, docChanges)
     }
 
-    fun testExtSnapshotIsWiredAndEmitsAtSessionStart() {
+    fun testExtSnapshotIsDeliberatelyNotEmitted() {
         val m = manager()
         val session = start(m)
-        // PluginSnapshotWiring emits one snapshot immediately at construction (session start);
-        // wiring it into the manager's session Disposable is what puts it in the live .slog.
-        assertTrue("ext.snapshot must be emitted at session start", kinds(session).contains("ext.snapshot"))
+        // Pins a DELIBERATE product gap, not desired behavior. Emitting ext.snapshot needs
+        // plugin enumeration, and every enumeration API is @ApiStatus.Internal as of 262 —
+        // which the Marketplace rejects. The lone public accessor, isPluginInstalled(), is
+        // `enabled || installed` and cannot report enabled state, so a probe-based snapshot
+        // would have to guess a field that ai_extension_active keys on.
+        //
+        // The cost this pins: a pre-installed AI assistant is invisible to this host
+        // (ext.activate only fires on mid-session loads). When JetBrains ships a public
+        // enumeration API, delete this test and restore the wiring + its emit test.
+        assertFalse(
+            "ext.snapshot must stay unwired until a public enumeration API exists",
+            kinds(session).contains("ext.snapshot"),
+        )
     }
 
     fun testExtActivateIsWiredToDynamicPluginLoad() {

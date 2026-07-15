@@ -1,4 +1,30 @@
-# Manual verification — external-change detection
+# Manual verification
+
+Items here **cannot** be exercised headlessly and are unchecked until run manually against each
+IDE version the plugin targets. Re-run them when the code under each item changes.
+
+## Status bar and seal — platform-resolved paths
+
+Both items below depend on services a `HeavyPlatformTestCase` does not provide (a real `IdeFrame`;
+a real plugin class loader), so CI cannot cover them. Their headless tests assert the surrounding
+logic only — see `StatusBarWidgetActivationGateTest` and `SealActionGateTest`.
+
+- [x] **The "Provenance: recording" indicator actually appears.** *(verified 2026-07-15 against
+      2026.1.4.)* Open a manifest-activated project and confirm the indicator is present in the
+      status bar. `refreshStatusBarWidget` delegates to `StatusBarWidgetsManager`, which installs
+      widgets asynchronously through frame init; headless has no frame, so only a real IDE proves
+      the student sees the disclosure. Re-check on each platform bump — this replaced a direct
+      `StatusBar.addWidget` call that was removed as private API.
+
+- [x] **The seal produces a bundle (real `extension_hash`).** *(verified 2026-07-15 against
+      2026.1.4.)* In an activated project, edit and save a watched file, run
+      Tools → "Provenance: Prepare Submission Bundle", and confirm a `*-bundle-*.zip` appears.
+      This exercises `ownPluginDescriptor()`, which reads the plugin's own descriptor off the
+      plugin class loader; under test the loader is a `PathClassLoader` and the descriptor is
+      null, so CI stubs the hash via `RecorderSessionManager.extensionHashOverride`. If this
+      breaks, every student's seal fails — re-check on each platform bump.
+
+## External-change detection
 
 External-change detection (recorder PRD §4.5, and [`design.md`](design.md) §4.5) is the
 port's highest-risk subsystem. Its direction, dedup (`isFromSave`), payload shape,

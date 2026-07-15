@@ -186,8 +186,10 @@ class AllSignalsLiveGateTest : BasePlatformTestCase() {
 
         // (5) The newly-ported signals — exercise each so the sealed bundle carries every new event
         // kind and the analyzer gate proves they don't break chain/monotonic/validation.
-        //   ext.snapshot — already auto-emitted at session start (PluginSnapshotWiring).
-        assertTrue("ext.snapshot recorded at session start", kinds.contains("ext.snapshot"))
+        //   ext.snapshot — NOT emitted on this host, deliberately: plugin enumeration is
+        //   @ApiStatus.Internal as of 262 and the Marketplace rejects it. See the note in
+        //   RecorderSessionManager.start and testExtSnapshotIsDeliberatelyNotEmitted. A bundle
+        //   without it must still validate, which the analyzer gate below proves.
         //   focus.change — publish IDE (de)activation on the app bus.
         val frame = java.lang.reflect.Proxy.newProxyInstance(
             com.intellij.openapi.wm.IdeFrame::class.java.classLoader,
@@ -221,9 +223,11 @@ class AllSignalsLiveGateTest : BasePlatformTestCase() {
         val allEntries = readEntries(session.controller.slogPath)
         val allKinds = allEntries.map { it.kind }
         assertEquals("chain valid across every new signal kind", ChainCheck.Valid, validateChain(allEntries))
-        for (k in listOf("ext.snapshot", "focus.change", "ext.activate", "selection.change", "clock.skew")) {
+        // ext.snapshot is absent by design on this host — see the note above.
+        for (k in listOf("focus.change", "ext.activate", "selection.change", "clock.skew")) {
             assertTrue("$k recorded", allKinds.contains(k))
         }
+        assertFalse("ext.snapshot stays unwired (no public enumeration API)", allKinds.contains("ext.snapshot"))
 
         // Seal through the manager's real seal seam (deterministic hash + timestamp).
         val result = manager.sealActiveSession(

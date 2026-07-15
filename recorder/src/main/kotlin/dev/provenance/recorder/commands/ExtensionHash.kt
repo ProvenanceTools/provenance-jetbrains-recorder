@@ -1,8 +1,7 @@
 package dev.provenance.recorder.commands
 
-import com.intellij.ide.plugins.PluginManagerCore
-import com.intellij.openapi.extensions.PluginId
 import dev.provenance.core.DirectoryHash
+import dev.provenance.recorder.plugin.ownPluginDescriptor
 import java.nio.file.Path
 
 /**
@@ -14,7 +13,7 @@ import java.nio.file.Path
  * Deliberately split in two:
  *   - [computeExtensionHash] (path): pure, IntelliJ-Platform-free, directly testable.
  *   - [computeInstalledExtensionHash] (pluginId): resolves this plugin's installed directory via
- *     PluginManagerCore and delegates. This is the seal-command call site.
+ *     [ownPluginDescriptor] and delegates. This is the seal-command call site.
  *
  * Both paths — and the build/CI-time `computeExtensionHash` Gradle task, which hashes the
  * extracted plugin distribution via [DirectoryHash]'s CLI entrypoint — go through the same
@@ -28,7 +27,10 @@ fun computeExtensionHash(pluginPath: Path): String = DirectoryHash.sha256(plugin
  * Throws if the plugin descriptor can't be resolved (a "should never happen" for a loaded plugin).
  */
 fun computeInstalledExtensionHash(pluginId: String): String {
-    val plugin = PluginManagerCore.getPlugin(PluginId.getId(pluginId))
-        ?: error("plugin not found: $pluginId")
+    val plugin = ownPluginDescriptor() ?: error("plugin not found: $pluginId")
+    // The hash is producer identity: it must be *this* plugin's tree, never a neighbour's.
+    check(plugin.pluginId.idString == pluginId) {
+        "resolved own descriptor ${plugin.pluginId.idString}, expected $pluginId"
+    }
     return computeExtensionHash(plugin.pluginPath)
 }

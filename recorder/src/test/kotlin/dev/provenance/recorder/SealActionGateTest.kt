@@ -115,7 +115,13 @@ class SealActionGateTest : BasePlatformTestCase() {
     }
 
     fun testActionPerformedSealsAnalyzerReadyBundle() {
-        startLiveSession()
+        val manager = startLiveSession()
+        // The real extension_hash is resolved from the plugin class loader, which the test
+        // harness does not provide (classes load via PathClassLoader ⇒ descriptor is null), so
+        // stand in for just that value. Everything else on the path — the action, the manager,
+        // the seal, the chain, the signature — is the production code. Real resolution is
+        // covered by the manual runIde pass in docs/manual-verification.md.
+        manager.extensionHashOverride = { "0".repeat(64) }
 
         val action = PrepareSubmissionBundleAction()
         val enableEvent = actionEvent(action)
