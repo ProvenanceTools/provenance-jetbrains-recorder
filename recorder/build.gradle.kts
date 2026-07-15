@@ -124,6 +124,17 @@ val coursePublicKeyPattern = Regex("""const val COURSE_PUBLIC_KEY_HEX: String\s*
 tasks.register("embedCourseKey") {
     group = "provenance"
     description = "Embeds PROVENANCE_COURSE_PUBLIC_KEY_HEX into CoursePublicKey.kt for a production build."
+    // Declaring the rewritten source as an output is load-bearing, not bookkeeping. Without it
+    // Gradle does not know this task writes CoursePublicKey.kt, so compileKotlin's up-to-date
+    // check can be answered from a file snapshot taken before the rewrite — it then skips
+    // recompiling and the DEV key survives into a "production" build. Observed for real: two
+    // consecutive buildProd runs produced different artifacts, and only the second contained the
+    // course key. mustRunAfter alone does not fix this; it orders execution but does not
+    // invalidate the snapshot.
+    outputs.file(coursePublicKeyFile)
+    // The embedded value comes from the environment, which Gradle cannot fingerprint — never
+    // let this task be considered up-to-date.
+    outputs.upToDateWhen { false }
     doLast {
         val hex = System.getenv("PROVENANCE_COURSE_PUBLIC_KEY_HEX")
             ?: throw GradleException(
@@ -210,12 +221,58 @@ val computeExtensionHash = tasks.register<JavaExec>("computeExtensionHash") {
 // that already contains the production key.
 tasks.named("compileKotlin") { mustRunAfter("embedCourseKey") }
 
+// Never sign an artifact that has not been proven to carry the right key: a signed dev-key zip
+// is exactly the thing that must not exist, since it is the one that looks ready to upload.
+tasks.named("signPlugin") { mustRunAfter("verifyEmbeddedCourseKey") }
+
+// Last line of defence for the release: assert the *built artifact* actually carries the course
+// key. Everything upstream (task ordering, up-to-date checks) is a means to that end, and when it
+// silently failed the result was a signed, publishable plugin trusting the repo's public dev key —
+// which would refuse every real course-signed manifest and so record nothing, for every student.
+// A key that is wrong here is not recoverable after publication, so fail the build instead.
+val verifyEmbeddedCourseKey = tasks.register("verifyEmbeddedCourseKey") {
+    group = "provenance"
+    description = "Fails the build unless the compiled plugin distribution embeds PROVENANCE_COURSE_PUBLIC_KEY_HEX."
+    dependsOn(unpackDistributionForHash)
+    outputs.upToDateWhen { false }
+    doLast {
+        val expected = System.getenv("PROVENANCE_COURSE_PUBLIC_KEY_HEX")
+            ?: throw GradleException("PROVENANCE_COURSE_PUBLIC_KEY_HEX is not set.")
+        val staging = extensionHashStaging.get().asFile
+        val classFile = staging.walkTopDown().firstOrNull {
+            it.isFile && it.name == "CoursePublicKeyKt.class"
+        } ?: run {
+            // The constant is compiled into the plugin jar inside the distribution.
+            val jar = staging.walkTopDown().firstOrNull {
+                it.isFile && it.name.startsWith("recorder-") && it.extension == "jar"
+            } ?: throw GradleException("Could not find the recorder jar under $staging to verify the embedded key.")
+            val entry = zipTree(jar).matching { include("**/CoursePublicKeyKt.class") }.singleOrNull()
+                ?: throw GradleException("Could not find CoursePublicKeyKt.class inside $jar.")
+            entry
+        }
+        val bytes = classFile.readBytes().toString(Charsets.ISO_8859_1)
+        if (!bytes.contains(expected)) {
+            throw GradleException(
+                "The built plugin does NOT embed the expected course key ($expected). The build " +
+                    "may have reused stale compiled output — run `./gradlew :recorder:clean` and " +
+                    "rebuild. Refusing to produce a release artifact with the wrong key.",
+            )
+        }
+        val devKeyHex = coursePublicKeyPattern.find(coursePublicKeyFile.readText())?.groupValues?.get(1)
+        if (devKeyHex != null && bytes.contains(devKeyHex) && devKeyHex != expected) {
+            throw GradleException("The built plugin embeds the DEV key ($devKeyHex). Refusing to release it.")
+        }
+        logger.lifecycle("[verifyEmbeddedCourseKey] Verified: distribution embeds $expected")
+    }
+}
+
 tasks.register("buildProd") {
     group = "provenance"
     description = "Production build: embeds the course public key, builds+signs the plugin, computes extension_hash, then ALWAYS reverts the embedded key."
     dependsOn("embedCourseKey")
     dependsOn(tasks.named("signPlugin"))
     dependsOn(computeExtensionHash)
+    dependsOn(verifyEmbeddedCourseKey)
     // finalizedBy (not a plain shell `&&` chain) runs the revert even if an earlier step fails,
     // so a failed prod build can never leave the real course key sitting in the working tree —
     // a deliberate robustness improvement over the VS Code recorder's sequential build:prod.
