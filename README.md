@@ -7,7 +7,7 @@
 code came into existence, and seals it into a signed submission bundle.
 
 It is the JetBrains counterpart to the
-[Provenance](https://github.com/itsgeagle/provenance) VS Code recorder, and ships under the
+[Provenance](https://github.com/ProvenanceTools/provenance) VS Code recorder, and ships under the
 same **Provenance Recorder** name. Both produce a bundle in the **same format**, so the
 Provenance analyzer and server ingest and validate a submission regardless of which editor
 produced it — they care only that it validates: hash chain intact, manifest signature
@@ -99,7 +99,7 @@ Marketplace token, a code-signing certificate, and the real course public key. S
 Kotlin and Gradle, using the IntelliJ Platform Gradle Plugin.
 
 ```sh
-git clone https://github.com/itsgeagle/provenance-jetbrains-recorder
+git clone https://github.com/ProvenanceTools/provenance-jetbrains-recorder
 cd provenance-jetbrains-recorder
 
 ./gradlew :core:test         # format unit + conformance tests

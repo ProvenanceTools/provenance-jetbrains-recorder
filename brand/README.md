@@ -1,10 +1,10 @@
 # Brand assets
 
 This plugin ships under the **Provenance Recorder** name and uses the
-[Provenance](https://github.com/itsgeagle/provenance) mark unchanged — two interlocking
+[Provenance](https://github.com/ProvenanceTools/provenance) mark unchanged — two interlocking
 rounded-square chain links, woven with a true over/under. The only addition is a
 `for JetBrains IDEs` line under the wordmark, in the same wordmark-plus-tagline
-arrangement [`provgate`](https://github.com/itsgeagle/provenance-gradescope-gateway) uses.
+arrangement [`provgate`](https://github.com/ProvenanceTools/provenance-gradescope-gateway) uses.
 
 The mark is not re-drawn or re-colored here. If the Provenance master changes, re-derive
 these files from it rather than editing them in place.
