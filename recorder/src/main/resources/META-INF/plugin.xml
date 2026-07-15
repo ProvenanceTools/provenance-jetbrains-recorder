@@ -60,8 +60,7 @@
     </ul>
     <p><b>Your environment</b></p>
     <ul>
-      <li>The list of installed plugins (and which are enabled), plus a note
-          whenever a plugin activates.</li>
+      <li>A note whenever a plugin activates while you're working.</li>
       <li>Your IDE version and operating-system platform, and the recorder's own
           version.</li>
       <li>A one-way fingerprint of your machine &mdash; not your name, email, or
