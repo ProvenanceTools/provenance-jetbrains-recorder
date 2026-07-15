@@ -98,6 +98,16 @@
     </p>
     ]]></description>
 
+    <change-notes><![CDATA[
+    <p><b>0.1.0</b> &mdash; first release.</p>
+    <ul>
+      <li>Records the editing process in course-authorized assignment folders and seals it
+          into a tamper-evident submission bundle via
+          <b>Tools &rarr; Provenance: Prepare Submission Bundle</b>.</li>
+      <li>Bundles are format-compatible with the Provenance VS Code recorder.</li>
+    </ul>
+    ]]></change-notes>
+
     <depends>com.intellij.modules.platform</depends>
 
     <!--
