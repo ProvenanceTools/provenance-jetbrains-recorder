@@ -41,4 +41,22 @@ class RecordabilityFilterTest {
         assertFalse(isRecordablePath(Paths.get("/work/hw03/.provenance-manifest"), true, ws, prov))
         assertFalse(isRecordablePath(Paths.get("/work/hw03/provenance-manifest"), true, ws, prov))
     }
+
+    @Test
+    fun `rejects IDE-generated files under the workspace idea directory`() {
+        assertFalse(isRecordablePath(Paths.get("/work/hw03/.idea/.gitignore"), true, ws, prov))
+        assertFalse(isRecordablePath(Paths.get("/work/hw03/.idea/workspace.xml"), true, ws, prov))
+        assertFalse(isRecordablePath(Paths.get("/work/hw03/.idea/inspectionProfiles/Project_Default.xml"), true, ws, prov))
+    }
+
+    @Test
+    fun `rejects the idea directory itself`() {
+        assertFalse(isRecordablePath(Paths.get("/work/hw03/.idea"), true, ws, prov))
+    }
+
+    @Test
+    fun `records student files whose names merely start with the idea prefix`() {
+        assertTrue(isRecordablePath(Paths.get("/work/hw03/.ideas.md"), true, ws, prov))
+        assertTrue(isRecordablePath(Paths.get("/work/hw03/.idea-notes/plan.txt"), true, ws, prov))
+    }
 }
