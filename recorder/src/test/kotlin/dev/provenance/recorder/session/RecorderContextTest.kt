@@ -26,7 +26,7 @@ class RecorderContextTest {
             ideVersion = "2026.1.4",
             platform = "darwin-arm64",
             recorderVersion = "0.1.0",
-            recorderExtensionId = "com.provenance.recorder",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
             hostnameProvider = { "host-1" },
             usernameProvider = { "alice" },
         )
@@ -40,7 +40,7 @@ class RecorderContextTest {
         assertEquals("", p.vscodeCommit)
         assertEquals("darwin-arm64", p.vscodePlatform)
         assertEquals("0.1.0", p.recorderVersion)
-        assertEquals("com.provenance.recorder", p.recorderExtensionId)
+        assertEquals("com.aaryanmehta.provenance.recorder", p.recorderExtensionId)
         assertEquals("d".repeat(64), p.sessionPubkey)
         assertEquals(Sha256.hex("host-1:alice:sess-1"), p.machineId)
     }

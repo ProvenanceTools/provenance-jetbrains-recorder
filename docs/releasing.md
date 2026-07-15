@@ -55,10 +55,14 @@ a real release needs its own entry.
    `private.pem` as `PRIVATE_KEY`, and the passphrase as `PRIVATE_KEY_PASSWORD`. Never
    commit these.
 
-3. **Plugin id.** The reverse-DNS id declared in `plugin.xml` (currently
-   `com.provenance.recorder`) is a permanent identity once published — Marketplace and
-   auto-update channels key off it forever. Confirm it with the course before the first
-   publish.
+3. **Plugin id.** The reverse-DNS id is `com.aaryanmehta.provenance.recorder`, declared in
+   two places that must stay in lockstep: `<id>` in `plugin.xml` and `RECORDER_PLUGIN_ID` in
+   `RecorderSessionManager.kt`. The latter is also the producer identity written to
+   `session.start.recorder.extension_id`, and `computeInstalledExtensionHash` looks the
+   plugin up by it — so a mismatch between the two breaks the seal, not just the listing.
+   It is a permanent identity once published: Marketplace and auto-update channels key off
+   it forever, and it cannot be changed later even if plugin ownership is transferred to
+   another vendor account.
 
 4. **The first publication must be uploaded by hand** through the Marketplace web UI, per
    JetBrains' docs. `publishPlugin` automation only works for subsequent versions of an

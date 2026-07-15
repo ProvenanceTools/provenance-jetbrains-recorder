@@ -1,5 +1,5 @@
 <idea-plugin>
-    <id>com.provenance.recorder</id>
+    <id>com.aaryanmehta.provenance.recorder</id>
     <name>Provenance Recorder</name>
     <vendor email="aaryanm@berkeley.edu" url="https://aaryanmehta.com">Aaryan Mehta</vendor>
 

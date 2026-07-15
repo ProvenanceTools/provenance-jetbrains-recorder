@@ -65,7 +65,7 @@ class EndToEndSealSmokeTest : BasePlatformTestCase() {
             ideVersion = "2026.1.4",
             platform = "darwin-arm64",
             recorderVersion = "0.1.0",
-            recorderExtensionId = "com.provenance.recorder",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
             parentDisposable = testRootDisposable,
             clock = FixedClock(0, Instant.parse("2026-07-14T00:00:00Z")),
             scheduler = NoopScheduler(),
