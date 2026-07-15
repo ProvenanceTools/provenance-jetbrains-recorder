@@ -1,13 +1,11 @@
 package dev.provenance.recorder.activation
 
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
-import com.intellij.openapi.util.Condition
-import com.intellij.openapi.wm.WindowManager
+import com.intellij.openapi.wm.impl.status.widget.StatusBarWidgetsManager
 import dev.provenance.recorder.session.RecorderSessionManager
-import dev.provenance.recorder.statusbar.RecordingStatusBarWidget
+import dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory
 
 /**
  * Runs once per project open. PRD §4.1: activate only when the workspace-root
@@ -45,38 +43,22 @@ class RecorderActivationActivity internal constructor(
 
 /**
  * Ensures the "Provenance: recording" status-bar indicator matches [RecorderState]: present
- * once recording is active, absent otherwise. Runs on the EDT (widget install is a Swing
- * operation), synchronously if already on it, else via invokeLater.
+ * once recording is active, absent otherwise.
  *
- * Why a direct add rather than the original `StatusBarWidgetsManager.updateAllWidgets()`
- * (the user-observed bug: recording worked but the indicator never appeared):
+ * Delegates to [StatusBarWidgetsManager], which re-evaluates
+ * [dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory.isAvailable] (gated on
+ * [RecorderState.isActive]) and installs or removes the widget accordingly. The manager owns
+ * the EDT hop and the frame-not-yet-built ordering, so no manual status-bar mutation here.
  *
- *  - Activation runs on a background ProjectActivity coroutine, and the manager installs
- *    widgets asynchronously on its own service coroutine scope after re-evaluating
- *    `isAvailable`. That async path is exactly what silently failed to surface the widget
- *    (reproduced headlessly: after `updateWidget`, `wasWidgetCreated` stays false and the
- *    widget never lands in the status bar). For a shipped-to-students disclosure signal
- *    (PRD §4.1) the indicator must appear reliably, not best-effort.
- *  - Adding straight to the project's status bar on the EDT is synchronous and observable.
- *    It is idempotent: `IdeStatusBarImpl` dedups by widget id, and we skip when the widget
- *    is already present — so it never races/duplicates with the platform's own
- *    factory-init pass (which covers the activation-before-frame ordering).
- *  - On a cold first open the frame's status bar may not exist yet; `getStatusBar` returns
- *    null and we no-op — the platform's factory-init pass then shows it, since `isActive`
- *    is now true. invokeLater also defers us past frame construction in the common case.
+ * This previously added to / removed from the [com.intellij.openapi.wm.StatusBar] directly,
+ * because the manager's async install had been seen to silently not surface the widget. That
+ * direct path used `StatusBar.addWidget`/`removeWidget`, which are private platform API
+ * (`@ApiStatus.Internal`) and must not be used by plugins — see the SDK's Internal API
+ * Migration page. The disclosure requirement it was protecting (PRD §4.1: the indicator must
+ * actually appear, not best-effort) is enforced by StatusBarWidgetActivationGateTest, which
+ * asserts real presence in the project's status bar rather than trusting this call.
  */
 internal fun refreshStatusBarWidget(project: Project) {
-    val app = ApplicationManager.getApplication()
-    val task = Runnable {
-        if (project.isDisposed) return@Runnable
-        val statusBar = WindowManager.getInstance().getStatusBar(project) ?: return@Runnable
-        val active = project.service<RecorderState>().isActive
-        val existing = statusBar.getWidget(RecordingStatusBarWidget.WIDGET_ID)
-        if (active && existing == null) {
-            statusBar.addWidget(RecordingStatusBarWidget(project), RecordingStatusBarWidget.WIDGET_ID)
-        } else if (!active && existing != null) {
-            statusBar.removeWidget(RecordingStatusBarWidget.WIDGET_ID)
-        }
-    }
-    if (app.isDispatchThread) task.run() else app.invokeLater(task, Condition<Any> { project.isDisposed })
+    if (project.isDisposed) return
+    project.service<StatusBarWidgetsManager>().updateWidget(RecordingStatusBarWidgetFactory::class.java)
 }
