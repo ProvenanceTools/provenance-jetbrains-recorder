@@ -42,18 +42,56 @@ a real release needs its own entry.
    `PUBLISH_TOKEN` in your CI secret store — it is shown only once.
    ([JetBrains docs](https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html))
 
-2. **Code-signing certificate and key.**
+2. **Code-signing certificate and key.** Already generated — this step is done, and is kept
+   here as the recipe for renewal.
    ([JetBrains docs](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html))
 
+   The signing identity lives in `~/cs61a-keys/` (mode `0700`), alongside the course key:
+
+   | File | What it is |
+   | --- | --- |
+   | `plugin-signing-private-encrypted.pem` | RSA-4096 private key, PKCS#8 / AES-256-CBC at rest |
+   | `plugin-signing-chain.crt` | Self-signed cert, `CN=Aaryan Mehta`, valid to **2036-07-12** |
+   | `plugin-signing-passphrase.txt` | Passphrase for the key above |
+
+   The cert is self-signed and JetBrains verifies nothing in it; its only job is proving
+   **continuity of authorship** across versions. Losing the key means never shipping an
+   update signed as the same author again — back it up off this machine.
+
+   To regenerate (e.g. on expiry):
+
    ```sh
-   openssl genpkey -aes-256-cbc -algorithm RSA -out private_encrypted.pem -pkeyopt rsa_keygen_bits:4096
-   openssl rsa -in private_encrypted.pem -out private.pem
-   openssl req -key private.pem -new -x509 -days 365 -out chain.crt
+   cd ~/cs61a-keys && umask 077
+   openssl rand -base64 32 | tr -d '\n' > plugin-signing-passphrase.txt
+   openssl genpkey -algorithm RSA -aes-256-cbc -pass file:plugin-signing-passphrase.txt \
+     -pkeyopt rsa_keygen_bits:4096 -out plugin-signing-private-encrypted.pem
+   openssl req -key plugin-signing-private-encrypted.pem \
+     -passin file:plugin-signing-passphrase.txt \
+     -new -x509 -days 3650 -sha256 -subj "/CN=Aaryan Mehta" -out plugin-signing-chain.crt
    ```
 
-   Store the contents of `chain.crt` as `CERTIFICATE_CHAIN`, the contents of
-   `private.pem` as `PRIVATE_KEY`, and the passphrase as `PRIVATE_KEY_PASSWORD`. Never
-   commit these.
+   **`signPlugin` cannot decrypt an encrypted key — do not pass one.** The bundled
+   marketplace-zip-signer does not register BouncyCastle as a JCE provider, so *every*
+   encrypted format fails, with an error that names the cipher rather than the real cause:
+
+   - PKCS#8 / PBES2 → `1.2.840.113549.1.5.13 not available: Cannot find any provider
+     supporting AES/CBC/PKCS7Padding`
+   - Traditional PKCS#1 (`-traditional -aes256`, `Proc-Type`/`DEK-Info`) →
+     `PBKDF-OpenSSL SecretKeyFactory not available`
+
+   This is why JetBrains' own docs decrypt to a plaintext `private.pem` first. Rather than
+   leave an unencrypted key at rest, decrypt **in memory** at build time and leave
+   `PRIVATE_KEY_PASSWORD` unset (the key is already decrypted; the signer must not try
+   again):
+
+   ```sh
+   export CERTIFICATE_CHAIN="$(cat ~/cs61a-keys/plugin-signing-chain.crt)"
+   export PRIVATE_KEY="$(openssl rsa -in ~/cs61a-keys/plugin-signing-private-encrypted.pem \
+                                     -passin file:~/cs61a-keys/plugin-signing-passphrase.txt)"
+   unset PRIVATE_KEY_PASSWORD
+   ```
+
+   Never commit any of these.
 
 3. **Plugin id.** The reverse-DNS id is `com.aaryanmehta.provenance.recorder`, declared in
    two places that must stay in lockstep: `<id>` in `plugin.xml` and `RECORDER_PLUGIN_ID` in
@@ -75,10 +113,19 @@ a real release needs its own entry.
 **REQUIRES OPERATOR SECRETS.**
 
 ```sh
-export PROVENANCE_COURSE_PUBLIC_KEY_HEX=<64-hex production course public key>
-export CERTIFICATE_CHAIN="$(cat chain.crt)"
-export PRIVATE_KEY="$(cat private.pem)"
-export PRIVATE_KEY_PASSWORD=<passphrase>
+K=~/cs61a-keys
+
+# Course key: embedded into the build so only this course's manifests activate the plugin.
+export PROVENANCE_COURSE_PUBLIC_KEY_HEX="$(python3 -c \
+  "import json;print(json.load(open('$K/cs61a-fa26.json'))['public_key_hex'])")"
+
+# Signing identity. The key is decrypted in memory only — see "Code-signing certificate
+# and key" above for why an encrypted PRIVATE_KEY cannot be passed to signPlugin.
+export CERTIFICATE_CHAIN="$(cat $K/plugin-signing-chain.crt)"
+export PRIVATE_KEY="$(openssl rsa -in $K/plugin-signing-private-encrypted.pem \
+                                  -passin file:$K/plugin-signing-passphrase.txt)"
+unset PRIVATE_KEY_PASSWORD
+
 export PUBLISH_TOKEN=<Marketplace personal access token>
 
 # Bump `pluginVersion` in gradle.properties first — Marketplace rejects duplicates.
@@ -87,7 +134,22 @@ export PUBLISH_TOKEN=<Marketplace personal access token>
 ```
 
 `buildProd` always reverts `CoursePublicKey.kt` to the dev key afterward — even on
-failure — so the real course key is never left in the working tree.
+failure — so the real course key is never left in the working tree. Verify with
+`git status` regardless; the guarantee is worth trusting but cheap to check.
+
+The signed artifact is `recorder/build/distributions/recorder-signed.zip`. **Upload that
+one, not `recorder.zip`** — both are produced, they sort adjacently, and only the signed
+one should ever reach Marketplace. Confirm before uploading:
+
+```sh
+unzip -p recorder/build/distributions/recorder-signed.zip 'recorder/lib/recorder-*.jar' \
+  > /tmp/v.jar && unzip -p /tmp/v.jar META-INF/plugin.xml | grep -m1 '<id>'
+```
+
+`extension_hash` is **signing-invariant** — signing leaves the extracted file tree
+byte-identical (the signature lives in the ZIP structure, not as files), so the value
+`computeExtensionHash` prints from the unsigned `buildPlugin` output is the value the
+installed plugin reports. It does not need recomputing after signing.
 
 After a release, copy `recorder/build/extension-hash.txt` into the monorepo allowlist:
 
