@@ -79,7 +79,13 @@ recorder/   the plugin: IntelliJ wiring around core/
 
 ## Install
 
-**Sideload.** Available now:
+**JetBrains Marketplace.** Published at
+[plugins.jetbrains.com/plugin/32944-provenance-recorder](https://plugins.jetbrains.com/plugin/32944-provenance-recorder).
+Install from the IDE: **Settings → Plugins → Marketplace**, search *Provenance Recorder*.
+This is the **signed release** — it trusts only manifests signed by the real course key
+embedded at publish time.
+
+**Sideload (development).** Build the dev-key `.zip` yourself:
 
 ```sh
 ./gradlew :recorder:buildPlugin
@@ -87,12 +93,8 @@ recorder/   the plugin: IntelliJ wiring around core/
 
 Then in the IDE: **Settings → Plugins → gear icon → Install Plugin from Disk…**, and pick
 the `.zip` from `recorder/build/distributions/`. This is the **dev-key** build — it trusts
-manifests signed by the checked-in development key, not a real course key.
-
-**JetBrains Marketplace.** Not yet published. The Gradle wiring for a signed release
-(`buildProd`/`publishProd`) is in place; what's missing is the operator secrets — a
-Marketplace token, a code-signing certificate, and the real course public key. See
-[Releasing](#releasing).
+manifests signed by the checked-in development key, not a real course key. Cutting a signed
+Marketplace release is documented in [Releasing](#releasing).
 
 ## Building
 

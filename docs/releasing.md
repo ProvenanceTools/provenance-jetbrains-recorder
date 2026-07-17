@@ -1,16 +1,18 @@
 # Releasing to the JetBrains Marketplace
 
-Marketplace is the intended primary distribution channel once a course is ready to
-publish; the sideload `.zip` (see the [README](../README.md#install)) is for early
-testing and self-hosted course builds in the meantime.
+The plugin is **published** at
+[plugins.jetbrains.com/plugin/32944-provenance-recorder](https://plugins.jetbrains.com/plugin/32944-provenance-recorder)
+(first release: 0.1.0). Marketplace is the primary distribution channel; the sideload
+`.zip` (see the [README](../README.md#install)) is for development and self-hosted course
+builds. This runbook covers cutting each subsequent release.
 
 A production build differs from a dev build in two ways: it embeds the **real** course
 public key — so the plugin trusts only manifests signed by the course's offline key —
 and it ships a **signed** artifact.
 
-The Gradle wiring is already in place (`buildProd`/`publishProd`, plus
-`signPlugin`/`verifyPlugin`/`publishPlugin`); only the secrets are missing. Steps that need
-a real secret, or that are a one-way decision, are marked **REQUIRES OPERATOR SECRETS**.
+The Gradle wiring (`buildProd`/`publishProd`, plus `signPlugin`/`verifyPlugin`/`publishPlugin`)
+and the operator secrets are both in place. Steps that need a real secret, or that are a
+one-way decision, are marked **REQUIRES OPERATOR SECRETS**.
 
 ## `extension_hash` — the analyzer allowlist
 
@@ -30,8 +32,8 @@ hash of the `.zip` bytes.
 The **dev** build (checked-in dev key, unsigned sideload) and the **prod** build (real
 course key, signed) produce **different** hashes, because embedding a different course
 key changes the compiled bytes. Add the value for whichever build students actually
-install. The dev-build hash is already on the allowlist for local and testing installs;
-a real release needs its own entry.
+install. The dev-build hash is on the allowlist for local and testing installs, and the
+signed **0.1.0** release hash is on it too; every new release needs its own entry.
 
 ## One-time setup
 
@@ -102,11 +104,13 @@ a real release needs its own entry.
    it forever, and it cannot be changed later even if plugin ownership is transferred to
    another vendor account.
 
-4. **The first publication must be uploaded by hand** through the Marketplace web UI, per
-   JetBrains' docs. `publishPlugin` automation only works for subsequent versions of an
-   already-registered plugin. Build the signed zip with `./gradlew :recorder:buildProd`
-   (output lands in `recorder/build/distributions/`) and upload it manually the first
-   time.
+4. **First publication — done.** 0.1.0 was uploaded by hand through the Marketplace web UI,
+   as JetBrains requires for a plugin's first version; `publishPlugin` automation only works
+   for subsequent versions of an already-registered plugin. The plugin is now registered
+   (id 32944), so every release from here uses `publishProd` — see [Every release](#every-release).
+   (Historical recipe for a from-scratch first upload: build the signed zip with
+   `./gradlew :recorder:buildProd`, output in `recorder/build/distributions/`, and upload it
+   manually.)
 
 ## Every release
 
