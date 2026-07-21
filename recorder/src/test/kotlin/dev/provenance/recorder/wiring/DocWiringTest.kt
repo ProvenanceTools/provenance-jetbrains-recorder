@@ -97,6 +97,18 @@ class DocWiringTest : BasePlatformTestCase() {
         assertEquals("say", d.text)
     }
 
+    fun testDocChangePreChangeCoordinatesOnSecondLine() {
+        myFixture.configureByText("hw.py", "aaa\nbbb\n")
+        install()
+        val doc = document()
+        // Insert on line 1 at char 2 (offset 6). Pre-change coords must be line=1,char=2.
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(6, "Z") }
+        val d = changes.last().deltas[0]
+        assertEquals(1L, d.range.start.line)
+        assertEquals(2L, d.range.start.character)
+        assertEquals("Z", d.text)
+    }
+
     fun testDocSaveEmitsHashOfSavedContent() {
         myFixture.configureByText("hw.py", "print(1)\n")
         install()

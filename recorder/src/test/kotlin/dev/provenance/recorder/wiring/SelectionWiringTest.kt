@@ -52,4 +52,40 @@ class SelectionWiringTest : BasePlatformTestCase() {
         WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.caretModel.moveToOffset(3) }
         assertTrue(changes.isEmpty())
     }
+
+    fun testSelectingTextEmitsWasSelectionTrueWithExtent() {
+        myFixture.configureByText("hw.py", "print(1)\nprint(2)\n")
+        val sink = FakeSink(workspaceRoot, changes)
+        SelectionWiring(
+            router = SessionRouter { path -> if (path.startsWith(workspaceRoot)) sink else null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.selectionModel.setSelection(0, 5) }
+        assertTrue("selecting text must emit selection.change", changes.isNotEmpty())
+        val sel = changes.last { it.wasSelection }
+        assertEquals("hw.py", sel.path)
+        assertTrue(sel.wasSelection)
+        assertEquals(0L, sel.range.start.line)
+        assertEquals(0L, sel.range.start.character)
+        assertEquals(0L, sel.range.end.line)
+        assertEquals(5L, sel.range.end.character)
+    }
+
+    fun testNonRecordableFileEmitsNothing() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        val sink = FakeSink(workspaceRoot, changes)
+        SelectionWiring(
+            router = SessionRouter { path -> if (path.startsWith(workspaceRoot)) sink else null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { false },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        WriteCommandAction.runWriteCommandAction(project) {
+            myFixture.editor.caretModel.moveToOffset(3)
+            myFixture.editor.selectionModel.setSelection(0, 4)
+        }
+        assertTrue("non-recordable file must not emit selection.change", changes.isEmpty())
+    }
 }
