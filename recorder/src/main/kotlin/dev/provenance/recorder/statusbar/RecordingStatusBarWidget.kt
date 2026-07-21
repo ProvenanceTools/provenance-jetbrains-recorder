@@ -1,9 +1,11 @@
 package dev.provenance.recorder.statusbar
 
+import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.util.Consumer
+import dev.provenance.recorder.activation.RecorderState
 import java.awt.Component
 import java.awt.event.MouseEvent
 
@@ -13,7 +15,7 @@ import java.awt.event.MouseEvent
  * so the student is always aware that telemetry is active."
  * Mirrors packages/recorder/src/activation/status-bar.ts.
  */
-class RecordingStatusBarWidget(@Suppress("unused") private val project: Project) :
+class RecordingStatusBarWidget(private val project: Project) :
     StatusBarWidget, StatusBarWidget.TextPresentation {
 
     override fun ID(): String = WIDGET_ID
@@ -30,7 +32,10 @@ class RecordingStatusBarWidget(@Suppress("unused") private val project: Project)
         // this widget to live session state.
     }
 
-    override fun getText(): String = "Provenance: recording"
+    override fun getText(): String {
+        val count = project.service<RecorderState>().activeManifests.size
+        return if (count > 1) "Provenance: recording ($count assignments)" else "Provenance: recording"
+    }
 
     override fun getTooltipText(): String = "Provenance recorder is active for this assignment."
 

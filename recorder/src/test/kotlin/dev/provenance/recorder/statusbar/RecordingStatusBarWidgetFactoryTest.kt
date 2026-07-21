@@ -18,8 +18,8 @@ class RecordingStatusBarWidgetFactoryTest : BasePlatformTestCase() {
         }
     }
 
-    private fun manifest() =
-        Manifest("hw03", "fa26", "2026-09-15T00:00:00Z", listOf("hw03.py"), "a".repeat(128))
+    private fun manifest(assignment: String = "hw03") =
+        Manifest(assignment, "fa26", "2026-09-15T00:00:00Z", listOf("$assignment.py"), "a".repeat(128))
 
     fun `test widget is not available before activation`() {
         val factory = RecordingStatusBarWidgetFactory()
@@ -42,5 +42,14 @@ class RecordingStatusBarWidgetFactoryTest : BasePlatformTestCase() {
         val factory = RecordingStatusBarWidgetFactory()
         val widget = factory.createWidget(project)
         assertEquals(factory.getId(), widget.ID())
+    }
+
+    fun `test widget text shows assignment count when more than one is active`() {
+        val state = project.service<RecorderState>()
+        state.activate(java.nio.file.Paths.get("/ws-a"), manifest())
+        state.activate(java.nio.file.Paths.get("/ws-b"), manifest("hw04"))
+        val widget = RecordingStatusBarWidgetFactory().createWidget(project)
+        val presentation = widget.getPresentation() as com.intellij.openapi.wm.StatusBarWidget.TextPresentation
+        assertEquals("Provenance: recording (2 assignments)", presentation.getText())
     }
 }
