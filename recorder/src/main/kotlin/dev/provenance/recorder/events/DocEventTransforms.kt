@@ -17,8 +17,12 @@ import dev.provenance.core.Range
 /**
  * Max byte-length for inlining doc.open content. Files larger than this carry only
  * sha256/line_count with truncated=true so the analyzer taints reconstruction.
+ *
+ * Aliases the shared [MAX_INLINE_BYTES] (InlineContentLimits.kt). doc.open was always
+ * 64 KB; `paste` and `fs.external_change` were raised to match it, and all three now
+ * move together.
  */
-const val DOC_OPEN_MAX_INLINE_BYTES: Int = 64 * 1024
+const val DOC_OPEN_MAX_INLINE_BYTES: Int = MAX_INLINE_BYTES
 
 /**
  * Inline [text] as content when its UTF-8 byte length is <= [maxInlineBytes];

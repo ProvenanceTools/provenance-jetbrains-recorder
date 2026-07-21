@@ -4,6 +4,7 @@ import dev.provenance.core.PasteAnomalyPayload
 import dev.provenance.core.Position
 import dev.provenance.core.Range
 import dev.provenance.core.toJsonObject
+import dev.provenance.recorder.events.MAX_INLINE_BYTES
 import dev.provenance.recorder.events.buildDocChangePayload
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -30,7 +31,9 @@ class PasteEventShapeConformanceTest {
 
     @Test
     fun `PastePayload json omits content and includes head-tail for a long paste`() {
-        val json = buildPastePayload("x".repeat(5000)).toPastePayload("a.py", range).toJsonObject()
+        // Must exceed MAX_INLINE_BYTES (64 KB) to take the truncating branch.
+        val json = buildPastePayload("x".repeat(MAX_INLINE_BYTES + 904))
+            .toPastePayload("a.py", range).toJsonObject()
         assertEquals(setOf("path", "range", "length", "sha256", "content_head", "content_tail"), json.keys)
     }
 

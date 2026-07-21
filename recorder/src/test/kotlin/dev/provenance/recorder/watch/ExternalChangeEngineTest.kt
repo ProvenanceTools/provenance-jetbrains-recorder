@@ -1,6 +1,7 @@
 package dev.provenance.recorder.watch
 
 import dev.provenance.core.Sha256
+import dev.provenance.recorder.events.MAX_INLINE_BYTES
 import dev.provenance.recorder.state.ExpectedContentRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -179,10 +180,12 @@ class ExternalChangeEngineTest {
     fun `large external content is truncated to head and tail on the payload`() {
         val e = engine("big.txt")
         e.registry.getOrCreate("big.txt", "small")
-        val big = "x".repeat(5000)
+        // Must exceed MAX_INLINE_BYTES (64 KB) to take the truncating branch.
+        val size = MAX_INLINE_BYTES + 904
+        val big = "x".repeat(size)
         val p = e.onExternalModify("big.txt", big)!!
         assertNull(p.newContent)
-        assertEquals(5000, p.newContentSize)
+        assertEquals(size, p.newContentSize)
         assertEquals("x".repeat(512), p.newContentHead)
         assertEquals("x".repeat(512), p.newContentTail)
     }
