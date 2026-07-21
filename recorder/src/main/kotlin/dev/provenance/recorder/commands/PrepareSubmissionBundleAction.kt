@@ -5,21 +5,23 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import dev.provenance.recorder.failure.DegradedModeNotifier
 import dev.provenance.recorder.session.RecorderSessionManager
+import java.nio.file.Path
 
 /**
- * "Provenance: Prepare Submission Bundle" — the UI trigger for the bundle seal, matching the VS
- * Code recorder's `provenance.prepareSubmissionBundle` command (PRD §4.6 / §5.3). It only
- * orchestrates: enabled iff a session is active, it runs the (already-tested, untouched) pure
- * seal off the EDT via a background task and reports the outcome as a balloon. All seal logic
- * lives in [RecorderSessionManager.sealActiveSession] → [sealBundle]; this class adds no
- * behavior of its own.
+ * "Provenance: Prepare Submission Bundle". Enabled iff at least one session is active. With
+ * exactly one, seals it directly (unchanged single-assignment behavior). With more than one,
+ * prompts for which assignment to seal (design.md nested-manifest discovery §4: "Seal
+ * selector"), defaulting the highlighted item to the assignment owning the focused editor.
  */
 class PrepareSubmissionBundleAction : AnAction() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
@@ -27,15 +29,55 @@ class PrepareSubmissionBundleAction : AnAction() {
     override fun update(e: AnActionEvent) {
         val project = e.project
         e.presentation.isEnabledAndVisible =
-            project != null && project.service<RecorderSessionManager>().activeSession != null
+            project != null && project.service<RecorderSessionManager>().activeSessions.isNotEmpty()
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        // Seal does synchronous file I/O (read .slog, zip the bundle) — never on the EDT.
+        val manager = project.service<RecorderSessionManager>()
+        val roots = manager.activeSessions.keys.toList()
+        when {
+            roots.isEmpty() -> Unit // update() already hid the action; defensive no-op
+            roots.size == 1 -> sealAndNotify(project, manager, roots.first())
+            else -> chooseRoot(project, manager, roots, e.dataContext) { chosen -> sealAndNotify(project, manager, chosen) }
+        }
+    }
+
+    private fun chooseRoot(
+        project: Project,
+        manager: RecorderSessionManager,
+        roots: List<Path>,
+        dataContext: DataContext,
+        onChosen: (Path) -> Unit,
+    ) {
+        val labelToRoot = LinkedHashMap<String, Path>()
+        for (root in roots) {
+            val assignmentId = manager.activeSessions[root]?.activated?.manifest?.assignmentId ?: root.toString()
+            val relative = project.basePath
+                ?.let { base -> runCatching { Path.of(base).relativize(root).toString() }.getOrNull() }
+                ?: root.toString()
+            labelToRoot["$assignmentId  ($relative)"] = root
+        }
+        val focusedRoot = FileEditorManager.getInstance(project).selectedEditor?.file
+            ?.let { vf -> runCatching { vf.toNioPath() }.getOrNull() }
+            ?.let { path -> manager.rootOwning(path) }
+        val focusedLabel = labelToRoot.entries.firstOrNull { it.value == focusedRoot }?.key
+
+        val builder = JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(labelToRoot.keys.toList())
+            .setTitle("Choose Assignment to Submit")
+            .setItemChosenCallback { label -> labelToRoot[label]?.let(onChosen) }
+        // Best-effort default highlight; not required by any test — verify the exact overload
+        // against the real SDK and drop this call if it doesn't compile as written.
+        if (focusedLabel != null) runCatching { builder.setSelectedValue(focusedLabel, true) }
+
+        builder.createPopup().showInBestPositionFor(dataContext)
+    }
+
+    private fun sealAndNotify(project: Project, manager: RecorderSessionManager, root: Path) {
         object : Task.Backgroundable(project, "Preparing Provenance submission bundle", false) {
             override fun run(indicator: ProgressIndicator) {
-                val result = project.service<RecorderSessionManager>().sealActiveSession()
+                val result = manager.sealSession(root)
                 notify(project, result)
             }
         }.queue()

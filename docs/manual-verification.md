@@ -24,6 +24,12 @@ logic only — see `StatusBarWidgetActivationGateTest` and `SealActionGateTest`.
       null, so CI stubs the hash via `RecorderSessionManager.extensionHashOverride`. If this
       breaks, every student's seal fails — re-check on each platform bump.
 
+- [ ] **Seal chooser popup.** Open a project with two sibling assignment manifests, run
+      Tools → Provenance: Prepare Submission Bundle, confirm a popup lists both assignment
+      IDs, the one under the focused editor is pre-highlighted, and choosing one produces a
+      bundle only for that assignment. This is UI (`JBPopupFactory`) that `PlatformTestUtil`
+      cannot drive headlessly — same category as the external-change entries below.
+
 ## External-change detection
 
 External-change detection (recorder PRD §4.5, and [`design.md`](design.md) §4.5) is the
