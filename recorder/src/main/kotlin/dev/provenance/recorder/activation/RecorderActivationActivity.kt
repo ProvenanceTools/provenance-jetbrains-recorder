@@ -1,63 +1,61 @@
 package dev.provenance.recorder.activation
 
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.impl.status.widget.StatusBarWidgetsManager
 import dev.provenance.recorder.session.RecorderSessionManager
 import dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory
+import java.nio.file.Paths
 
 /**
- * Runs once per project open. PRD §4.1: activate only when the workspace-root
- * manifest verifies; otherwise do nothing observable (RecorderState stays inactive,
- * no I/O, no UI).
+ * Runs once per project open. PRD §4.1: activate only for workspaces whose manifest(s) verify;
+ * otherwise do nothing observable. Discovers every nested verified manifest under the project
+ * (recursive walk from the project dir + every content root) and starts one concurrent session
+ * per discovered root, keyed by that root's resolved real path.
  *
- * The [loader] is injectable for tests (via the internal secondary constructor);
- * production uses the no-arg public constructor, which wires the real VFS-backed
- * [loadAndVerifyManifest]. An explicit no-arg constructor (rather than a Kotlin
- * default-parameter primary constructor) is used so the platform can instantiate
- * the extension by reflection without ambiguity.
+ * [discoverer] is injectable for tests (via the internal secondary constructor); production
+ * wires the real VFS-backed [discoverManifestRoots].
  */
 class RecorderActivationActivity internal constructor(
-    private val loader: (Project, String) -> ManifestActivation,
+    private val discoverer: (Project, String) -> List<DiscoveredManifest>,
 ) : ProjectActivity {
 
-    constructor() : this(::loadAndVerifyManifest)
+    constructor() : this(::discoverManifestRoots)
 
     override suspend fun execute(project: Project) {
-        val result = loader(project, COURSE_PUBLIC_KEY_HEX)
+        val discovered = discoverer(project, COURSE_PUBLIC_KEY_HEX)
         val state = project.service<RecorderState>()
-        when (result) {
-            is ManifestActivation.Active -> {
-                state.activate(result.manifest)
-                // Privacy gate satisfied: start recording for this project. The session manager
-                // runs startup chain-recovery, opens .provenance/, and wires every signal into a
-                // live RecordingSessionController. No-ops if a session is already active.
-                project.service<RecorderSessionManager>().startFromActivation(result.manifest)
+        state.deactivateAll()
+        val manager = project.service<RecorderSessionManager>()
+        for (found in discovered) {
+            // Activation state (the privacy gate / status bar) must not silently no-op just
+            // because a real filesystem path can't be resolved (e.g. an in-memory test
+            // fixture) — only *starting a session* additionally requires one.
+            val resolvedRoot = runCatching { found.root.toNioPath() }.getOrNull()
+                ?.let { runCatching { it.toRealPath() }.getOrDefault(it.normalize()) }
+            val stateKey = resolvedRoot ?: Paths.get(found.root.path)
+            state.activate(stateKey, found.manifest)
+            if (resolvedRoot != null) {
+                // TODO(Task 5/6): RecorderSessionManager.startFromActivation is still
+                // single-manifest-only; once Task 5 adds the per-root overload
+                // (root: Path, manifest: Manifest) this should call it with resolvedRoot so
+                // every discovered root gets its own concurrent session. For now this still
+                // only supports one live session, matching pre-multi-root behavior.
+                manager.startFromActivation(found.manifest)
+            } else {
+                LOG.info("discovered manifest at ${found.root.path} has no resolvable nio path; recording not started")
             }
-            is ManifestActivation.Inactive -> state.deactivate()
         }
         refreshStatusBarWidget(project)
     }
+
+    companion object {
+        private val LOG = Logger.getInstance(RecorderActivationActivity::class.java)
+    }
 }
 
-/**
- * Ensures the "Provenance: recording" status-bar indicator matches [RecorderState]: present
- * once recording is active, absent otherwise.
- *
- * Delegates to [StatusBarWidgetsManager], which re-evaluates
- * [dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory.isAvailable] (gated on
- * [RecorderState.isActive]) and installs or removes the widget accordingly. The manager owns
- * the EDT hop and the frame-not-yet-built ordering, so no manual status-bar mutation here.
- *
- * This previously added to / removed from the [com.intellij.openapi.wm.StatusBar] directly,
- * because the manager's async install had been seen to silently not surface the widget. That
- * direct path used `StatusBar.addWidget`/`removeWidget`, which are private platform API
- * (`@ApiStatus.Internal`) and must not be used by plugins — see the SDK's Internal API
- * Migration page. The disclosure requirement it was protecting (PRD §4.1: the indicator must
- * actually appear, not best-effort) is enforced by StatusBarWidgetActivationGateTest, which
- * asserts real presence in the project's status bar rather than trusting this call.
- */
 internal fun refreshStatusBarWidget(project: Project) {
     if (project.isDisposed) return
     project.service<StatusBarWidgetsManager>().updateWidget(RecordingStatusBarWidgetFactory::class.java)

@@ -27,7 +27,7 @@ class RecordingStatusBarWidgetFactoryTest : BasePlatformTestCase() {
     }
 
     fun `test widget is available after activation`() {
-        project.service<RecorderState>().activate(manifest())
+        project.service<RecorderState>().activate(java.nio.file.Paths.get("/ws"), manifest())
         val factory = RecordingStatusBarWidgetFactory()
         assertTrue(factory.isAvailable(project))
     }
