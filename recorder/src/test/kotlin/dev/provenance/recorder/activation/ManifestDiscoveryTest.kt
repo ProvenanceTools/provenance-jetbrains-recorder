@@ -71,4 +71,15 @@ class ManifestDiscoveryTest : BasePlatformTestCase() {
         val found = discoverManifestRoots(listOf(outer), Ed25519.bytesToHex(pub))
         assertEquals(setOf("outer", "inner"), found.map { it.manifest.assignmentId }.toSet())
     }
+
+    fun `test project-level overload discovers manifests via guessProjectDir and content roots`() {
+        val (priv, pub) = Ed25519.generateKeypair()
+        myFixture.addFileToProject("proj/.provenance-manifest", signedManifestJson(priv, "proj-level"))
+
+        val found = discoverManifestRoots(myFixture.project, Ed25519.bytesToHex(pub))
+
+        assertTrue("project-level discovery should find manifests in the fixture's project structure", found.isNotEmpty())
+        val assignmentIds = found.map { it.manifest.assignmentId }
+        assertTrue("should find the manifest we added to the project", assignmentIds.contains("proj-level"))
+    }
 }
