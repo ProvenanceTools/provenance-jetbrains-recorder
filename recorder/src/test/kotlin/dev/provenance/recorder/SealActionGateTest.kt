@@ -181,6 +181,19 @@ class SealActionGateTest : BasePlatformTestCase() {
         val hw03Bundles = Files.list(wsRoot2).use { s -> s.filter { it.fileName.toString().contains("hw03") }.toList() }
         assertTrue("the hw03 root's bundle must never land under the hog root", hw03Bundles.isEmpty())
 
+        // The real isolation check: sealing wsRoot2 must not have also sealed the hw03 session
+        // sitting in wsRoot (its own outputDir). If sealSession ever leaked into sealing every
+        // live session instead of only the chosen root, this is what would catch it — the
+        // hw03Bundles check above never can, since sealSession's outputDir is always the sealed
+        // session's own workspaceRoot, so an hw03 bundle could never land under wsRoot2 regardless.
+        val wsRootBundlesAfterSeal = Files.list(wsRoot).use { s ->
+            s.filter { it.fileName.toString().matches(Regex(".*-bundle-.*\\.zip")) }.toList()
+        }
+        assertTrue(
+            "sealing wsRoot2 must not also seal the untouched hw03 root (wsRoot)",
+            wsRootBundlesAfterSeal.isEmpty(),
+        )
+
         // Stash for the same separate node analysis-core validation (loadBundle + runValidation)
         // the single-session test below already does — the multi-root path must produce an
         // equally analyzer-ready bundle, not just a same-named zip.
