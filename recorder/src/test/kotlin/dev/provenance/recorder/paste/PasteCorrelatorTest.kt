@@ -3,7 +3,9 @@ package dev.provenance.recorder.paste
 import dev.provenance.core.DocChangeDelta
 import dev.provenance.core.Position
 import dev.provenance.core.Range
+import dev.provenance.recorder.events.MAX_INLINE_BYTES
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -97,5 +99,85 @@ class PasteCorrelatorTest {
         c.onDocChange(listOf(delta("z".repeat(40)))) // large insert
         assertEquals(1, c.interceptedCount)
         assertEquals(1, c.largeInsertCount)
+    }
+
+    // ---- size gate on paste routing (PRD §4.3) ----------------------------
+    //
+    // A `paste` payload above MAX_INLINE_BYTES carries only head/tail, so the
+    // analyzer's applyPaste returns applied=false and reconstruction for that file
+    // dies from that point. Such an insert must route to doc.change instead, whose
+    // deltas always replay. Nothing is lost: analysis-core treats a doc.change with
+    // source='paste_likely'/'paste_confirmed' as a candidate paste.
+
+    @Test
+    fun `single-range paste just under the cap is EmitPaste with full inline content`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val text = "a".repeat(MAX_INLINE_BYTES - 1)
+        val decision = c.onDocChange(listOf(delta(text)))
+
+        assertTrue(decision is PasteDecision.EmitPaste)
+        val fields = (decision as PasteDecision.EmitPaste).fields
+        assertEquals(text, fields.content) // replayable: full text present
+        assertEquals((MAX_INLINE_BYTES - 1).toLong(), fields.length)
+    }
+
+    @Test
+    fun `single-range paste exactly at the cap is still EmitPaste (boundary inclusive)`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val text = "a".repeat(MAX_INLINE_BYTES)
+        val decision = c.onDocChange(listOf(delta(text)))
+
+        assertTrue(decision is PasteDecision.EmitPaste)
+        assertEquals(text, (decision as PasteDecision.EmitPaste).fields.content)
+    }
+
+    @Test
+    fun `single-range paste just over the cap is EmitDocChange paste_likely, not EmitPaste`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val text = "a".repeat(MAX_INLINE_BYTES + 1)
+        val decision = c.onDocChange(listOf(delta(text)))
+
+        // Must NOT be a paste — that payload would be truncated and unreplayable.
+        assertTrue(decision is PasteDecision.EmitDocChange)
+        assertEquals("paste_likely", (decision as PasteDecision.EmitDocChange).source)
+        // Sanity: the payload we avoided building really would have lost its content.
+        assertNull(buildPastePayload(text).content)
+    }
+
+    /**
+     * The gate is UTF-8 BYTES, not String.length. 21846 euro signs are 65538 bytes
+     * (over the cap) but only 21846 UTF-16 code units — a length-based gate would
+     * wrongly emit an unreplayable paste here.
+     */
+    @Test
+    fun `the size gate is on UTF-8 bytes, not string length`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val text = "\u20AC".repeat(21846)
+        assertEquals(65538, text.toByteArray(Charsets.UTF_8).size)
+        assertTrue("char length must stay under the cap", text.length < MAX_INLINE_BYTES)
+
+        val decision = c.onDocChange(listOf(delta(text)))
+        assertTrue(decision is PasteDecision.EmitDocChange)
+        assertEquals("paste_likely", (decision as PasteDecision.EmitDocChange).source)
+    }
+
+    @Test
+    fun `multibyte paste at the cap in bytes is still EmitPaste`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val text = "\u20AC".repeat(MAX_INLINE_BYTES / 3) // 65535 bytes, under the cap
+        assertTrue(text.toByteArray(Charsets.UTF_8).size <= MAX_INLINE_BYTES)
+
+        val decision = c.onDocChange(listOf(delta(text)))
+        assertTrue(decision is PasteDecision.EmitPaste)
+        assertEquals(text, (decision as PasteDecision.EmitPaste).fields.content)
+    }
+
+    @Test
+    fun `the shape branch is unchanged - a multi-delta edit under the cap is still EmitDocChange`() {
+        val c = PasteCorrelator(getNow = { 0L })
+        val decision = c.onDocChange(listOf(delta("a".repeat(40)), delta("b".repeat(40))))
+
+        assertTrue(decision is PasteDecision.EmitDocChange)
+        assertEquals("paste_likely", (decision as PasteDecision.EmitDocChange).source)
     }
 }
