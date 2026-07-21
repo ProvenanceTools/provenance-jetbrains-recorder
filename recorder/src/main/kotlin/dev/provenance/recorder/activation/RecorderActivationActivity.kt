@@ -38,12 +38,7 @@ class RecorderActivationActivity internal constructor(
             val stateKey = resolvedRoot ?: Paths.get(found.root.path)
             state.activate(stateKey, found.manifest)
             if (resolvedRoot != null) {
-                // TODO(Task 5/6): RecorderSessionManager.startFromActivation is still
-                // single-manifest-only; once Task 5 adds the per-root overload
-                // (root: Path, manifest: Manifest) this should call it with resolvedRoot so
-                // every discovered root gets its own concurrent session. For now this still
-                // only supports one live session, matching pre-multi-root behavior.
-                manager.startFromActivation(found.manifest)
+                manager.startFromActivation(resolvedRoot, found.manifest)
             } else {
                 LOG.info("discovered manifest at ${found.root.path} has no resolvable nio path; recording not started")
             }

@@ -1,12 +1,13 @@
 package dev.provenance.recorder.session
 
-import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.FixedClock
 import dev.provenance.core.Manifest
 import dev.provenance.core.ParseResult
 import dev.provenance.core.GENESIS_PREV_HASH
 import dev.provenance.core.parseEntries
+import dev.provenance.recorder.events.buildDocChangeDelta
+import dev.provenance.recorder.events.buildDocChangePayload
 import dev.provenance.recorder.io.FlushScheduler
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
@@ -58,8 +59,6 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         parentDisposable = testRootDisposable,
         clock = FixedClock(0),
         scheduler = NoopScheduler(),
-        localFsOf = { true },
-        nioPathOf = { vf -> wsRoot.resolve(vf.name) },
     )
 
     private fun readEntries(c: RecordingSessionController): List<dev.provenance.core.HashedEnvelope> {
@@ -82,11 +81,14 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         assertEquals("ab".repeat(64), first.data["manifest_sig"]!!.jsonPrimitive.content)
     }
 
-    fun testTypingProducesChainedDocChange() {
-        myFixture.configureByText("hw.py", "print(1)\n")
+    // A doc.change delivered to the controller's RecordableSessionSink surface is appended and
+    // hash-chained after session.start. Real typing -> doc.change now flows through the project-
+    // scoped DocWiring the manager owns (that end-to-end keystroke path is covered by
+    // RecorderSessionManagerTest.testNoDoubleEmissionOnASingleDocChange); the controller no
+    // longer constructs DocWiring itself, so this unit test drives the sink method directly.
+    fun testDocChangeThroughSinkIsChained() {
         val c = controller()
-        val doc = myFixture.getDocument(myFixture.file)
-        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(doc.textLength, "x") }
+        c.onDocChange(buildDocChangePayload("hw.py", buildDocChangeDelta(0, 8, 0, 8, "x")))
         val entries = readEntries(c)
         // Chain intact across all emitted entries.
         var prev = GENESIS_PREV_HASH

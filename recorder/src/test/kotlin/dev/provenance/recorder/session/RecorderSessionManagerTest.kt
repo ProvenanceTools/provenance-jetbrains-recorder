@@ -17,14 +17,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ScheduledFuture
 
-/**
- * Lifecycle + seam-wiring test for RecorderSessionManager (the final integration pass). Proves,
- * headlessly: start() opens a live session (session.start on disk), the terminal/git emit seams
- * are opened while active and closed on stop(), coordinator-sourced events (terminal.open,
- * git.event) reach the controller's .slog, a normal doc edit is logged exactly once (no
- * double-emission from the feeder + DocWiring coexisting), and stop() ends the session
- * idempotently.
- */
 class RecorderSessionManagerTest : BasePlatformTestCase() {
     private class NoopScheduler : FlushScheduler {
         override fun scheduleAtFixedRate(periodMs: Long, task: Runnable): ScheduledFuture<*> =
@@ -41,32 +33,47 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
 
     private lateinit var wsRoot: Path
     private lateinit var provDir: Path
+    private lateinit var wsRoot2: Path
+    private lateinit var provDir2: Path
 
     override fun setUp() {
         super.setUp()
-        wsRoot = Files.createTempDirectory("mgr-ws")
+        // .toRealPath() so the roots match the registry's realpath-resolved keys and the
+        // toRealPath()-based lookups below — on macOS the OS tmpdir is symlinked (/var ->
+        // /private/var), so a raw createTempDirectory() path differs from its real path.
+        // Every existing manager gate test (ManagerLifecycleGateTest, ScopingGateTest, ...)
+        // realpaths its root for the same reason.
+        wsRoot = Files.createTempDirectory("mgr-ws").toRealPath()
         provDir = wsRoot.resolve(".provenance")
+        wsRoot2 = Files.createTempDirectory("mgr-ws2").toRealPath()
+        provDir2 = wsRoot2.resolve(".provenance")
     }
 
     override fun tearDown() {
         try {
-            // BasePlatformTestCase reuses one light project across the class's methods, so an
-            // un-stopped session (its global DocWiring listener, its seams) would leak into the
-            // next test. Stop it here to keep each method isolated.
             runCatching { project.service<RecorderSessionManager>().stop() }
             wsRoot.toFile().deleteRecursively()
+            wsRoot2.toFile().deleteRecursively()
         } finally {
             super.tearDown()
         }
     }
 
-    private fun manifest() = Manifest("hw03", "fa26", "2026-07-14T00:00:00Z", listOf("hw.py"), "ab".repeat(64))
+    private fun manifest(id: String = "hw03", root: Path = wsRoot) = Manifest(id, "fa26", "2026-07-14T00:00:00Z", listOf("hw.py"), "ab".repeat(64))
 
     private fun manager() = project.service<RecorderSessionManager>()
 
-    private fun start(m: RecorderSessionManager): RecorderSessionManager.ActiveSession =
+    /** Installs the test fs-seams BEFORE the first start() of this manager instance — the
+     * project-scoped DocWiring/SelectionWiring are constructed lazily on the first start()
+     * and read these overrides at that point. */
+    private fun installFsSeams(m: RecorderSessionManager) {
+        m.localFsOfOverride = { true }
+        m.nioPathOfOverride = { vf -> if (vf.name == "hw.py") wsRoot.resolve(vf.name) else wsRoot2.resolve(vf.name) }
+    }
+
+    private fun start(m: RecorderSessionManager, root: Path = wsRoot, provDir: Path = this.provDir, assignmentId: String = "hw03"): RecorderSessionManager.ActiveSession =
         m.start(
-            activated = ActivatedWorkspace(manifest(), provDir, wsRoot),
+            activated = ActivatedWorkspace(manifest(assignmentId, root), provDir, root),
             recovery = RecoveryDecision.CleanStart,
             ideVersion = "2026.1.4",
             platform = "darwin-arm64",
@@ -74,8 +81,6 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             recorderExtensionId = "com.aaryanmehta.provenance.recorder",
             clock = FixedClock(0),
             scheduler = NoopScheduler(),
-            localFsOf = { true },
-            nioPathOf = { vf -> wsRoot.resolve(vf.name) },
         )
 
     private fun kinds(session: RecorderSessionManager.ActiveSession): List<String> {
@@ -89,8 +94,6 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         val session = start(m)
         assertSame(session, m.activeSession)
         assertEquals("session.start", kinds(session).first())
-
-        // Terminal + git privacy gates are open while the session is active.
         assertNotNull(project.service<RecorderTerminalState>().emitTerminalOpen)
         assertNotNull(project.service<RecorderGitState>().emit)
     }
@@ -100,9 +103,11 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         val session = start(m)
 
         project.service<RecorderTerminalState>().emitTerminalOpen!!.invoke(
+            wsRoot,
             TerminalOpenPayload(terminalId = "term-0", shell = "zsh", shellIntegration = true),
         )
         project.service<RecorderGitState>().emit!!.invoke(
+            wsRoot,
             GitEventPayload(operation = "state_change", commitSha = "deadbeef"),
         )
 
@@ -111,7 +116,38 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertTrue("git.event must be recorded", ks.contains("git.event"))
     }
 
+    fun testTerminalEventWithNoOwningRootIsDropped() {
+        val m = manager()
+        val session = start(m)
+        project.service<RecorderTerminalState>().emitTerminalOpen!!.invoke(
+            Files.createTempDirectory("no-owner"),
+            TerminalOpenPayload(terminalId = "term-0", shell = "zsh", shellIntegration = true),
+        )
+        assertFalse("a terminal event with no owning session must be dropped", kinds(session).contains("terminal.open"))
+    }
+
+    fun testSecondSessionDoesNotClobberTheFirstsTerminalRouting() {
+        val m = manager()
+        val sessionA = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        val sessionB = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        project.service<RecorderTerminalState>().emitTerminalOpen!!.invoke(
+            wsRoot,
+            TerminalOpenPayload(terminalId = "term-a", shell = "zsh", shellIntegration = true),
+        )
+        project.service<RecorderTerminalState>().emitTerminalOpen!!.invoke(
+            wsRoot2,
+            TerminalOpenPayload(terminalId = "term-b", shell = "zsh", shellIntegration = true),
+        )
+
+        val aKinds = kinds(sessionA)
+        val bKinds = kinds(sessionB)
+        assertEquals("session A must see exactly its own terminal.open", 1, aKinds.count { it == "terminal.open" })
+        assertEquals("session B must see exactly its own terminal.open", 1, bKinds.count { it == "terminal.open" })
+    }
+
     fun testNoDoubleEmissionOnASingleDocChange() {
+        installFsSeams(manager())
         myFixture.configureByText("hw.py", "print(1)\n")
         val m = manager()
         val session = start(m)
@@ -125,15 +161,6 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
     fun testExtSnapshotIsDeliberatelyNotEmitted() {
         val m = manager()
         val session = start(m)
-        // Pins a DELIBERATE product gap, not desired behavior. Emitting ext.snapshot needs
-        // plugin enumeration, and every enumeration API is @ApiStatus.Internal as of 262 —
-        // which the Marketplace rejects. The lone public accessor, isPluginInstalled(), is
-        // `enabled || installed` and cannot report enabled state, so a probe-based snapshot
-        // would have to guess a field that ai_extension_active keys on.
-        //
-        // The cost this pins: a pre-installed AI assistant is invisible to this host
-        // (ext.activate only fires on mid-session loads). When JetBrains ships a public
-        // enumeration API, delete this test and restore the wiring + its emit test.
         assertFalse(
             "ext.snapshot must stay unwired until a public enumeration API exists",
             kinds(session).contains("ext.snapshot"),
@@ -143,7 +170,6 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
     fun testExtActivateIsWiredToDynamicPluginLoad() {
         val m = manager()
         val session = start(m)
-        // Simulate a mid-session plugin load on the application bus the manager subscribed to.
         val descriptor = java.lang.reflect.Proxy.newProxyInstance(
             com.intellij.ide.plugins.IdeaPluginDescriptor::class.java.classLoader,
             arrayOf(com.intellij.ide.plugins.IdeaPluginDescriptor::class.java),
@@ -174,8 +200,58 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         m.stop() // idempotent, no throw
     }
 
+    fun testStoppingOneRootLeavesTheOtherActive() {
+        val m = manager()
+        val sessionA = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        m.stop(wsRoot.toRealPath())
+
+        assertNull("stopped root's session must be gone", m.activeSessions[wsRoot.toRealPath()])
+        assertNotNull("the other root's session must still be active", m.activeSessions[wsRoot2.toRealPath()])
+        assertEquals("session.end", kinds(sessionA).last())
+    }
+
+    fun testActiveSessionIsNullWhenMoreThanOneIsActive() {
+        val m = manager()
+        start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+        assertNull("activeSession is the single-session convenience; ambiguous with 2 active", m.activeSession)
+        assertEquals(2, m.activeSessions.size)
+    }
+
     fun testSealWithNoActiveSessionReturnsNoSessions() {
         val m = manager()
         assertTrue(m.sealActiveSession() is dev.provenance.recorder.commands.SealResult.NoSessions)
+    }
+
+    fun testNestedRootRoutesToTheInnerSessionNotTheOuter() {
+        // A genuinely NESTED pair (not siblings): wsRoot is the outer assignment root, and a
+        // subdirectory of it is itself a second, inner assignment root. This is the case
+        // locked decision #5 ("nearest-enclosing ownership") exists for: a naive
+        // "startsWith(root)" filter would match BOTH roots for anything under the inner one,
+        // and the real algorithm (RecorderSessionManager.sinkFor/rootOwning's
+        // maxByOrNull { it.key.nameCount }) must pick the longer (inner) prefix.
+        val innerRoot = wsRoot.resolve("inner")
+        Files.createDirectories(innerRoot)
+        val outer = start(m = manager(), root = wsRoot, provDir = provDir, assignmentId = "outer")
+        val inner = start(m = manager(), root = innerRoot, provDir = innerRoot.resolve(".provenance"), assignmentId = "inner")
+
+        val pathUnderInner = innerRoot.resolve("hw.py")
+        val pathUnderOuterOnly = wsRoot.resolve("other.py")
+
+        val m = manager()
+        assertSame(
+            "a path under the inner root must route to the inner session, not the outer one",
+            inner.controller,
+            m.sinkFor(pathUnderInner),
+        )
+        assertSame(
+            "a path under only the outer root must route to the outer session",
+            outer.controller,
+            m.sinkFor(pathUnderOuterOnly),
+        )
+        assertEquals(innerRoot.toRealPath(), m.rootOwning(pathUnderInner))
+        assertEquals(wsRoot.toRealPath(), m.rootOwning(pathUnderOuterOnly))
     }
 }

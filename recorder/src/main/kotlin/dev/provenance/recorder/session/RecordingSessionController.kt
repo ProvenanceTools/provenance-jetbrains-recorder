@@ -27,12 +27,10 @@ import dev.provenance.recorder.io.SessionWriter
 import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.ClockSkewWatcher
-import dev.provenance.recorder.wiring.DocWiring
 import dev.provenance.recorder.wiring.Heartbeat
-import dev.provenance.recorder.wiring.SelectionWiring
+import dev.provenance.recorder.wiring.RecordableSessionSink
 import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
-import com.intellij.openapi.vfs.VirtualFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -58,13 +56,16 @@ data class ActivatedWorkspace(
 
 /**
  * Composes the recording session: session keypair → session.start → SessionWriter +
- * MetaWriter + SessionHost + DocWiring + Heartbeat, all tied to [parentDisposable].
- * Mirrors extension.ts's activateImpl Steps 3c–11, restricted to Plan 4's scope
- * (no paste/fs-watcher/terminal/git/ext-snapshot — those are later plans).
+ * MetaWriter + SessionHost + Heartbeat, all tied to [parentDisposable]. Mirrors extension.ts's
+ * activateImpl Steps 3c–11.
  *
- * The scheduler and DocWiring FS resolvers are injectable (production defaults) so the
- * controller is testable under a light BasePlatformTestCase whose files are not on the
- * local file system.
+ * As of the nested-manifest rewrite this controller is one *sink* among possibly several: the
+ * project-scoped [dev.provenance.recorder.wiring.DocWiring]/[dev.provenance.recorder.wiring.SelectionWiring]
+ * routers are constructed ONCE by [RecorderSessionManager] (not per-session here) and dispatch
+ * each doc/selection event to the nearest-enclosing session via [RecordableSessionSink]. This
+ * class therefore no longer constructs DocWiring/SelectionWiring itself; it exposes the six
+ * `on*` sink methods those routers call, plus [workspaceRoot] (for relative-path resolution)
+ * and [pasteCorrelator] (signals 1 & 3 of paste detection, resolved per keystroke by DocWiring).
  */
 class RecordingSessionController(
     activated: ActivatedWorkspace,
@@ -77,8 +78,6 @@ class RecordingSessionController(
     clock: Clock = SystemClock(),
     scheduler: FlushScheduler = DEFAULT_SCHEDULER,
     heartbeatIntervalMs: Long = Heartbeat.DEFAULT_INTERVAL_MS,
-    localFsOf: (VirtualFile) -> Boolean = { it.isInLocalFileSystem },
-    nioPathOf: (VirtualFile) -> Path? = { runCatching { it.toNioPath() }.getOrNull() },
     /**
      * Plan 8: the startup chain-recovery decision for this workspace's .provenance dir,
      * already computed by the caller (recoverPreviousSession, via NioRecoveryDeps). This
@@ -98,7 +97,18 @@ class RecordingSessionController(
      * this plan; cancelled from endSession()/dispose alongside the rest of session teardown.
      */
     checkpointScopeFactory: () -> CoroutineScope = { CoroutineScope(SupervisorJob() + Dispatchers.IO) },
-) {
+) : RecordableSessionSink {
+    /** [RecordableSessionSink]: the root the routers relativize recorded paths against. */
+    override val workspaceRoot: Path = activated.workspaceRoot
+
+    /**
+     * [RecordableSessionSink]: the live paste correlator (paste signals 1 & 3), or null once
+     * the session has ended. Backed directly by [pasteState].correlator — the same field
+     * endSession() nulls to close the paste privacy gate, so a late doc.change during teardown
+     * resolves a null correlator (pure passthrough) exactly as before.
+     */
+    override val pasteCorrelator: PasteCorrelator? get() = pasteState.correlator
+
     val sessionId: String = UUID.randomUUID().toString()
     val slogPath: Path
 
@@ -237,55 +247,53 @@ class RecordingSessionController(
         // Step 7b: three-signal paste detection (Plan 6). The correlator is shared
         // between the EditorPaste action wrapper (signal 2, via RecorderPasteState,
         // resolved per keystroke by the plugin.xml-registered PasteInterceptHandlerFactory)
-        // and DocWiring's classifier (signal 1) + clipboard similarity (signal 3). Publishing
-        // it into the project-scoped RecorderPasteState is what activates signal 2; clearing
-        // it on endSession() is the privacy gate closing.
-        val pasteCorrelator = PasteCorrelator(getNow = { clock.now() })
+        // and the project-scoped DocWiring's classifier (signal 1) + clipboard similarity
+        // (signal 3), which reaches it via this sink's [pasteCorrelator] getter. Publishing it
+        // into the project-scoped RecorderPasteState is what activates signal 2; clearing it on
+        // endSession() is the privacy gate closing.
+        val correlator = PasteCorrelator(getNow = { clock.now() })
         pasteState = project.service<RecorderPasteState>()
-        pasteState.correlator = pasteCorrelator
+        pasteState.correlator = correlator
 
         pasteTicker = PasteAnomalyTicker(
-            correlator = pasteCorrelator,
+            correlator = correlator,
             emit = { record("paste.anomaly", it.toJsonObject()) },
             scheduler = scheduler,
         )
         Disposer.register(parentDisposable, pasteTicker)
 
-        DocWiring(
-            project = project,
-            provenanceDir = activated.provenanceDir,
-            workspaceRoot = activated.workspaceRoot,
-            emitDocOpen = { record("doc.open", it.toJsonObject()) },
-            emitDocChange = {
-                heartbeat.recordActivity()
-                record("doc.change", it.toJsonObject())
-            },
-            emitDocSave = { record("doc.save", it.toJsonObject()) },
-            emitDocClose = { record("doc.close", it.toJsonObject()) },
-            parentDisposable = parentDisposable,
-            localFsOf = localFsOf,
-            nioPathOf = nioPathOf,
-            emitPaste = {
-                heartbeat.recordActivity()
-                record("paste", it.toJsonObject())
-            },
-            pasteCorrelator = pasteCorrelator,
-        )
-
-        // Step 8c: selection.change wiring (PRD §4.2) — caret + selection listeners on the same
-        // global editor multicaster, scoped by the same recordability filter as DocWiring.
-        SelectionWiring(
-            provenanceDir = activated.provenanceDir,
-            workspaceRoot = activated.workspaceRoot,
-            emitSelectionChange = { record("selection.change", it.toJsonObject()) },
-            parentDisposable = parentDisposable,
-            localFsOf = localFsOf,
-            nioPathOf = nioPathOf,
-        )
+        // NOTE: DocWiring / SelectionWiring are NOT constructed here anymore. They are project-
+        // scoped (one global listener each), constructed once by RecorderSessionManager, and
+        // route every doc/selection event to the nearest-enclosing session's sink (the six
+        // on* methods below). A per-session listener would double-fire for nested/overlapping
+        // assignment roots — see DocWiring's KDoc.
 
         // Ensure a graceful end if the parent is disposed without an explicit endSession.
         Disposer.register(parentDisposable) { endSession("dispose") }
     }
+
+    // --- RecordableSessionSink: the doc/selection/paste event methods the project-scoped
+    // DocWiring/SelectionWiring routers call once they've resolved this session as the owner.
+    // Each routes through the same guarded [record] path as every other emitter (dropped after
+    // endSession()). doc.change and paste also poke the heartbeat's activity clock, exactly as
+    // the removed per-session DocWiring emit closures did.
+    override fun onDocOpen(payload: dev.provenance.core.DocOpenPayload) = record("doc.open", payload.toJsonObject())
+
+    override fun onDocChange(payload: dev.provenance.core.DocChangePayload) {
+        heartbeat.recordActivity()
+        record("doc.change", payload.toJsonObject())
+    }
+
+    override fun onDocSave(payload: dev.provenance.core.DocSavePayload) = record("doc.save", payload.toJsonObject())
+
+    override fun onDocClose(payload: dev.provenance.core.DocClosePayload) = record("doc.close", payload.toJsonObject())
+
+    override fun onPaste(payload: dev.provenance.core.PastePayload) {
+        heartbeat.recordActivity()
+        record("paste", payload.toJsonObject())
+    }
+
+    override fun onSelectionChange(payload: dev.provenance.core.SelectionChangePayload) = record("selection.change", payload.toJsonObject())
 
     /**
      * Route a wiring-sourced event to the session host, unless the session has already
