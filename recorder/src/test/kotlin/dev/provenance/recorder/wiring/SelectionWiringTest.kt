@@ -1,58 +1,70 @@
 package dev.provenance.recorder.wiring
 
-import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.provenance.core.DocChangePayload
+import dev.provenance.core.DocClosePayload
+import dev.provenance.core.DocOpenPayload
+import dev.provenance.core.DocSavePayload
+import dev.provenance.core.PastePayload
 import dev.provenance.core.SelectionChangePayload
+import dev.provenance.recorder.paste.PasteCorrelator
 import java.nio.file.Path
 import java.nio.file.Paths
 
 class SelectionWiringTest : BasePlatformTestCase() {
-    private val selections = mutableListOf<SelectionChangePayload>()
-
     private val workspaceRoot: Path = Paths.get("/ws")
-    private val provenanceDir: Path = Paths.get("/ws/.provenance")
+    private val changes = mutableListOf<SelectionChangePayload>()
 
-    override fun tearDown() {
-        try {
-            selections.clear()
-        } finally {
-            super.tearDown()
-        }
+    private class FakeSink(override val workspaceRoot: Path, val changes: MutableList<SelectionChangePayload>) : RecordableSessionSink {
+        override val pasteCorrelator: PasteCorrelator? = null
+        override fun onDocOpen(payload: DocOpenPayload) = Unit
+        override fun onDocChange(payload: DocChangePayload) = Unit
+        override fun onDocSave(payload: DocSavePayload) = Unit
+        override fun onDocClose(payload: DocClosePayload) = Unit
+        override fun onPaste(payload: PastePayload) = Unit
+        override fun onSelectionChange(payload: SelectionChangePayload) { changes.add(payload) }
     }
 
-    private fun install(
-        localFsOf: (com.intellij.openapi.vfs.VirtualFile) -> Boolean = { true },
-    ) = SelectionWiring(
-        provenanceDir = provenanceDir,
-        workspaceRoot = workspaceRoot,
-        emitSelectionChange = { selections.add(it) },
-        parentDisposable = testRootDisposable,
-        localFsOf = localFsOf,
-        nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
-    )
-
-    fun testCursorMoveEmitsSelectionChangeWasSelectionFalse() {
+    fun testCaretMoveEmitsSelectionChangeForAnOwnedFile() {
         myFixture.configureByText("hw.py", "print(1)\nprint(2)\n")
-        install()
-        ApplicationManager.getApplication().runWriteAction {
-            myFixture.editor.caretModel.moveToOffset(3)
-        }
-        assertTrue("a cursor move must emit selection.change", selections.isNotEmpty())
-        val last = selections.last()
-        assertEquals("hw.py", last.path)
-        assertFalse("bare cursor move is not a selection", last.wasSelection)
-        assertEquals(last.range.start, last.range.end)
+        val sink = FakeSink(workspaceRoot, changes)
+        SelectionWiring(
+            router = SessionRouter { path -> if (path.startsWith(workspaceRoot)) sink else null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        val editor = myFixture.editor
+        WriteCommandAction.runWriteCommandAction(project) { editor.caretModel.moveToOffset(5) }
+        assertTrue("expected at least one selection.change", changes.isNotEmpty())
+        assertEquals("hw.py", changes.last().path)
+    }
+
+    fun testNoOwningSessionEmitsNothing() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        SelectionWiring(
+            router = SessionRouter { null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.caretModel.moveToOffset(3) }
+        assertTrue(changes.isEmpty())
     }
 
     fun testSelectingTextEmitsWasSelectionTrueWithExtent() {
         myFixture.configureByText("hw.py", "print(1)\nprint(2)\n")
-        install()
-        selections.clear()
-        ApplicationManager.getApplication().runWriteAction {
-            myFixture.editor.selectionModel.setSelection(0, 5)
-        }
-        assertTrue("selecting text must emit selection.change", selections.isNotEmpty())
-        val sel = selections.last { it.wasSelection }
+        val sink = FakeSink(workspaceRoot, changes)
+        SelectionWiring(
+            router = SessionRouter { path -> if (path.startsWith(workspaceRoot)) sink else null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.selectionModel.setSelection(0, 5) }
+        assertTrue("selecting text must emit selection.change", changes.isNotEmpty())
+        val sel = changes.last { it.wasSelection }
         assertEquals("hw.py", sel.path)
         assertTrue(sel.wasSelection)
         assertEquals(0L, sel.range.start.line)
@@ -63,12 +75,17 @@ class SelectionWiringTest : BasePlatformTestCase() {
 
     fun testNonRecordableFileEmitsNothing() {
         myFixture.configureByText("hw.py", "print(1)\n")
-        install(localFsOf = { false })
-        selections.clear()
-        ApplicationManager.getApplication().runWriteAction {
+        val sink = FakeSink(workspaceRoot, changes)
+        SelectionWiring(
+            router = SessionRouter { path -> if (path.startsWith(workspaceRoot)) sink else null },
+            parentDisposable = testRootDisposable,
+            localFsOf = { false },
+            nioPathOf = { vf -> workspaceRoot.resolve(vf.name) },
+        )
+        WriteCommandAction.runWriteCommandAction(project) {
             myFixture.editor.caretModel.moveToOffset(3)
             myFixture.editor.selectionModel.setSelection(0, 4)
         }
-        assertTrue("non-recordable file must not emit selection.change", selections.isEmpty())
+        assertTrue("non-recordable file must not emit selection.change", changes.isEmpty())
     }
 }

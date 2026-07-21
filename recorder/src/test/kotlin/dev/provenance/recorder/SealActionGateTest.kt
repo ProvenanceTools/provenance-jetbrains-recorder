@@ -145,4 +145,64 @@ class SealActionGateTest : BasePlatformTestCase() {
         Files.copy(bundles[0], stable, StandardCopyOption.REPLACE_EXISTING)
         println("E2E_SEAL_ACTION_BUNDLE_PATH=" + stable.toAbsolutePath())
     }
+
+    fun testTwoActiveSessionsSealsOnlyTheExplicitlyChosenOne() {
+        val manager = startLiveSession() // "hw.py" under wsRoot, assignment "hw03"
+        manager.extensionHashOverride = { "0".repeat(64) }
+
+        // A second, independent assignment root + session.
+        val wsRoot2 = Files.createTempDirectory("seal-action-ws2").toRealPath()
+        VfsRootAccess.allowRootAccess(testRootDisposable, wsRoot2.toString())
+        Files.writeString(wsRoot2.resolve("hog.py"), "print('hog')\n")
+        manager.start(
+            activated = ActivatedWorkspace(
+                HeavyTestManifests.signedManifestObject(assignmentId = "hog"),
+                wsRoot2.resolve(".provenance"),
+                wsRoot2,
+            ),
+            recovery = RecoveryDecision.CleanStart,
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            clock = FixedClock(0, Instant.parse("2026-07-14T00:00:00Z")),
+            scheduler = NoopScheduler(),
+            vfsDispatch = { it() },
+        )
+
+        // Seal the "hog" root directly through the manager (proves the manager side of the
+        // multi-root seal path independent of the popup UI, which PlatformTestUtil cannot drive
+        // headlessly) — the chooser UI itself is exercised manually per docs/manual-verification.md.
+        val result = manager.sealSession(wsRoot2)
+        assertTrue("sealing a specific root must succeed", result is dev.provenance.recorder.commands.SealResult.Ok)
+
+        val hogBundles = Files.list(wsRoot2).use { s -> s.filter { it.fileName.toString().matches(Regex("hog-bundle-.*\\.zip")) }.toList() }
+        assertEquals("exactly one bundle for the hog root", 1, hogBundles.size)
+        val hw03Bundles = Files.list(wsRoot2).use { s -> s.filter { it.fileName.toString().contains("hw03") }.toList() }
+        assertTrue("the hw03 root's bundle must never land under the hog root", hw03Bundles.isEmpty())
+
+        // The real isolation check: sealing wsRoot2 must not have also sealed the hw03 session
+        // sitting in wsRoot (its own outputDir). If sealSession ever leaked into sealing every
+        // live session instead of only the chosen root, this is what would catch it — the
+        // hw03Bundles check above never can, since sealSession's outputDir is always the sealed
+        // session's own workspaceRoot, so an hw03 bundle could never land under wsRoot2 regardless.
+        val wsRootBundlesAfterSeal = Files.list(wsRoot).use { s ->
+            s.filter { it.fileName.toString().matches(Regex(".*-bundle-.*\\.zip")) }.toList()
+        }
+        assertTrue(
+            "sealing wsRoot2 must not also seal the untouched hw03 root (wsRoot)",
+            wsRootBundlesAfterSeal.isEmpty(),
+        )
+
+        // Stash for the same separate node analysis-core validation (loadBundle + runValidation)
+        // the single-session test below already does — the multi-root path must produce an
+        // equally analyzer-ready bundle, not just a same-named zip.
+        val outDir = Paths.get("build/e2e-seal-action-multi")
+        Files.createDirectories(outDir)
+        val stable = outDir.resolve(hogBundles[0].fileName.toString())
+        Files.copy(hogBundles[0], stable, StandardCopyOption.REPLACE_EXISTING)
+        println("E2E_SEAL_ACTION_MULTI_BUNDLE_PATH=" + stable.toAbsolutePath())
+
+        wsRoot2.toFile().deleteRecursively()
+    }
 }

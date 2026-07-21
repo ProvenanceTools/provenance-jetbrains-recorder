@@ -5,17 +5,22 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Caret
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.actionSystem.EditorActionHandler
+import com.intellij.openapi.fileEditor.FileDocumentManager
 
 /**
  * The plugin.xml-instantiated editorActionHandler for "EditorPaste". The platform
  * supplies only the original handler (single-arg constructor, per the editorActionHandler
  * EP contract) — it cannot inject a project-scoped PasteCorrelator, so this factory
- * resolves one per call from RecorderPasteState, and is a no-op passthrough when the
- * project's recorder isn't active (activation is the privacy gate, per CLAUDE.md).
+ * resolves one per call from RecorderPasteState, routed by the PATH of the file being
+ * pasted into (the nearest-enclosing session's correlator, so concurrent sessions don't
+ * clobber one another). It is a no-op passthrough when no session owns the path (activation
+ * is the privacy gate, per CLAUDE.md).
  */
 class PasteInterceptHandlerFactory(private val originalHandler: EditorActionHandler) : EditorActionHandler() {
     override fun doExecute(editor: Editor, caret: Caret?, dataContext: DataContext?) {
-        val correlator = editor.project?.service<RecorderPasteState>()?.correlator
+        val vf = FileDocumentManager.getInstance().getFile(editor.document)
+        val path = vf?.let { runCatching { it.toNioPath() }.getOrNull() }
+        val correlator = editor.project?.service<RecorderPasteState>()?.resolveCorrelator?.invoke(path)
         if (correlator == null) {
             originalHandler.execute(editor, caret, dataContext)
             return

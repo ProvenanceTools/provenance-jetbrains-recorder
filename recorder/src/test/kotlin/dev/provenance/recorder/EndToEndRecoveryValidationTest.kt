@@ -129,8 +129,6 @@ class EndToEndRecoveryValidationTest : BasePlatformTestCase() {
             parentDisposable = testRootDisposable,
             clock = FixedClock(0, Instant.parse("2026-07-14T00:00:00Z")),
             scheduler = NoopScheduler(),
-            localFsOf = { true },
-            nioPathOf = { vf -> wsRoot.resolve(vf.name) },
             recovery = decision,
         )
 
@@ -205,8 +203,6 @@ class EndToEndRecoveryValidationTest : BasePlatformTestCase() {
             parentDisposable = testRootDisposable,
             clock = FixedClock(0, Instant.parse("2026-07-14T00:00:00Z")),
             scheduler = NoopScheduler(),
-            localFsOf = { true },
-            nioPathOf = { vf -> wsRoot.resolve(vf.name) },
             recovery = decision,
         )
 

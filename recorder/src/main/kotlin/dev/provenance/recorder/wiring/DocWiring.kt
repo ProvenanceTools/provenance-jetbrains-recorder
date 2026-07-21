@@ -11,11 +11,6 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
-import dev.provenance.core.DocChangePayload
-import dev.provenance.core.DocClosePayload
-import dev.provenance.core.DocOpenPayload
-import dev.provenance.core.DocSavePayload
-import dev.provenance.core.PastePayload
 import dev.provenance.core.Position
 import dev.provenance.core.Range
 import dev.provenance.core.Sha256
@@ -24,88 +19,64 @@ import dev.provenance.recorder.events.buildDocChangePayload
 import dev.provenance.recorder.events.buildDocClosePayload
 import dev.provenance.recorder.events.buildDocOpenPayload
 import dev.provenance.recorder.events.buildDocSavePayload
-import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.paste.PasteDecision
 import dev.provenance.recorder.paste.toPastePayload
 import java.nio.file.Path
 import java.util.WeakHashMap
 
 /**
- * doc.open/change/save/close wiring (recorder PRD §4.2). Registers a global
- * DocumentListener (via the EditorFactory multicaster), a FileEditorManagerListener
- * for open/close, and a FileDocumentManagerListener for saves — all tied to
- * [parentDisposable] so everything tears down together. Mirrors doc-wiring.ts.
+ * doc.open/change/save/close wiring (recorder PRD §4.2). Registered ONCE, project-scoped
+ * (constructed by RecorderSessionManager, not per-session — see design.md's nested-manifest
+ * discovery plan): a single global DocumentListener + FileEditorManagerListener +
+ * FileDocumentManagerListener, each resolving the *one* owning session per event via
+ * [router], and dropping the event when no session owns the path. This is what makes
+ * "no event escapes its assignment root" hold even for overlapping/nested roots — a per-
+ * session listener filtered only by "is this under my root" would double-fire for a file
+ * whose nearest ancestor differs from a farther, also-matching ancestor.
  *
- * Design decisions (per CLAUDE.md, made explicit not buried):
- *  1. One delta per event: IntelliJ's DocumentListener fires one before/after pair
- *     per atomic single-range mutation, so each doc.change carries a single-element
- *     deltas list (schema-valid; length 1). Multi-caret edits fire multiple pairs.
- *  2. Pre-change coordinates: offsets are converted to {line,character} in
- *     beforeDocumentChange, against the PRE-mutation document. Converting in
- *     documentChanged would resolve against the already-mutated doc → wrong range.
- *     The inserted text (newFragment) is read in documentChanged (valid there).
- *  3. Per-Document pending storage: the multicaster is global (every doc, every
- *     project), so pending ranges live in a WeakHashMap keyed by Document — a single
- *     field would be clobbered by interleaved events from unrelated documents.
- *
- * [localFsOf]/[nioPathOf] are injectable so the delta/coordinate logic is testable
- * in a light fixture (whose files are not on the local FS); production uses the real
- * VirtualFile checks.
+ * [localFsOf]/[nioPathOf] are injectable so the transform is testable under a light fixture
+ * whose files are not on the local file system; production uses the real VirtualFile checks.
  */
 class DocWiring(
     private val project: Project,
-    private val provenanceDir: Path,
-    private val workspaceRoot: Path,
-    private val emitDocOpen: (DocOpenPayload) -> Unit,
-    private val emitDocChange: (DocChangePayload) -> Unit,
-    private val emitDocSave: (DocSavePayload) -> Unit,
-    private val emitDocClose: (DocClosePayload) -> Unit,
+    private val router: SessionRouter,
     parentDisposable: Disposable,
-    private val manifestNames: Set<String> = MANIFEST_FILE_NAMES_FILTER,
     private val localFsOf: (VirtualFile) -> Boolean = { it.isInLocalFileSystem },
     private val nioPathOf: (VirtualFile) -> Path? = { runCatching { it.toNioPath() }.getOrNull() },
-    // Paste detection (Plan 6). When [pasteCorrelator] is null the listener behaves
-    // exactly as Plan 4 shipped (every change → doc.change source="typed"). When present,
-    // each change is classified: a paste-shaped single insert emits a `paste` event via
-    // [emitPaste]; everything else emits doc.change with the classified source
-    // (typed/paste_likely/paste_confirmed). Folding this INTO Plan 4's sole emitting
-    // DocumentListener — rather than adding a second one — is what keeps doc.change from
-    // being double-logged (see the Plan 6 reconciliation note).
-    private val emitPaste: (PastePayload) -> Unit = {},
-    private val pasteCorrelator: PasteCorrelator? = null,
 ) {
     private val pending = WeakHashMap<Document, Range>()
-    private val seenPaths = mutableSetOf<String>()
+    // Keyed by absolute nio path, NOT relative path: two different owning roots can each have
+    // a file with the same relative name (e.g. "hw.py" under both cats/ and hog/), and a
+    // relative-path key would wrongly treat the second as already-seen.
+    private val seenPaths = mutableSetOf<Path>()
 
     init {
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(
             object : DocumentListener {
                 override fun beforeDocumentChange(event: DocumentEvent) {
                     val vf = FileDocumentManager.getInstance().getFile(event.document) ?: return
-                    if (!isRecordable(vf)) return
+                    if (sinkFor(vf) == null) return
                     pending[event.document] = rangeOf(event.document, event.offset, event.oldLength)
                 }
 
                 override fun documentChanged(event: DocumentEvent) {
                     val vf = FileDocumentManager.getInstance().getFile(event.document) ?: return
-                    if (!isRecordable(vf)) return
+                    val sink = sinkFor(vf) ?: return
                     val range = pending.remove(event.document) ?: return
                     val delta = buildDocChangeDelta(
                         range.start.line, range.start.character,
                         range.end.line, range.end.character,
                         event.newFragment.toString(),
                     )
-                    val path = relativePath(vf)
-                    val correlator = pasteCorrelator
+                    val path = relativePath(vf, sink.workspaceRoot)
+                    val correlator = sink.pasteCorrelator
                     if (correlator == null) {
-                        emitDocChange(buildDocChangePayload(path, delta))
+                        sink.onDocChange(buildDocChangePayload(path, delta))
                         return
                     }
                     when (val decision = correlator.onDocChange(listOf(delta))) {
-                        is PasteDecision.EmitPaste ->
-                            emitPaste(decision.fields.toPastePayload(path, decision.range))
-                        is PasteDecision.EmitDocChange ->
-                            emitDocChange(buildDocChangePayload(path, delta, decision.source))
+                        is PasteDecision.EmitPaste -> sink.onPaste(decision.fields.toPastePayload(path, decision.range))
+                        is PasteDecision.EmitDocChange -> sink.onDocChange(buildDocChangePayload(path, delta, decision.source))
                     }
                 }
             },
@@ -116,48 +87,62 @@ class DocWiring(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
                 override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
-                    if (isRecordable(file)) emitDocOpenFor(file)
+                    val sink = sinkFor(file) ?: return
+                    emitDocOpenFor(file, sink)
                 }
 
                 override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
-                    if (isRecordable(file)) emitDocClose(buildDocClosePayload(relativePath(file)))
+                    val sink = sinkFor(file) ?: return
+                    sink.onDocClose(buildDocClosePayload(relativePath(file, sink.workspaceRoot)))
                 }
             },
         )
 
-        // beforeDocumentSaving fires with the about-to-be-written content already in
-        // the Document, so sha256(document.text) here IS the content that lands on disk.
-        // FileDocumentManagerListener.TOPIC is the current topic (AppTopics.FILE_DOCUMENT_SYNC
-        // is deprecated).
         project.messageBus.connect(parentDisposable).subscribe(
             FileDocumentManagerListener.TOPIC,
             object : FileDocumentManagerListener {
                 override fun beforeDocumentSaving(document: Document) {
                     val vf = FileDocumentManager.getInstance().getFile(document) ?: return
-                    if (!isRecordable(vf)) return
-                    emitDocSave(buildDocSavePayload(relativePath(vf), Sha256.hex(document.text)))
+                    val sink = sinkFor(vf) ?: return
+                    sink.onDocSave(buildDocSavePayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(document.text)))
                 }
             },
         )
 
         // Catch-up: files already open when wiring starts never fire fileOpened.
+        catchUpOpenFiles()
+    }
+
+    /**
+     * Emit doc.open for every currently-open file that some session now owns. Run once at
+     * construction, and again by RecorderSessionManager on EVERY session start — because this
+     * project-scoped wiring is constructed only once (on the first session), a later session
+     * whose root already has files open would otherwise never see their doc.open baseline. The
+     * [seenPaths] de-dup (keyed by absolute path) makes repeated calls idempotent: a file already
+     * caught up is not re-emitted, only the newly-owned root's open files are.
+     */
+    fun catchUpOpenFiles() {
         for (vf in FileEditorManager.getInstance(project).openFiles) {
-            if (isRecordable(vf)) emitDocOpenFor(vf)
+            val sink = sinkFor(vf) ?: continue
+            emitDocOpenFor(vf, sink)
         }
     }
 
-    private fun emitDocOpenFor(vf: VirtualFile) {
-        val path = relativePath(vf)
-        if (!seenPaths.add(path)) return // defensive de-dup (mirrors seenDocs in doc-wiring.ts)
-        val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return
-        val text = doc.text
-        emitDocOpen(buildDocOpenPayload(path, Sha256.hex(text), doc.lineCount.toLong(), text))
+    private fun sinkFor(vf: VirtualFile): RecordableSessionSink? {
+        if (!localFsOf(vf)) return null
+        val path = nioPathOf(vf) ?: return null
+        return router.sinkFor(path)
     }
 
-    private fun isRecordable(vf: VirtualFile): Boolean =
-        isRecordablePath(nioPathOf(vf), localFsOf(vf), workspaceRoot, provenanceDir, manifestNames)
+    private fun emitDocOpenFor(vf: VirtualFile, sink: RecordableSessionSink) {
+        val path = nioPathOf(vf) ?: return
+        if (!seenPaths.add(path)) return // defensive de-dup, keyed by absolute path
+        val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return
+        val text = doc.text
+        sink.onDocOpen(buildDocOpenPayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(text), doc.lineCount.toLong(), text))
+    }
 
-    private fun relativePath(vf: VirtualFile): String {
+    private fun relativePath(vf: VirtualFile, workspaceRoot: Path): String {
         val nio = nioPathOf(vf) ?: return vf.name
         return runCatching { workspaceRoot.normalize().relativize(nio.normalize()).toString().replace('\\', '/') }
             .getOrDefault(vf.name)

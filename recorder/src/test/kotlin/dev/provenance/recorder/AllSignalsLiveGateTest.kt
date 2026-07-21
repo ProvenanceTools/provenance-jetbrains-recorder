@@ -153,13 +153,15 @@ class AllSignalsLiveGateTest : BasePlatformTestCase() {
             readEntries(session.controller.slogPath).count { it.kind == "doc.change" },
         )
 
-        // (2) terminal signal via its now-open seam.
+        // (2) terminal signal via its now-open seam. The cwd (Task 4's routing path) is the
+        // session's own workspace root, so the manager's router dispatches it to this session.
         project.service<dev.provenance.recorder.wiring.RecorderTerminalState>().emitTerminalOpen!!
-            .invoke(TerminalOpenPayload(terminalId = "term-0", shell = "zsh", shellIntegration = true))
+            .invoke(wsRoot, TerminalOpenPayload(terminalId = "term-0", shell = "zsh", shellIntegration = true))
 
-        // (3) git signal via its seam — this also marks the explanation tagger (markGit()).
+        // (3) git signal via its seam — this also marks the explanation tagger (markGit()). The
+        // repoRoot (Task 4's routing path) is the session root so the router picks this session.
         project.service<dev.provenance.recorder.wiring.RecorderGitState>().emit!!
-            .invoke(GitEventPayload(operation = "state_change", commitSha = "deadbeef"))
+            .invoke(wsRoot, GitEventPayload(operation = "state_change", commitSha = "deadbeef"))
 
         // (4) genuine external write — the LAST content event for hw.py. Because a git op was just
         // marked, the fs.external_change carries explanation="git" (checkout/reset suppression).
