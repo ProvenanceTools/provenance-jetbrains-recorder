@@ -13,6 +13,7 @@ import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
+import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ScheduledFuture
@@ -210,6 +211,69 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertNull("stopped root's session must be gone", m.activeSessions[wsRoot.toRealPath()])
         assertNotNull("the other root's session must still be active", m.activeSessions[wsRoot2.toRealPath()])
         assertEquals("session.end", kinds(sessionA).last())
+    }
+
+    fun testPasteCorrelatorResolvesToTheOwningSessionNotAClobberedSlot() {
+        // Sibling of testSecondSessionDoesNotClobberTheFirstsTerminalRouting, for paste signal 2:
+        // the project-scoped RecorderPasteState is a path-routed resolver, not a single slot, so a
+        // second session's start must NOT clobber the first's correlator, and each pasted-into
+        // path must resolve its OWN session's correlator.
+        val m = manager()
+        val sessionA = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        val sessionB = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        val resolve = project.service<RecorderPasteState>().resolveCorrelator
+        assertNotNull("resolver must be installed while a session is active", resolve)
+        assertSame(
+            "a paste under root A must resolve A's own correlator",
+            sessionA.controller.pasteCorrelator,
+            resolve!!.invoke(wsRoot.resolve("hw.py")),
+        )
+        assertSame(
+            "a paste under root B must resolve B's own correlator (B did not clobber A)",
+            sessionB.controller.pasteCorrelator,
+            resolve.invoke(wsRoot2.resolve("hw.py")),
+        )
+
+        // Stopping B must NOT null out A's still-live correlator resolution (the shared-slot bug).
+        m.stop(wsRoot2.toRealPath())
+        val afterStop = project.service<RecorderPasteState>().resolveCorrelator
+        assertNotNull("A is still active, so the resolver stays installed", afterStop)
+        assertSame(
+            "stopping B must leave A's correlator resolution intact",
+            sessionA.controller.pasteCorrelator,
+            afterStop!!.invoke(wsRoot.resolve("hw.py")),
+        )
+        assertNull(
+            "B's path no longer resolves any correlator once B is stopped",
+            afterStop.invoke(wsRoot2.resolve("hw.py")),
+        )
+    }
+
+    fun testLaterStartedSessionCatchesUpItsAlreadyOpenFiles() {
+        // doc.open catch-up must fire per session start, not only for the first: the project-scoped
+        // DocWiring is constructed once (on session A), so a later session B whose root already has
+        // an open file would otherwise never get that file's doc.open baseline.
+        installFsSeams(manager())
+        val fileA = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        val fileB = myFixture.addFileToProject("hog.py", "print(2)\n").virtualFile
+
+        val m = manager()
+        myFixture.openFileInEditor(fileA)
+        val sessionA = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+
+        // B's file is already open in the editor BEFORE B starts.
+        myFixture.openFileInEditor(fileB)
+        val sessionB = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        assertTrue(
+            "session A's already-open file must be caught up (unchanged first-session behavior)",
+            kinds(sessionA).contains("doc.open"),
+        )
+        assertTrue(
+            "session B's already-open file must be caught up on B's own start()",
+            kinds(sessionB).contains("doc.open"),
+        )
     }
 
     fun testActiveSessionIsNullWhenMoreThanOneIsActive() {

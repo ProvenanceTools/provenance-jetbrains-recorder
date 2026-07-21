@@ -31,6 +31,7 @@ import dev.provenance.recorder.wiring.RecorderTerminalState
 import dev.provenance.recorder.wiring.SelectionWiring
 import dev.provenance.recorder.wiring.SessionRouter
 import dev.provenance.recorder.wiring.isRecordablePath
+import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
 import org.jetbrains.annotations.TestOnly
 import java.nio.file.Path
@@ -109,6 +110,10 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         terminalState.emitTerminalOpen = { cwd, payload -> routeTerminalOpen(cwd, payload) }
         terminalState.emitTerminalCommand = { cwd, payload -> routeTerminalCommand(cwd, payload) }
         project.service<RecorderGitState>().emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
+        // Paste signal 2 (the EditorPaste action wrapper) is routed by path the same way, so
+        // concurrent sessions don't clobber a shared slot: the nearest-enclosing session's own
+        // pasteCorrelator, or null when no session owns the pasted-into file (privacy gate).
+        project.service<RecorderPasteState>().resolveCorrelator = { path -> path?.let(::sinkFor)?.pasteCorrelator }
         routedWiring = RoutedWiring(disposable, doc, sel)
     }
 
@@ -119,16 +124,17 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         Disposer.dispose(rw.disposable)
         project.service<RecorderTerminalState>().apply { emitTerminalOpen = null; emitTerminalCommand = null }
         project.service<RecorderGitState>().emit = null
+        project.service<RecorderPasteState>().resolveCorrelator = null
     }
 
-    private fun nearestEntry(path: Path, predicate: (Path, ActiveSession) -> Boolean): Map.Entry<Path, ActiveSession>? =
+    private fun nearestEntry(predicate: (Path, ActiveSession) -> Boolean): Map.Entry<Path, ActiveSession>? =
         sessions.entries.filter { (root, s) -> predicate(root, s) }.maxByOrNull { it.key.nameCount }
 
     /** [SessionRouter] implementation: nearest-enclosing session whose recordability
      * exclusions (workspace scope, `.provenance/`, activation manifest names, `.idea/`) admit
      * [nioPath]. Shared by DocWiring and SelectionWiring. */
     override fun sinkFor(nioPath: Path): RecordableSessionSink? =
-        nearestEntry(nioPath.normalize()) { root, s -> isRecordablePath(nioPath, true, root, s.activated.provenanceDir) }
+        nearestEntry { root, s -> isRecordablePath(nioPath, true, root, s.activated.provenanceDir) }
             ?.value?.controller
 
     /** The root (if any) whose assignment nearest-encloses [path] — no recordability
@@ -136,12 +142,12 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
      * assignment, not to decide what to record). */
     fun rootOwning(path: Path): Path? {
         val normalized = runCatching { path.toRealPath() }.getOrDefault(path.normalize())
-        return nearestEntry(normalized) { root, _ -> normalized.startsWith(root) }?.key
+        return nearestEntry { root, _ -> normalized.startsWith(root) }?.key
     }
 
     private fun sessionOwning(path: Path): ActiveSession? {
         val normalized = runCatching { path.toRealPath() }.getOrDefault(path.normalize())
-        return nearestEntry(normalized) { root, _ -> normalized.startsWith(root) }?.value
+        return nearestEntry { root, _ -> normalized.startsWith(root) }?.value
     }
 
     private fun routeTerminalOpen(cwd: Path?, payload: dev.provenance.core.TerminalOpenPayload) {
@@ -225,6 +231,13 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         // already-open file's initial snapshot would be lost). Registering first closes that gap.
         sessions[root] = session
         ensureRoutedWiring()
+
+        // Catch up doc.open for files already open under THIS root, on EVERY start() — not just
+        // the first (which constructs DocWiring and runs its init-time catch-up). ensureRoutedWiring
+        // short-circuits after the first session, so a later session whose root already has open
+        // files would otherwise never get their doc.open baseline. DocWiring's seenPaths de-dup
+        // (keyed by absolute path) makes this idempotent: already-caught-up files are not re-emitted.
+        routedWiring?.docWiring?.catchUpOpenFiles()
 
         wireExternalChange(controller, activated, tagger, vfsDispatch, sessionDisposable)
         // NO ext.snapshot (PRD §4.4) — deliberately unwired on this host, not an oversight. Every

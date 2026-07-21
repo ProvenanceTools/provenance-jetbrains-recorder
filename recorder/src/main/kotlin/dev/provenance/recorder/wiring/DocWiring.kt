@@ -110,6 +110,18 @@ class DocWiring(
         )
 
         // Catch-up: files already open when wiring starts never fire fileOpened.
+        catchUpOpenFiles()
+    }
+
+    /**
+     * Emit doc.open for every currently-open file that some session now owns. Run once at
+     * construction, and again by RecorderSessionManager on EVERY session start — because this
+     * project-scoped wiring is constructed only once (on the first session), a later session
+     * whose root already has files open would otherwise never see their doc.open baseline. The
+     * [seenPaths] de-dup (keyed by absolute path) makes repeated calls idempotent: a file already
+     * caught up is not re-emitted, only the newly-owned root's open files are.
+     */
+    fun catchUpOpenFiles() {
         for (vf in FileEditorManager.getInstance(project).openFiles) {
             val sink = sinkFor(vf) ?: continue
             emitDocOpenFor(vf, sink)

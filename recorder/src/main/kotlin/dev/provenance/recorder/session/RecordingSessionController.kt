@@ -3,7 +3,6 @@ package dev.provenance.recorder.session
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationActivationListener
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
@@ -30,7 +29,6 @@ import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.Heartbeat
 import dev.provenance.recorder.wiring.RecordableSessionSink
 import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
-import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -102,12 +100,16 @@ class RecordingSessionController(
     override val workspaceRoot: Path = activated.workspaceRoot
 
     /**
-     * [RecordableSessionSink]: the live paste correlator (paste signals 1 & 3), or null once
-     * the session has ended. Backed directly by [pasteState].correlator — the same field
-     * endSession() nulls to close the paste privacy gate, so a late doc.change during teardown
-     * resolves a null correlator (pure passthrough) exactly as before.
+     * [RecordableSessionSink]: this session's own paste correlator (paste signals 1 & 3). Owned
+     * per session, no longer published into a shared project-scoped slot: the project-scoped
+     * DocWiring (signals 1 & 3) and the EditorPaste action wrapper (signal 2, via
+     * RecorderPasteState's path-routed resolver) both reach it through this getter after the
+     * router resolves THIS session as the owner of the edited path. The privacy gate is now the
+     * router: once the session is removed from the registry on stop, it is never resolved again,
+     * so no correlator is handed out; a late in-flight event is still dropped by [record]'s
+     * `ended` guard.
      */
-    override val pasteCorrelator: PasteCorrelator? get() = pasteState.correlator
+    override val pasteCorrelator: PasteCorrelator
 
     val sessionId: String = UUID.randomUUID().toString()
     val slogPath: Path
@@ -126,7 +128,6 @@ class RecordingSessionController(
     private val host: SessionHost
     private val heartbeat: Heartbeat
     private val pasteTicker: PasteAnomalyTicker
-    private val pasteState: RecorderPasteState
     private val diskFullHandler: DiskFullHandler
     private val checkpointCadence: CheckpointCadence
     private val checkpointScheduler: CheckpointScheduler
@@ -244,19 +245,16 @@ class RecordingSessionController(
         )
         Disposer.register(parentDisposable, clockSkewWatcher)
 
-        // Step 7b: three-signal paste detection (Plan 6). The correlator is shared
-        // between the EditorPaste action wrapper (signal 2, via RecorderPasteState,
-        // resolved per keystroke by the plugin.xml-registered PasteInterceptHandlerFactory)
-        // and the project-scoped DocWiring's classifier (signal 1) + clipboard similarity
-        // (signal 3), which reaches it via this sink's [pasteCorrelator] getter. Publishing it
-        // into the project-scoped RecorderPasteState is what activates signal 2; clearing it on
-        // endSession() is the privacy gate closing.
-        val correlator = PasteCorrelator(getNow = { clock.now() })
-        pasteState = project.service<RecorderPasteState>()
-        pasteState.correlator = correlator
+        // Step 7b: three-signal paste detection (Plan 6). This session owns its correlator; both
+        // the EditorPaste action wrapper (signal 2, via RecorderPasteState's path-routed resolver
+        // installed by RecorderSessionManager) and the project-scoped DocWiring's classifier
+        // (signal 1) + clipboard similarity (signal 3) reach it through this sink's
+        // [pasteCorrelator] getter once the router resolves this session as the owning one. No
+        // per-session publish/clear into a shared slot anymore — the router IS the privacy gate.
+        pasteCorrelator = PasteCorrelator(getNow = { clock.now() })
 
         pasteTicker = PasteAnomalyTicker(
-            correlator = correlator,
+            correlator = pasteCorrelator,
             emit = { record("paste.anomaly", it.toJsonObject()) },
             scheduler = scheduler,
         )
@@ -315,9 +313,9 @@ class RecordingSessionController(
         try {
             host.emit("session.end", SessionEndPayload(reason).toJsonObject())
         } finally {
-            // Close the paste privacy gate first so a late EditorPaste during teardown
-            // resolves a null correlator (pure passthrough), not a disposed session.
-            pasteState.correlator = null
+            // The paste privacy gate is closed by RecorderSessionManager removing this session
+            // from the registry before disposal, so the path-routed resolver stops handing out
+            // this session's correlator; nothing to clear here anymore.
             pasteTicker.dispose()
             heartbeat.dispose()
             runBlocking { checkpointScheduler.drain() }
