@@ -305,6 +305,25 @@ fun ClockSkewPayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
+ * session.resumed payload. Emitted by [dev.provenance.recorder.wiring.Heartbeat] when a
+ * heartbeat tick's wall-clock gap since the previous tick is at least twice the heartbeat
+ * interval — the signature of the OS having suspended the process (lid close / sleep) rather
+ * than a merely slow tick. Fixes the false `gap_in_heartbeats` cross-submission flags a
+ * suspend produces: with no signal marking the gap as an expected suspend rather than a
+ * dropped/tampered recorder, the analyzer cannot tell the two apart.
+ *
+ * [gapMs] is the observed wall-clock delta between this tick and the previous one;
+ * [expectedIntervalMs] is the configured heartbeat interval (30_000 in production) the gap is
+ * measured against. Deliberately wall-clock, not monotonic — see Heartbeat.kt's tick() for why.
+ */
+data class SessionResumedPayload(val gapMs: Long, val expectedIntervalMs: Long)
+
+fun SessionResumedPayload.toJsonObject(): JsonObject = buildJsonObject {
+    put("gap_ms", gapMs)
+    put("expected_interval_ms", expectedIntervalMs)
+}
+
+/**
  * One entry in an ext.snapshot's `extensions` array. On the JetBrains host these are
  * installed IntelliJ *plugins*, but the wire field stays `extensions` (and each entry's
  * keys stay id/version/enabled) because that is the log-core contract — the analyzer is

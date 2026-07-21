@@ -260,6 +260,14 @@ class EventsTest {
     }
 
     @Test
+    fun `session resumed payload emits gap_ms and expected_interval_ms`() {
+        val obj = SessionResumedPayload(gapMs = 90_000, expectedIntervalMs = 30_000).toJsonObject()
+        assertEquals(90_000L, obj["gap_ms"]!!.jsonPrimitive.long)
+        assertEquals(30_000L, obj["expected_interval_ms"]!!.jsonPrimitive.long)
+        assertEquals(setOf("gap_ms", "expected_interval_ms"), obj.keys)
+    }
+
+    @Test
     fun `focus change payload emits gained and omits reason when null`() {
         val obj = FocusChangePayload(gained = true).toJsonObject()
         assertEquals(true, obj["gained"]!!.jsonPrimitive.boolean)

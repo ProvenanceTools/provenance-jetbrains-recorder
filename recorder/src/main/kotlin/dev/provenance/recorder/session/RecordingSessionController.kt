@@ -14,6 +14,7 @@ import dev.provenance.core.FocusChangePayload
 import dev.provenance.core.Manifest
 import dev.provenance.core.RecorderDegradedPayload
 import dev.provenance.core.SessionEndPayload
+import dev.provenance.core.SessionResumedPayload
 import dev.provenance.core.SystemClock
 import dev.provenance.core.encryptSessionPrivkey
 import dev.provenance.core.generateSessionKeypair
@@ -228,11 +229,13 @@ class RecordingSessionController(
         )
         heartbeat = Heartbeat(
             emit = { record("session.heartbeat", it.toJsonObject()) },
+            emitResumed = { record("session.resumed", it.toJsonObject()) },
             clock = clock,
             focusedProvider = { focused.get() },
             getActiveFile = { FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.name },
             intervalMs = heartbeatIntervalMs,
             scheduler = scheduler,
+            getWallMs = System::currentTimeMillis,
         )
 
         // Step 8b: clock.skew watcher (PRD §4.2) — monotonic vs wall drift. Uses the session
