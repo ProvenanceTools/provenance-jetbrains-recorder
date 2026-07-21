@@ -40,7 +40,8 @@ class GitWiringStartupActivity : ProjectActivity {
             GitRepository.GIT_REPO_CHANGE,
             GitRepositoryChangeListener { repository ->
                 val emit = state.emit ?: return@GitRepositoryChangeListener
-                emit(GitEventPayload(operation = "state_change", commitSha = repository.currentRevision))
+                val repoRoot = runCatching { repository.root.toNioPath() }.getOrNull()
+                emit(repoRoot, GitEventPayload(operation = "state_change", commitSha = repository.currentRevision))
             },
         )
     }

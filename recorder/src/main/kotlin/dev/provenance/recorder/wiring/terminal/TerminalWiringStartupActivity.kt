@@ -56,8 +56,23 @@ class TerminalWiringStartupActivity : ProjectActivity {
                         val shellIntegration =
                             withTimeoutOrNull(SHELL_INTEGRATION_TIMEOUT_MS) { view.shellIntegrationDeferred.await() }
                         val shell = shellNameOf(view)
+                        // Terminal cwd resolution, VERIFIED against the real platform jar (IntelliJ
+                        // 2026.1.4, build 261; org.jetbrains.plugins.terminal:terminal.jar,
+                        // intellij.terminal.frontend.jar): `startupOptionsDeferred` resolves to
+                        // org.jetbrains.plugins.terminal.session.TerminalStartupOptions (NOT
+                        // ShellStartupOptions — that's a distinct, unrelated builder-pattern class in
+                        // the same plugin), which exposes both `shellCommand` (used above) and a
+                        // `@NotNull val workingDirectory: String`. It is guaranteed non-null by the
+                        // platform's own nullability annotation, so no safe-call/elvis is needed on it;
+                        // runCatching still guards Paths.get() (malformed path text) and the await()
+                        // itself, falling back to cwd = null (never inventing a directory) — which
+                        // routes to "no owner" per this plan's locked design.
+                        val cwd: java.nio.file.Path? = runCatching {
+                            java.nio.file.Paths.get(view.startupOptionsDeferred.await().workingDirectory)
+                        }.getOrNull()
 
                         state.emitTerminalOpen?.invoke(
+                            cwd,
                             TerminalOpenPayload(
                                 terminalId = terminalId,
                                 shell = shell,
@@ -71,6 +86,7 @@ class TerminalWiringStartupActivity : ProjectActivity {
                                 override fun commandFinished(event: TerminalCommandFinishedEvent) {
                                     val block = event.commandBlock
                                     state.emitTerminalCommand?.invoke(
+                                        cwd,
                                         TerminalCommandPayload(
                                             terminalId = terminalId,
                                             command = block.executedCommand ?: "",
