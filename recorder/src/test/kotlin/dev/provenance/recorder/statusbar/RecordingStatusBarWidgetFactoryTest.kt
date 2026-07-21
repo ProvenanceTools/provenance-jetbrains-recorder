@@ -44,6 +44,14 @@ class RecordingStatusBarWidgetFactoryTest : BasePlatformTestCase() {
         assertEquals(factory.getId(), widget.ID())
     }
 
+    fun `test widget text is unchanged when exactly one assignment is active`() {
+        val state = project.service<RecorderState>()
+        state.activate(java.nio.file.Paths.get("/ws"), manifest())
+        val widget = RecordingStatusBarWidgetFactory().createWidget(project)
+        val presentation = widget.getPresentation() as StatusBarWidget.TextPresentation
+        assertEquals("Provenance: recording", presentation.getText())
+    }
+
     fun `test widget text shows assignment count when more than one is active`() {
         val state = project.service<RecorderState>()
         state.activate(java.nio.file.Paths.get("/ws-a"), manifest())
