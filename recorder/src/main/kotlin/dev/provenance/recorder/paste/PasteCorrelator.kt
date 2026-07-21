@@ -2,6 +2,7 @@ package dev.provenance.recorder.paste
 
 import dev.provenance.core.DocChangeDelta
 import dev.provenance.core.Range
+import dev.provenance.recorder.events.MAX_INLINE_BYTES
 
 /**
  * The combined-signal decision for one doc-change batch. EmitPaste has no
@@ -68,9 +69,31 @@ class PasteCorrelator(
             })
         pending = null // consume: one action expectation matches at most one doc change
 
+        // The governing rule: NEVER emit a `paste` the analyzer cannot replay. A
+        // `paste` whose payload lost its content is strictly worse than a `doc.change`
+        // that kept it — applyPaste returns applied=false and reconstruction for that
+        // file dies from that point on, while a doc.change's deltas always replay.
+        //
+        // EmitPaste requires BOTH conditions, for the two independent reasons a paste
+        // can fail to replay:
+        //
+        //   SHAPE. PastePayload carries exactly one range + one text, so a multi-delta
+        //   edit spanning disjoint ranges cannot be expressed without collapsing them.
+        //
+        //   SIZE. buildPastePayload only inlines up to MAX_INLINE_BYTES; past that it
+        //   truncates to a head/tail preview (PastePayloadBuilder.kt), which is just as
+        //   unreplayable. Read from the shared constant, never hardcoded, so it tracks
+        //   the cap forever — raising the cap narrows this hole, only the gate closes it.
+        //
+        // Nothing is lost by routing to doc.change: analysis-core's
+        // iterateCandidatePastes treats source='paste_likely'/'paste_confirmed' as a
+        // candidate paste, so every paste heuristic still sees it.
+        //
+        // Byte length, not String.length — matching the unit the cap itself uses.
         val d0 = deltas.getOrNull(0)
         val isSinglePasteShaped = deltas.size == 1 && d0 != null && d0.range.start == d0.range.end
-        return if (isSinglePasteShaped) {
+        val isInlineable = d0 != null && d0.text.toByteArray(Charsets.UTF_8).size <= MAX_INLINE_BYTES
+        return if (isSinglePasteShaped && isInlineable) {
             PasteDecision.EmitPaste(buildPastePayload(d0!!.text), d0.range)
         } else {
             PasteDecision.EmitDocChange(source = if (confirmed) "paste_confirmed" else "paste_likely")

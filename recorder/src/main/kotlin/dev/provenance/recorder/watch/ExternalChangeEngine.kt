@@ -5,6 +5,7 @@ import dev.provenance.core.Sha256
 import dev.provenance.recorder.events.ExternalChangeResult
 import dev.provenance.recorder.events.buildExternalChangeContent
 import dev.provenance.recorder.events.classifySavedContent
+import dev.provenance.recorder.state.ExpectedContent
 import dev.provenance.recorder.state.ExpectedContentRegistry
 import kotlin.math.abs
 
@@ -29,6 +30,27 @@ import kotlin.math.abs
 class ExternalChangeEngine(val registry: ExpectedContentRegistry) {
 
     /**
+     * Recent-state tolerance (recorder PRD §4.5).
+     *
+     * Every content read reaching this engine was taken at some earlier instant than the
+     * comparison that follows: [VfsExternalChangeListener] triages on the EDT and hands
+     * the read + compare to a pooled background thread, while the expected-content model
+     * is fed from the EDT by ExternalChangeCoordinator's DocumentListener. A keystroke
+     * processed in that gap advances the model past the bytes actually written, so a bare
+     * hash compare reports the student's own save as an external write — and the
+     * `expected.reset(onDiskContent)` that followed rolled the model BACKWARDS onto the
+     * stale snapshot, guaranteeing the next save mismatched too (a mirrored PAIR of false
+     * events; 3316 of them across a 156-submission VS Code corpus).
+     *
+     * If the on-disk hash is a state this buffer genuinely passed through, the write was
+     * ours and we merely observed it late: emit nothing, and do NOT reset — the live
+     * buffer is ahead and is authoritative. Content the buffer never held still falls
+     * through and is reported, so detection of genuine external writes is unchanged.
+     */
+    private fun isOurOwnLateObservedWrite(expected: ExpectedContent, newHash: String): Boolean =
+        expected.hasRecentHash(newHash)
+
+    /**
      * Path 1 — the editor just saved [relativePath]; [onDiskContent] is what landed on
      * disk. Only fires for a file that was open (has a registry entry). Emits a modify
      * if the saved content diverged from the expected model (e.g. format-on-save, or a
@@ -40,6 +62,7 @@ class ExternalChangeEngine(val registry: ExpectedContentRegistry) {
         return when (val r = classifySavedContent(expected, onDiskContent)) {
             is ExternalChangeResult.CleanSave -> null
             is ExternalChangeResult.Changed -> {
+                if (isOurOwnLateObservedWrite(expected, r.newHash)) return null
                 val payload = modifyPayload(relativePath, r.oldHash, r.newHash, r.diffSize, onDiskContent)
                 expected.reset(onDiskContent)
                 payload
@@ -58,6 +81,7 @@ class ExternalChangeEngine(val registry: ExpectedContentRegistry) {
         return when (val r = classifySavedContent(expected, onDiskContent)) {
             is ExternalChangeResult.CleanSave -> null
             is ExternalChangeResult.Changed -> {
+                if (isOurOwnLateObservedWrite(expected, r.newHash)) return null
                 val payload = modifyPayload(relativePath, r.oldHash, r.newHash, r.diffSize, onDiskContent)
                 expected.reset(onDiskContent)
                 payload
@@ -76,6 +100,7 @@ class ExternalChangeEngine(val registry: ExpectedContentRegistry) {
         val existing = registry.get(relativePath)
         if (existing != null) {
             if (newHash == existing.hash) return null
+            if (isOurOwnLateObservedWrite(existing, newHash)) return null
             val payload = modifyPayload(
                 relativePath, existing.hash, newHash,
                 abs(onDiskContent.length - existing.content.length), onDiskContent,

@@ -1,7 +1,7 @@
 package dev.provenance.recorder.events
 
-/** Max byte-length for inlining full post-change content. Mirrors external-change-content.ts. */
-const val MAX_INLINE_BYTES = 4096
+// The inline/truncate byte cap (MAX_INLINE_BYTES, 64 KB) lives in InlineContentLimits.kt,
+// shared with the paste builder and doc.open. Same package, so it resolves without an import.
 
 /**
  * Head/tail slice length in UTF-16 code units. Named _CHARS (not _BYTES like the
