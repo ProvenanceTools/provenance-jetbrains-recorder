@@ -66,9 +66,14 @@ class TerminalWiringStartupActivity : ProjectActivity {
                         // platform's own nullability annotation, so no safe-call/elvis is needed on it;
                         // runCatching still guards Paths.get() (malformed path text) and the await()
                         // itself, falling back to cwd = null (never inventing a directory) — which
-                        // routes to "no owner" per this plan's locked design.
+                        // routes to "no owner" per this plan's locked design. `startupOptionsDeferred`
+                        // is the same Deferred awaited above in shellNameOf, which may never resolve
+                        // for some launch modes — bounded with the same STARTUP_OPTIONS_TIMEOUT_MS so
+                        // this await can't hang the terminal's whole lifetime.
                         val cwd: java.nio.file.Path? = runCatching {
-                            java.nio.file.Paths.get(view.startupOptionsDeferred.await().workingDirectory)
+                            withTimeoutOrNull(STARTUP_OPTIONS_TIMEOUT_MS) {
+                                java.nio.file.Paths.get(view.startupOptionsDeferred.await().workingDirectory)
+                            }
                         }.getOrNull()
 
                         state.emitTerminalOpen?.invoke(
