@@ -20,7 +20,7 @@ The full approved design is in `docs/design.md`. **Read it before implementing a
 The log file format is owned by the Provenance monorepo's `log-core`. This repo is a **second implementation of the same contract**, not an author of it. Treat the format as fixed:
 
 - **The event envelope, hash chain, and JCS canonicalization are pinned by test vectors** in `log-core`'s `hash-chain.test.ts`. This repo's Kotlin implementation must reproduce them byte-for-byte.
-- **Parity is enforced by golden conformance vectors** exported from `log-core` and checked in `conformance/`. If the conformance suite fails, the format is wrong — never "fix" it by changing the vectors.
+- **Parity is enforced by golden conformance vectors** exported from `log-core` and checked in `core/src/test/resources/conformance/` (consumed by `core/src/test/kotlin/dev/provenance/core/ConformanceTest.kt`; `recorder/` has its own event-shape fixtures under `recorder/src/test/resources/conformance/`). If the conformance suite fails, the format is wrong — never "fix" it by changing the vectors.
 - **JCS canonicalization** uses `erdtman/java-json-canonicalization` (the JVM twin of the `canonicalize` npm lib `log-core` uses — same author, same algorithm). Do not hand-roll canonicalization. Whitespace, key ordering, and number representation all matter.
 - **Never modify `manifest.json` / `manifest.sig` after seal.** They are signed; the stored bundle must stay signature/chain verifiable.
 - **Producer identity:** set `session.start.recorder.extension_id` to this plugin's id. This is how the analyzer distinguishes hosts — no format change needed.
@@ -41,7 +41,7 @@ The log file format is owned by the Provenance monorepo's `log-core`. This repo 
 
 - **`core/` is a pure-Kotlin port of the log format.** No IntelliJ Platform imports, no plugin APIs. It knows about events, hashing, canonicalization, signing, bundles — nothing about editors. This mirrors `log-core`'s zero-editor-dependency rule and keeps the conformance surface testable in isolation.
 - **`recorder/` is the plugin: the IntelliJ wiring around `core/`.** Activation, document/VFS/terminal/git listeners, paste detection, the session host, the status-bar widget, the seal command. It depends on `core/` and the IntelliJ Platform SDK.
-- **`conformance/` proves format parity** against golden vectors exported from the monorepo. It is the gate: a bundle this plugin seals must be accepted by the *real* Provenance analyzer/server.
+- **The conformance suite proves format parity** against golden vectors exported from the monorepo, checked in under `core/src/test/resources/conformance/` (plus `recorder/src/test/resources/conformance/` for event-shape fixtures) — there is no top-level `conformance/` module; it's test-scoped inside `core/` and `recorder/`. It is the gate: a bundle this plugin seals must be accepted by the *real* Provenance analyzer/server.
 - Events are **append-only**. There is no update or delete on a log, anywhere.
 - The hash chain is the foundation of integrity. Exactly one chaining function; all log-producing paths go through it (mirrors `log-core`).
 - **This repo never changes the Provenance monorepo** except two small, additive things (see `docs/design.md` §7): adding the plugin's build hash to the `known-good-extension-hashes.json` allowlist, and adding a golden-vector export script. Both are done in the monorepo with its own conventions, not here.
@@ -62,7 +62,7 @@ The format port is the low-risk part. The wiring is ~70% of the work and where t
 
 - Kotlin + Gradle, using the **IntelliJ Platform Gradle Plugin**. Target the platform core (`com.intellij.modules.platform`) so one artifact runs across JetBrains IDEs — meaning **only platform-common APIs** are available.
 - **Course public key** is embedded at build time: a Gradle task substitutes a constant from an env var, builds, then reverts the source (mirrors the monorepo's `embed-course-key` + `git checkout` flow). Never commit a real course key.
-- The sealed manifest's `extension_hash` = SHA-256 of the plugin distribution `.zip`. That hash must be added to the monorepo allowlist or every submission gets flagged.
+- The sealed manifest's `extension_hash` = a reproducible SHA-256 **tree-hash** over the plugin distribution's extracted file tree (`DirectoryHash.sha256`: files sorted by relative path, digesting `<relative-path-utf8>\0<file-bytes>` per file) — **not** a hash of the `.zip` archive bytes, since zip byte layout isn't reproducible across tools. Computed at build/CI time by the `computeExtensionHash` Gradle task (over the extracted distribution) and at seal time (over the plugin's installed directory), so the two can never drift. That hash must be added to the monorepo allowlist or every submission gets flagged.
 - **Plugin id** (reverse-DNS, e.g. `edu.berkeley.provenance.recorder`) is stable forever — Marketplace identity and auto-update channels key off it.
 
 ## Testing
