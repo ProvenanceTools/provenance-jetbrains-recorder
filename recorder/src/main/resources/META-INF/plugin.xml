@@ -98,6 +98,21 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <p><b>0.2.0</b></p>
+    <ul>
+      <li>Records <b>every authorized assignment open in the project at once</b>, including
+          assignment folders nested inside a parent project, instead of only the project root.
+          Each assignment gets its own independent log, and the status-bar indicator shows how
+          many are recording.</li>
+      <li><b>Tools &rarr; Provenance: Prepare Submission Bundle</b> now asks which assignment to
+          seal when more than one is recording.</li>
+      <li>Opening a file records up to <b>64&nbsp;KB</b> of its contents inline (was 4&nbsp;KB),
+          so more of your starting point is captured directly rather than as a hash.</li>
+      <li>Suspending your machine no longer looks like unexplained missing time: the recorder
+          marks the gap when the session resumes.</li>
+      <li>Fixed: saving a file could be misreported as a change made outside your editor.</li>
+      <li>Fixed: a paste is never recorded in a form the reviewer's replay cannot reproduce.</li>
+    </ul>
     <p><b>0.1.0</b> &mdash; first release.</p>
     <ul>
       <li>Records the editing process in course-authorized assignment folders and seals it
