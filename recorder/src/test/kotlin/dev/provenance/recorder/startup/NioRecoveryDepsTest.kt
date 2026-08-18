@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 
 /** Real filesystem via JUnit 4 TemporaryFolder; no IntelliJ platform needed. */
@@ -41,6 +42,31 @@ class NioRecoveryDepsTest {
         assertFalse("original gone", f.exists())
         assertTrue("moved to quarantine", Files.exists(java.nio.file.Path.of(to)))
         assertEquals("payload", Files.readString(java.nio.file.Path.of(to)))
+    }
+
+    /**
+     * Quarantine must survive a filesystem that cannot do ATOMIC_MOVE, however it says so.
+     * IJent (Windows IDE over the WSL filesystem) raises kotlin.NotImplementedError — an
+     * Error — which would otherwise escape startFromActivation() and kill activation.
+     */
+    @Test
+    fun `rename falls back to a plain move when the atomic attempt is unsupported`() = runBlocking {
+        val unsupportedSignals = listOf<(java.nio.file.Path, java.nio.file.Path) -> Nothing>(
+            { _, _ -> throw NotImplementedError("An operation is not implemented: FILE_MOVE") },
+            { from, to -> throw AtomicMoveNotSupportedException(from.toString(), to.toString(), "nope") },
+            { _, _ -> throw UnsupportedOperationException("no ATOMIC_MOVE") },
+        )
+        unsupportedSignals.forEachIndexed { i, signal ->
+            val f = tmp.newFile("session-atomic-$i.slog")
+            f.writeText("payload-$i")
+            val deps = NioRecoveryDeps(tmp.root.absolutePath, { from, to -> signal(from, to) })
+            val to = "${f.absolutePath}.corrupt-x"
+
+            deps.rename(f.absolutePath, to)
+
+            assertFalse("original gone (signal $i)", f.exists())
+            assertEquals("payload-$i", Files.readString(java.nio.file.Path.of(to)))
+        }
     }
 
     @Test

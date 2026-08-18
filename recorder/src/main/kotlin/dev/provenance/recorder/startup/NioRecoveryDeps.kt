@@ -1,5 +1,6 @@
 package dev.provenance.recorder.startup
 
+import dev.provenance.recorder.io.AtomicMover
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -19,8 +20,22 @@ import kotlin.streams.toList
  * same-filesystem rename holds on all target platforms) and falls back to a plain move
  * if the filesystem does not support atomic moves — quarantine correctness does not
  * depend on atomicity, only on the file ending up out of the live path.
+ *
+ * "Does not support" is not always signalled as AtomicMoveNotSupportedException: JetBrains'
+ * IJent nio provider (used when a Windows IDE opens a project on the WSL filesystem)
+ * answers unimplemented operations with kotlin.NotImplementedError, an *Error*. This runs
+ * upstream of session start in startFromActivation(), so an escaping Error here kills
+ * activation before recording can begin — the same failure mode fixed in AtomicWrite.kt.
+ * The atomic attempt is not latched off: rename() runs at most a handful of times per
+ * activation, so there is no repeated-throw cost worth carrying state for.
  */
-class NioRecoveryDeps(override val provenanceDir: String) : RecoveryDeps {
+class NioRecoveryDeps internal constructor(
+    override val provenanceDir: String,
+    /** Test seam for the atomic attempt; production is a plain ATOMIC_MOVE. */
+    private val atomicMove: AtomicMover = AtomicMover { from, to ->
+        Files.move(from, to, StandardCopyOption.ATOMIC_MOVE)
+    },
+) : RecoveryDeps {
     override suspend fun readSlogFile(path: String): SlogReadResult = withContext(Dispatchers.IO) {
         try {
             SlogReadResult.Ok(Files.readString(Path.of(path)))
@@ -36,8 +51,12 @@ class NioRecoveryDeps(override val provenanceDir: String) : RecoveryDeps {
             val src = Path.of(from)
             val dst = Path.of(to)
             try {
-                Files.move(src, dst, StandardCopyOption.ATOMIC_MOVE)
+                atomicMove.move(src, dst)
             } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(src, dst)
+            } catch (_: NotImplementedError) {
+                Files.move(src, dst)
+            } catch (_: UnsupportedOperationException) {
                 Files.move(src, dst)
             }
         }
