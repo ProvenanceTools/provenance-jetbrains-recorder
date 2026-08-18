@@ -180,6 +180,15 @@ tasks.register<Exec>("revertCourseKey") {
 // uses at runtime (recorder/'s ExtensionHash.kt) — so the value a student's installed plugin
 // reports can be added to the analyzer allowlist before release. A dedicated resolvable
 // configuration gives the CLI its full runtime classpath (core + kotlin-stdlib + deps).
+//
+// Sharing the function is necessary but NOT sufficient: the two call sites must also hash the
+// same *tree level*. The distribution .zip's single top-level entry is `recorder/`, so the
+// staging directory below contains `staging/recorder/...` while an installed plugin's
+// pluginPath IS the `recorder/` directory. Handing the CLI the staging dir therefore digested
+// every path as `recorder/lib/...` and produced a hash no installed plugin could reproduce.
+// The CLI now takes the staging dir and resolves the distribution root itself
+// (core/'s `pluginDistributionRoot`), failing the build if the layout is not the expected
+// single child directory — the level is no longer a choice this build script can get wrong.
 val directoryHashCliClasspath: Configuration by configurations.creating {
     isCanBeConsumed = false
     isCanBeResolved = true
@@ -203,7 +212,10 @@ val computeExtensionHash = tasks.register<JavaExec>("computeExtensionHash") {
     description = "Computes extension_hash (reproducible dir-tree SHA-256) over the built plugin distribution, for the analyzer allowlist."
     dependsOn(unpackDistributionForHash)
     classpath = directoryHashCliClasspath
-    mainClass = "dev.provenance.core.DirectoryHashCliKt"
+    mainClass = "dev.provenance.core.ExtensionHashCliKt"
+    // Deliberately the *staging* dir, not a path built here: the CLI resolves the distribution
+    // root inside it and fails loudly on an unexpected layout, so this build script cannot
+    // silently drift back to hashing the wrong tree level.
     args(extensionHashStaging.get().asFile.absolutePath)
     val capture = ByteArrayOutputStream()
     standardOutput = capture

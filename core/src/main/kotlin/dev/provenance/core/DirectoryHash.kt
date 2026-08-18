@@ -17,11 +17,15 @@ import java.security.MessageDigest
  * doc-comment uses).
  *
  * Lives in `core/` (pure JVM: `java.nio` + `java.security`, no IntelliJ Platform) so the two
- * call sites can never drift:
+ * call sites share one algorithm:
  *   - seal time, over the plugin's own installed directory
  *     (recorder/ `computeInstalledExtensionHash` resolves that via PluginManagerCore); and
  *   - build/CI time, over the extracted plugin distribution
- *     (recorder/build.gradle.kts's `computeExtensionHash` task, via [DirectoryHashCli]).
+ *     (recorder/build.gradle.kts's `computeExtensionHash` task, via [stagedDistributionExtensionHash]).
+ *
+ * A shared algorithm is not enough on its own: the hash covers each file's path *relative to
+ * [root]*, so the two sites must also be handed the same tree level. They were not — see
+ * [pluginDistributionRoot], which is now the only way the build side picks its root.
  *
  * Algorithm (matches the TS original):
  *   1. Recursively walk [root]; collect regular files only (symlinks/dirs skipped).

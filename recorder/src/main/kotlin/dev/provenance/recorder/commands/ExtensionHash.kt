@@ -16,9 +16,14 @@ import java.nio.file.Path
  *     [ownPluginDescriptor] and delegates. This is the seal-command call site.
  *
  * Both paths — and the build/CI-time `computeExtensionHash` Gradle task, which hashes the
- * extracted plugin distribution via [DirectoryHash]'s CLI entrypoint — go through the same
- * [DirectoryHash.sha256], so a runtime-computed hash and a build-time-computed hash can never
- * drift. Never reimplement the algorithm here.
+ * extracted plugin distribution via core/'s `stagedDistributionExtensionHash` — go through the
+ * same [DirectoryHash.sha256]. Never reimplement the algorithm here.
+ *
+ * Sharing the algorithm is not by itself enough to keep the build-time and seal-time values
+ * equal: the digest covers each file's path *relative to the root it was given*, so both sites
+ * must be handed the same tree level. The build side hashes the plugin directory *inside* its
+ * extraction staging directory precisely because that is what [computeInstalledExtensionHash]
+ * hashes here — `pluginPath` is the installed plugin directory itself.
  */
 fun computeExtensionHash(pluginPath: Path): String = DirectoryHash.sha256(pluginPath)
 
