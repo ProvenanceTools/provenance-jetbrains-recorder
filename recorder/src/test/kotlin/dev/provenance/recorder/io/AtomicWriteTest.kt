@@ -3,6 +3,7 @@ package dev.provenance.recorder.io
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -203,5 +204,106 @@ class AtomicWriteTest {
         assertTrue("expected the underlying move failure to propagate, got $caught", caught is IOException)
         assertTrue("no .tmp should survive, found: ${leftoverTmps()}", leftoverTmps().isEmpty())
         assertTrue("the pre-existing target must be untouched", Files.exists(target.resolve("child")))
+    }
+
+    // --- the outer handler must be Throwable-shaped -----------------------------
+    //
+    // Regression: an Error raised anywhere inside the try block sailed past
+    // `catch (original: Exception)`, so the tmp file was never unlinked — the user's
+    // .provenance/ directory held an orphaned tmp file from exactly this crash. IJent
+    // answers unimplemented operations with kotlin.NotImplementedError, so both
+    // Files.newByteChannel and Files.deleteIfExists are credible future sources here.
+
+    /** An Error that is NOT one of the capability signals the seams absorb. */
+    private class FsOperationError(message: String) : Error(message)
+
+    @Test
+    fun `an Error from the channel-open step is cleaned up after and rethrown unchanged`() {
+        val target = tmp.root.toPath().resolve("out.txt")
+        val boom = FsOperationError("An operation is not implemented: FILE_OPEN")
+        var caught: Throwable? = null
+        try {
+            atomicWriteFile(
+                target,
+                "x".toByteArray(Charsets.UTF_8),
+                BestEffortSync(),
+                BestEffortMove(),
+                { throw boom },
+            )
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("the original Throwable must propagate unmasked", boom, caught)
+        assertTrue("no .tmp should survive, found: ${leftoverTmps()}", leftoverTmps().isEmpty())
+        assertFalse(Files.exists(target))
+    }
+
+    @Test
+    fun `an Error raised once the tmp file exists still unlinks the tmp file`() {
+        // The open succeeds (a tmp file is on disk), then the write frame raises an
+        // Error. This is the case that leaked a tmp file before the handler was widened.
+        val target = tmp.root.toPath().resolve("out.txt")
+        val boom = FsOperationError("An operation is not implemented: FILE_WRITE")
+        var caught: Throwable? = null
+        try {
+            atomicWriteFile(
+                target,
+                "x".toByteArray(Charsets.UTF_8),
+                BestEffortSync(),
+                BestEffortMove(),
+                { path -> REAL_CHANNEL_OPENER.open(path).also { throw boom } },
+            )
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("the original Throwable must propagate unmasked", boom, caught)
+        assertTrue("no .tmp should survive, found: ${leftoverTmps()}", leftoverTmps().isEmpty())
+        assertFalse(Files.exists(target))
+    }
+
+    @Test
+    fun `an Error from the rename step is cleaned up after and rethrown unchanged`() {
+        val target = tmp.root.toPath().resolve("out.txt")
+        val boom = FsOperationError("An operation is not implemented: FILE_RENAME")
+        var caught: Throwable? = null
+        try {
+            atomicWriteFile(
+                target,
+                "x".toByteArray(Charsets.UTF_8),
+                BestEffortSync(),
+                BestEffortMove { _, _ -> throw boom },
+            )
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("the original Throwable must propagate unmasked", boom, caught)
+        assertTrue("no .tmp should survive, found: ${leftoverTmps()}", leftoverTmps().isEmpty())
+        assertFalse(Files.exists(target))
+    }
+
+    @Test
+    fun `a failing cleanup never masks the original Error`() {
+        // The opener leaves a NON-EMPTY DIRECTORY at the tmp path and then raises an
+        // Error, so the cleanup's own deleteIfExists fails (DirectoryNotEmptyException).
+        // The caller must still see the original Error, not the cleanup failure.
+        val target = tmp.root.toPath().resolve("out.txt")
+        val boom = FsOperationError("An operation is not implemented: FILE_OPEN")
+        var caught: Throwable? = null
+        try {
+            atomicWriteFile(
+                target,
+                "x".toByteArray(Charsets.UTF_8),
+                BestEffortSync(),
+                BestEffortMove(),
+                { path ->
+                    Files.createDirectory(path)
+                    Files.write(path.resolve("child"), byteArrayOf(1))
+                    throw boom
+                },
+            )
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("cleanup failure must not replace the original error", boom, caught)
     }
 }

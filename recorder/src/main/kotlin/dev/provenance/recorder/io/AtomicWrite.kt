@@ -26,6 +26,24 @@ internal val REAL_CHANNEL_SYNC = ChannelSync { channel ->
     if (channel is FileChannel) channel.force(true)
 }
 
+/**
+ * Temp-file open seam. Injectable so tests can fault-inject the open frame — the one
+ * step of the write that runs before the tmp file is known to exist.
+ */
+internal fun interface ChannelOpener {
+    fun open(path: Path): SeekableByteChannel
+}
+
+internal val REAL_CHANNEL_OPENER = ChannelOpener { path ->
+    Files.newByteChannel(
+        path,
+        setOf(
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        ),
+    )
+}
+
 /** Rename seam: the atomic (same-directory) rename of tmp → target. */
 internal fun interface AtomicMover {
     fun move(from: Path, to: Path)
@@ -119,25 +137,27 @@ internal fun atomicWriteFile(
     contents: ByteArray,
     sync: BestEffortSync,
     mover: BestEffortMove,
+    opener: ChannelOpener = REAL_CHANNEL_OPENER,
 ) {
     val randomHex = Random.nextBytes(8).joinToString("") { "%02x".format(it) }
     val tmpPath = targetPath.resolveSibling("${targetPath.fileName}.$randomHex.tmp")
     try {
-        Files.newByteChannel(
-            tmpPath,
-            setOf(
-                StandardOpenOption.CREATE_NEW,
-                StandardOpenOption.WRITE,
-            ),
-        ).use { channel ->
+        opener.open(tmpPath).use { channel ->
             channel.write(ByteBuffer.wrap(contents))
             sync.force(channel)
         }
         mover.move(tmpPath, targetPath)
-    } catch (original: Exception) {
+    } catch (original: Throwable) {
+        // Throwable, not Exception. This handler swallows nothing — it unlinks the tmp
+        // file and rethrows — so catching broadly here cannot hide a failure, unlike the
+        // narrow capability catches in the seams above. An Exception-shaped handler let
+        // an Error (IJent answers unimplemented operations with kotlin.NotImplementedError,
+        // and Files.newByteChannel / Files.deleteIfExists are both plausible sources) skip
+        // the cleanup entirely: the crash that motivated this fix left an orphaned .tmp in
+        // the student's .provenance/ directory.
         try {
             Files.deleteIfExists(tmpPath)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // best-effort cleanup; never mask the original error
         }
         throw original
