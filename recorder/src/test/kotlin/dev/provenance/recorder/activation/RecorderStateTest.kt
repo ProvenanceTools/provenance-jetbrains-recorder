@@ -58,6 +58,46 @@ class RecorderStateTest : BasePlatformTestCase() {
         assertEquals(2, state.activeManifests.size)
     }
 
+    fun `test markDegraded keeps the root active and records the reason`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("a"), manifest())
+        state.markDegraded(root("a"), "NotImplementedError: an operation is not implemented")
+        assertTrue("a degraded root stays activated (the indicator must keep rendering)", state.isActive)
+        assertTrue(state.isDegraded(root("a")))
+        assertEquals(
+            "NotImplementedError: an operation is not implemented",
+            state.degradedRoots[root("a").normalize()],
+        )
+    }
+
+    fun `test re-activating a root clears its stale degraded marker`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("a"), manifest())
+        state.markDegraded(root("a"), "boom")
+        state.activate(root("a"), manifest())
+        assertFalse("a fresh activation supersedes the previous failure", state.isDegraded(root("a")))
+        assertTrue(state.degradedRoots.isEmpty())
+    }
+
+    fun `test deactivate clears the degraded marker for that root only`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("a"), manifest("hw-a"))
+        state.activate(root("b"), manifest("hw-b"))
+        state.markDegraded(root("a"), "boom")
+        state.markDegraded(root("b"), "boom")
+        state.deactivate(root("a"))
+        assertFalse(state.isDegraded(root("a")))
+        assertTrue(state.isDegraded(root("b")))
+    }
+
+    fun `test deactivateAll clears every degraded marker`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("a"), manifest())
+        state.markDegraded(root("a"), "boom")
+        state.deactivateAll()
+        assertTrue(state.degradedRoots.isEmpty())
+    }
+
     fun `test activity activates state for every discovered root when discoverer returns Active manifests`() = runBlocking {
         val m = myFixture.addFileToProject("hw07/.provenance-manifest", "{}").virtualFile.parent
         val activity = RecorderActivationActivity { _, _ -> listOf(DiscoveredManifest(m, manifest("hw07"))) }

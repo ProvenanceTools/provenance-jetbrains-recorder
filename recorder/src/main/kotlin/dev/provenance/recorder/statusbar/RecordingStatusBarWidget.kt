@@ -32,12 +32,33 @@ class RecordingStatusBarWidget(private val project: Project) :
         // this widget to live session state.
     }
 
+    /**
+     * Extends the existing assignment-count rendering with the degraded case: an assignment that
+     * is activated but whose session failed to start must read as BROKEN, not as recording and
+     * not as absent — the widget is the student's only signal that recording died. Mixed
+     * projects report both halves rather than hiding either.
+     */
     override fun getText(): String {
-        val count = project.service<RecorderState>().activeManifests.size
-        return if (count > 1) "Provenance: recording ($count assignments)" else "Provenance: recording"
+        val state = project.service<RecorderState>()
+        val total = state.activeManifests.size
+        val degraded = state.degradedRoots.size
+        val recording = total - degraded
+        return when {
+            degraded == 0 -> if (total > 1) "Provenance: recording ($total assignments)" else "Provenance: recording"
+            recording == 0 -> if (degraded > 1) "Provenance: not recording ($degraded errors)" else "Provenance: not recording (error)"
+            else -> "Provenance: recording ($recording of $total assignments, ${errors(degraded)})"
+        }
     }
 
-    override fun getTooltipText(): String = "Provenance recorder is active for this assignment."
+    override fun getTooltipText(): String {
+        val degraded = project.service<RecorderState>().degradedRoots
+        if (degraded.isEmpty()) return "Provenance recorder is active for this assignment."
+        val what = if (degraded.size == 1) "1 assignment" else "${degraded.size} assignments"
+        return "Provenance is NOT recording for $what: " +
+            degraded.entries.joinToString("; ") { (root, reason) -> "$root ($reason)" }
+    }
+
+    private fun errors(count: Int): String = if (count == 1) "1 error" else "$count errors"
 
     override fun getAlignment(): Float = Component.LEFT_ALIGNMENT
 

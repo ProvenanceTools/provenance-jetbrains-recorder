@@ -15,6 +15,11 @@ import java.util.concurrent.ConcurrentHashMap
 class RecorderState {
     private val active = ConcurrentHashMap<Path, Manifest>()
 
+    /** Activated roots whose recording session FAILED to start, with the failure reason.
+     * Always a subset of [active]: a degraded root stays activated (so the student still sees
+     * an indicator) but is knowingly not recording. */
+    private val degraded = ConcurrentHashMap<Path, String>()
+
     val isActive: Boolean get() = active.isNotEmpty()
 
     /** Single-assignment convenience: the active manifest when exactly one assignment is
@@ -24,16 +29,38 @@ class RecorderState {
 
     val activeManifests: Map<Path, Manifest> get() = active.toMap()
 
+    /** Roots that are activated but not recording, keyed to the reason their session failed
+     * to start. Sorted by path so the status bar renders deterministically. */
+    val degradedRoots: Map<Path, String> get() = degraded.toSortedMap()
+
+    fun isDegraded(root: Path): Boolean = degraded.containsKey(root.normalize())
+
     fun activate(root: Path, m: Manifest) {
-        active[root.normalize()] = m
+        val key = root.normalize()
+        active[key] = m
+        // A fresh activation supersedes any earlier failure for this root; the caller marks it
+        // degraded again if starting its session fails this time round.
+        degraded.remove(key)
+    }
+
+    /**
+     * Record that [root] is activated but NOT recording, because starting its session failed.
+     * Deliberately not a rollback: the root stays in [active] so the disclosure indicator keeps
+     * rendering — a student must be able to tell recording is broken, not merely absent.
+     */
+    fun markDegraded(root: Path, reason: String) {
+        degraded[root.normalize()] = reason
     }
 
     fun deactivate(root: Path) {
-        active.remove(root.normalize())
+        val key = root.normalize()
+        active.remove(key)
+        degraded.remove(key)
     }
 
     fun deactivateAll() {
         active.clear()
+        degraded.clear()
     }
 
     /** Back-compat alias used by existing tearDowns; clears every assignment. */
