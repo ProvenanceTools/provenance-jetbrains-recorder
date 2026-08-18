@@ -250,6 +250,36 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * The ordering contract at the log level (recorder PRD §4.2.1): for a file that was already
+     * open when the session started, the log must read `session.start` … `doc.open` … and only
+     * then any `doc.change` for that file. `doc.open` carries the replay baseline; a `doc.change`
+     * ahead of it leaves the analyzer's reconstruction with no baseline to apply the delta to.
+     *
+     * Driven from a pooled thread because that is what production does — activation is a
+     * `ProjectActivity` coroutine, not the EDT. `waitForFuture` dispatches EDT events while
+     * waiting, so the catch-up's EDT hop can run (this test thread IS the EDT).
+     */
+    fun testDocOpenOfAnAlreadyOpenFileFollowsSessionStartAndPrecedesItsDocChange() {
+        installFsSeams(manager())
+        myFixture.configureByText("hw.py", "print(1)\n")
+        val m = manager()
+        val future = com.intellij.openapi.application.ApplicationManager.getApplication()
+            .executeOnPooledThread<RecorderSessionManager.ActiveSession> { start(m) }
+        val session = com.intellij.testFramework.PlatformTestUtil.waitForFuture(future, 30_000)
+
+        val doc = myFixture.getDocument(myFixture.file)
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(doc.textLength, "x") }
+
+        val ks = kinds(session)
+        val open = ks.indexOf("doc.open")
+        val change = ks.indexOf("doc.change")
+        assertEquals("session.start must be the first entry", 0, ks.indexOf("session.start"))
+        assertTrue("the already-open file must get a doc.open baseline", open > 0)
+        assertTrue("the edit must be recorded", change >= 0)
+        assertTrue("doc.open must precede doc.change for the same file (was $ks)", open < change)
+    }
+
     fun testLaterStartedSessionCatchesUpItsAlreadyOpenFiles() {
         // doc.open catch-up must fire per session start, not only for the first: the project-scoped
         // DocWiring is constructed once (on session A), so a later session B whose root already has

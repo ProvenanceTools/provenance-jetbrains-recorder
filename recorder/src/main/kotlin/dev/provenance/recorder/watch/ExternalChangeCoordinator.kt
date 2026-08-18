@@ -16,6 +16,7 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import dev.provenance.core.FsExternalChangePayload
 import dev.provenance.recorder.state.Delta
 import dev.provenance.recorder.state.ExpectedContentRegistry
+import dev.provenance.recorder.wiring.runOnEdtAndWait
 import java.nio.file.Path
 
 /**
@@ -42,6 +43,8 @@ class ExternalChangeCoordinator(
     private val emit: (FsExternalChangePayload) -> Unit,
     private val isRecentEditorChange: (String) -> Boolean = { false },
     private val vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
+    /** "Run this on the EDT and wait" — injectable so a test can observe where it lands. */
+    private val onEdt: (() -> Unit) -> Unit = ::runOnEdtAndWait,
 ) : Disposable {
     val registry = ExpectedContentRegistry(filesUnderReview)
     private val engine = ExternalChangeEngine(registry)
@@ -71,7 +74,17 @@ class ExternalChangeCoordinator(
     fun checkAfterSave(relativePath: String, file: VirtualFile) =
         saveChecker.checkAfterSave(relativePath, file)
 
-    private fun installExpectedModelFeeder() {
+    /**
+     * Registration + open-file catch-up as ONE EDT unit — see [runOnEdtAndWait]. The enumeration
+     * needs the EDT because `getOpenFiles()` walks EDT-owned `EditorsSplitters` state and off the
+     * EDT silently falls back to the main splitters, so a watched file can be missed entirely and
+     * then never seeded — which makes every later external-change comparison for it wrong. And it
+     * must be atomic with the listener registration for the same reason DocWiring's is: a write
+     * action landing between the two would be applied to a model that has no baseline yet.
+     */
+    private fun installExpectedModelFeeder() = onEdt { registerFeederAndSeed() }
+
+    private fun registerFeederAndSeed() {
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(
             object : DocumentListener {
                 override fun documentChanged(event: DocumentEvent) {

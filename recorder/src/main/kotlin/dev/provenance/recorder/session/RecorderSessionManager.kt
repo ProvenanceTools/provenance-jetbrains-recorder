@@ -31,6 +31,7 @@ import dev.provenance.recorder.wiring.RecorderTerminalState
 import dev.provenance.recorder.wiring.SelectionWiring
 import dev.provenance.recorder.wiring.SessionRouter
 import dev.provenance.recorder.wiring.isRecordablePath
+import dev.provenance.recorder.wiring.runOnEdtAndWait
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
 import org.jetbrains.annotations.TestOnly
@@ -229,15 +230,25 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         // the registry yet, that catch-up would resolve an empty registry and silently drop the
         // pre-open file's doc.open (its listeners would still fire for later events, but the
         // already-open file's initial snapshot would be lost). Registering first closes that gap.
-        sessions[root] = session
-        ensureRoutedWiring()
+        //
+        // All three steps run as ONE EDT unit (see runOnEdtAndWait). Putting the session in the
+        // registry is what makes sinkFor() resolve for its files, so from that instant a write
+        // action would be logged as a doc.change — and until the catch-up has run, that file has
+        // no doc.open baseline for replay to apply the delta to. On the EDT no write action can
+        // land in between. Everything above this point (keypair, SessionWriter, session.start) is
+        // blocking IO and deliberately stays OFF the EDT.
+        runOnEdtAndWait {
+            sessions[root] = session
+            ensureRoutedWiring()
 
-        // Catch up doc.open for files already open under THIS root, on EVERY start() — not just
-        // the first (which constructs DocWiring and runs its init-time catch-up). ensureRoutedWiring
-        // short-circuits after the first session, so a later session whose root already has open
-        // files would otherwise never get their doc.open baseline. DocWiring's seenPaths de-dup
-        // (keyed by absolute path) makes this idempotent: already-caught-up files are not re-emitted.
-        routedWiring?.docWiring?.catchUpOpenFiles()
+            // Catch up doc.open for files already open under THIS root, on EVERY start() — not
+            // just the first (which constructs DocWiring and runs its init-time catch-up).
+            // ensureRoutedWiring short-circuits after the first session, so a later session whose
+            // root already has open files would otherwise never get their doc.open baseline.
+            // DocWiring's seenPaths de-dup (keyed by absolute path) makes this idempotent:
+            // already-caught-up files are not re-emitted.
+            routedWiring?.docWiring?.catchUpOpenFiles()
+        }
 
         wireExternalChange(controller, activated, tagger, vfsDispatch, sessionDisposable)
         // NO ext.snapshot (PRD §4.4) — deliberately unwired on this host, not an oversight. Every

@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.FsExternalChangePayload
 import dev.provenance.core.Sha256
+import dev.provenance.recorder.wiring.runOnEdtAndWait
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -41,13 +42,17 @@ class ExternalChangeCoordinatorTest : BasePlatformTestCase() {
         return LocalFileSystem.getInstance().refreshAndFindFileByNioFile(p)!!
     }
 
-    private fun coordinator(vararg watched: String): ExternalChangeCoordinator {
+    private fun coordinator(
+        vararg watched: String,
+        onEdt: ((() -> Unit) -> Unit) = ::runOnEdtAndWait,
+    ): ExternalChangeCoordinator {
         val c = ExternalChangeCoordinator(
             project = project,
             workspaceRoot = wsRoot,
             filesUnderReview = watched.toList(),
             emit = { emitted.add(it) },
             vfsDispatch = { it() }, // synchronous for deterministic assertions
+            onEdt = onEdt,
         )
         Disposer.register(testRootDisposable, c)
         return c
@@ -119,11 +124,44 @@ class ExternalChangeCoordinatorTest : BasePlatformTestCase() {
         val c = coordinator(rel)
         openInEditor(vf)
 
-        ApplicationManager.getApplication()
-            .executeOnPooledThread { c.start() }
-            .get(30, java.util.concurrent.TimeUnit.SECONDS)
+        startFromPooledThread(c)
 
         assertEquals("the already-open watched file must be seeded", "print(1)\n", c.registry.get(rel)!!.content)
+    }
+
+    /**
+     * `FileEditorManager.getOpenFiles()` walks EDT-owned `EditorsSplitters` state and silently
+     * falls back to the main splitters off the EDT, so the catch-up that seeds the expected-
+     * content model can enumerate a wrong/incomplete file list — and a watched file that never
+     * gets seeded makes every later external-change comparison for it wrong. The enumeration
+     * (and the listener registration it must be atomic with) therefore has to run on the EDT,
+     * the same place a write action runs, so nothing can interleave.
+     */
+    fun testStartSeedsOnTheEdtWhenDrivenOffIt() {
+        val vf = vfFor("hw.py", "print(1)\n")
+        val rel = relativePathOf(vf, wsRoot)!!
+        var seedRanOnEdt: Boolean? = null
+        // Wraps the PRODUCTION dispatch, so this asserts where the real default lands the work —
+        // not where the seam itself chose to run it.
+        val c = coordinator(rel, onEdt = { work ->
+            runOnEdtAndWait {
+                seedRanOnEdt = ApplicationManager.getApplication().isDispatchThread
+                work()
+            }
+        })
+        openInEditor(vf)
+
+        startFromPooledThread(c)
+
+        assertEquals("the catch-up must be dispatched to the EDT", true, seedRanOnEdt)
+    }
+
+    /** Production calls start() from RecorderSessionManager.wireExternalChange, reached from the
+     * activation coroutine — a background dispatcher. The wait dispatches EDT events so the
+     * catch-up's EDT hop can run (this test thread IS the EDT). */
+    private fun startFromPooledThread(c: ExternalChangeCoordinator) {
+        val future = ApplicationManager.getApplication().executeOnPooledThread { c.start() }
+        com.intellij.testFramework.PlatformTestUtil.waitForFuture(future, 30_000)
     }
 
     fun testDisposeStopsDetection() {

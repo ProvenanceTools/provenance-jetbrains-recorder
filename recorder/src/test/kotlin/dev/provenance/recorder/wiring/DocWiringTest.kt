@@ -26,6 +26,12 @@ class DocWiringTest : BasePlatformTestCase() {
 
     private val workspaceRoot: Path = Paths.get("/ws")
 
+    /** Kinds in emission order, so a test can assert doc.open precedes doc.change. */
+    private val order = mutableListOf<String>()
+
+    /** One entry per doc.open: was it emitted on the EDT? */
+    private val openOnEdt = mutableListOf<Boolean>()
+
     private class FakeSink(
         override val workspaceRoot: Path,
         override val pasteCorrelator: PasteCorrelator? = null,
@@ -33,17 +39,23 @@ class DocWiringTest : BasePlatformTestCase() {
         val changes: MutableList<DocChangePayload>,
         val saves: MutableList<DocSavePayload>,
         val closes: MutableList<DocClosePayload>,
+        val order: MutableList<String> = mutableListOf(),
+        val openOnEdt: MutableList<Boolean> = mutableListOf(),
     ) : RecordableSessionSink {
-        override fun onDocOpen(payload: DocOpenPayload) { opens.add(payload) }
-        override fun onDocChange(payload: DocChangePayload) { changes.add(payload) }
-        override fun onDocSave(payload: DocSavePayload) { saves.add(payload) }
-        override fun onDocClose(payload: DocClosePayload) { closes.add(payload) }
+        override fun onDocOpen(payload: DocOpenPayload) {
+            opens.add(payload)
+            order.add("doc.open")
+            openOnEdt.add(ApplicationManager.getApplication().isDispatchThread)
+        }
+        override fun onDocChange(payload: DocChangePayload) { changes.add(payload); order.add("doc.change") }
+        override fun onDocSave(payload: DocSavePayload) { saves.add(payload); order.add("doc.save") }
+        override fun onDocClose(payload: DocClosePayload) { closes.add(payload); order.add("doc.close") }
         override fun onPaste(payload: dev.provenance.core.PastePayload) = Unit
         override fun onSelectionChange(payload: SelectionChangePayload) = Unit
     }
 
     private fun fakeSink(pasteCorrelator: PasteCorrelator? = null) =
-        FakeSink(workspaceRoot, pasteCorrelator, opens, changes, saves, closes)
+        FakeSink(workspaceRoot, pasteCorrelator, opens, changes, saves, closes, order, openOnEdt)
 
     /** Owns everything under /ws; nothing else. Mirrors a single active session. */
     private fun routerOwningWs(pasteCorrelator: PasteCorrelator? = null): SessionRouter {
@@ -153,11 +165,88 @@ class DocWiringTest : BasePlatformTestCase() {
      */
     fun testCatchUpFromBackgroundThreadTakesAReadAction() {
         myFixture.configureByText("hw.py", "print(1)\n")
-        ApplicationManager.getApplication()
-            .executeOnPooledThread { install() }
-            .get(30, java.util.concurrent.TimeUnit.SECONDS)
+        installFromPooledThread()
         assertEquals(1, opens.size)
         assertEquals("print(1)\n", opens[0].content)
+    }
+
+    /**
+     * The ordering contract, recorder PRD §4.2.1: an already-open file's `doc.open` (the replay
+     * baseline) must precede every `doc.change` for that file. The VS Code recorder gets this
+     * from its host being single-threaded — `doc-wiring.ts` registers its subscriptions and then
+     * walks `vscode.workspace.textDocuments` in the SAME synchronous turn, so no
+     * `onDidChangeTextDocument` callback can slip between the two.
+     *
+     * IntelliJ's equivalent of "one uninterruptible turn" is the EDT: a document can only be
+     * mutated inside a write action, and a write action can only run on the EDT. So the
+     * registration + open-file enumeration + text snapshot + doc.open emission must ALL happen
+     * in one EDT runnable. Driven from the activation coroutine (a background dispatcher, as
+     * production does), a doc.open emitted off the EDT proves the window is open.
+     */
+    fun testCatchUpEmitsDocOpenOnTheEdtEvenWhenDrivenOffIt() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        installFromPooledThread()
+        assertEquals(1, openOnEdt.size)
+        assertTrue(
+            "doc.open catch-up must run on the EDT — off it, a write action can land between " +
+                "listener registration and the baseline read",
+            openOnEdt[0],
+        )
+    }
+
+    /**
+     * The consequence of the above, made concrete: a write action that lands between listener
+     * registration and the catch-up's document read gets logged as a `doc.change` BEFORE the
+     * file's `doc.open`, and the baseline that doc.open then carries already contains the edit —
+     * so replay applies the same delta twice and has no baseline for the first delta.
+     *
+     * The interleave is injected through the `nioPathOf` seam, which the catch-up calls once per
+     * file before it reads the document. Off the EDT the queued write runs immediately (the EDT
+     * is free); on the EDT it cannot run until the catch-up returns, so the latch times out and
+     * the write lands after doc.open — which is the whole point.
+     */
+    fun testDocOpenPrecedesADocChangeThatRacesTheCatchUp() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        val doc = document()
+        val armed = java.util.concurrent.atomic.AtomicBoolean(true)
+        val written = java.util.concurrent.CountDownLatch(1)
+        val router = routerOwningWs()
+        val future = ApplicationManager.getApplication().executeOnPooledThread {
+            DocWiring(
+                project = project,
+                router = router,
+                parentDisposable = testRootDisposable,
+                localFsOf = { true },
+                nioPathOf = { vf ->
+                    if (armed.compareAndSet(true, false)) {
+                        ApplicationManager.getApplication().invokeLater {
+                            WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+                            written.countDown()
+                        }
+                        written.await(1, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                    workspaceRoot.resolve(vf.name)
+                },
+            )
+        }
+        com.intellij.testFramework.PlatformTestUtil.waitForFuture(future, 30_000)
+        // Let the (possibly still queued) write action run before asserting.
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+
+        assertEquals("doc.open must be the first event for the file", listOf("doc.open", "doc.change"), order)
+        assertEquals(
+            "doc.open must carry the PRE-change baseline; a post-change baseline double-applies the delta",
+            "print(1)\n",
+            opens[0].content,
+        )
+    }
+
+    /** Production drives construction from RecorderSessionManager's activation coroutine — a
+     * background dispatcher. The wait dispatches EDT events so the catch-up's EDT hop can run
+     * (this test thread IS the EDT). */
+    private fun installFromPooledThread() {
+        val future = ApplicationManager.getApplication().executeOnPooledThread { install() }
+        com.intellij.testFramework.PlatformTestUtil.waitForFuture(future, 30_000)
     }
 
     fun testTwoFilesWithTheSameRelativeNameInDifferentRootsBothGetDocOpen() {

@@ -51,7 +51,18 @@ class DocWiring(
     // relative-path key would wrongly treat the second as already-seen.
     private val seenPaths = mutableSetOf<Path>()
 
+    // Listener registration AND the initial catch-up run as ONE EDT unit. That atomicity is the
+    // ordering contract (recorder PRD §4.2.1, and see [runOnEdtAndWait]): a write action can only
+    // run on the EDT, so nothing can mutate a document between the moment the DocumentListener
+    // starts recording doc.change and the moment the catch-up reads each open file's doc.open
+    // baseline. Registering off the EDT and catching up afterwards leaves exactly that window —
+    // an edit landing in it is logged as a doc.change with no preceding doc.open, and is then
+    // also folded into the baseline doc.open reads a moment later, so replay applies it twice.
     init {
+        runOnEdtAndWait { installListenersAndCatchUp(parentDisposable) }
+    }
+
+    private fun installListenersAndCatchUp(parentDisposable: Disposable) {
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(
             object : DocumentListener {
                 override fun beforeDocumentChange(event: DocumentEvent) {
@@ -121,8 +132,15 @@ class DocWiring(
      * whose root already has files open would otherwise never see their doc.open baseline. The
      * [seenPaths] de-dup (keyed by absolute path) makes repeated calls idempotent: a file already
      * caught up is not re-emitted, only the newly-owned root's open files are.
+     *
+     * Runs on the EDT (inline when the caller is already there, so the init-time call above does
+     * not hop twice). Two reasons, both load-bearing: `getOpenFiles()` walks `EditorsSplitters`,
+     * which is EDT-owned Swing state — off the EDT `getSplitters()` silently falls back to the
+     * main splitters and returns a possibly-wrong list, with no assertion to tell you — and the
+     * enumeration must be atomic with respect to write actions so no doc.change can be logged for
+     * a file whose doc.open baseline has not been emitted yet.
      */
-    fun catchUpOpenFiles() {
+    fun catchUpOpenFiles() = runOnEdtAndWait {
         for (vf in FileEditorManager.getInstance(project).openFiles) {
             val sink = sinkFor(vf) ?: continue
             emitDocOpenFor(vf, sink)
