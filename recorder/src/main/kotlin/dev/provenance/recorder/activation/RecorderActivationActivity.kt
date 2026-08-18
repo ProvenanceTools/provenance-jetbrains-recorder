@@ -1,5 +1,6 @@
 package dev.provenance.recorder.activation
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
@@ -25,7 +26,15 @@ class RecorderActivationActivity internal constructor(
     constructor() : this(::discoverManifestRoots)
 
     override suspend fun execute(project: Project) {
-        val discovered = discoverer(project, COURSE_PUBLIC_KEY_HEX)
+        // The whole walk must happen under ONE read action: it reads
+        // ProjectRootManager.contentRoots (@RequiresReadLock, assertion suppressed — so a race
+        // with a module-root write action silently returns an incomplete root set) and then
+        // traverses the VFS and reads each candidate manifest, all of which are read-lock
+        // contracts inside PersistentFSImpl. A ProjectActivity coroutine is not the EDT, so
+        // read access is never implicit here.
+        val discovered = ReadAction.compute<List<DiscoveredManifest>, Throwable> {
+            discoverer(project, COURSE_PUBLIC_KEY_HEX)
+        }
         val state = project.service<RecorderState>()
         state.deactivateAll()
         val manager = project.service<RecorderSessionManager>()
