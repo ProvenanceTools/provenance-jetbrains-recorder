@@ -13,6 +13,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -130,5 +131,70 @@ class SealBundleTest {
 
     private fun assertArrayEqualsHelper(a: ByteArray, b: ByteArray) {
         assertEquals(a.toList(), b.toList())
+    }
+
+    // --- an Error must not cost the student their submission --------------------
+    //
+    // The seal path models failure as a returned SealResult.WriteError the UI can show.
+    // Catching only Exception meant an Error (IJent answers unimplemented filesystem
+    // operations with kotlin.NotImplementedError) escaped sealBundle as a raw crash —
+    // and a seal that dies costs a whole submission, not one event.
+
+    @Test
+    fun `an Error from computeExtensionHash becomes a WriteError instead of escaping`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val result = sealBundle(
+            prov, ws, "hw03", "fa26", emptyList(), priv,
+            { throw NotImplementedError("An operation is not implemented: FILE_READ") },
+        )
+        assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
+        assertTrue((result as SealResult.WriteError).message.contains("extension hash"))
+    }
+
+    @Test
+    fun `an Error from the manifest write becomes a WriteError instead of escaping`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val result = sealBundle(
+            prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+            writeFile = { _, _ -> throw NotImplementedError("An operation is not implemented: FILE_FORCE") },
+        )
+        assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
+        assertTrue((result as SealResult.WriteError).message.contains("manifest/sig"))
+    }
+
+    @Test
+    fun `a VirtualMachineError propagates instead of being reported as a seal failure`() {
+        // An OutOfMemoryError is not a seal failure: reporting it as one would be a wrong
+        // diagnosis, and continuing after one is unsound. Same rule as SessionWriter.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val boom = OutOfMemoryError("heap")
+        var caught: Throwable? = null
+        try {
+            sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { throw boom })
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("a VirtualMachineError must propagate untouched", boom, caught)
+    }
+
+    @Test
+    fun `a missing reviewed file is still reported as missing, never as a seal failure`() {
+        // Guard for the deliberately NARROW catch at the reviewed-file read: its job is to
+        // mark a file missing, and it must keep catching only Exception. Widening it would
+        // let a filesystem Error silently record a present file as missing in a SIGNED
+        // manifest — a worse outcome than failing loudly.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("ghost.py"), priv, { "e".repeat(64) })
+        assertTrue(result is SealResult.Ok)
+        val manifestJson = String(readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!, Charsets.UTF_8)
+        assertTrue(manifestJson.contains("\"status\":\"missing\""))
     }
 }

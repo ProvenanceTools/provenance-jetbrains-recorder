@@ -40,6 +40,26 @@ private val SHA256_EMPTY = Sha256.hex(ByteArray(0))
 private fun sha256OfFile(path: Path): String =
     if (Files.exists(path)) Sha256.hex(Files.readAllBytes(path)) else SHA256_EMPTY
 
+/**
+ * The seal path models failure as a returned [SealResult.WriteError] the UI can show,
+ * because a seal that dies costs a student their whole submission, not one event. That
+ * has to include Errors: IJent (a Windows IDE opening a project on the WSL filesystem)
+ * answers an unimplemented filesystem operation with kotlin.NotImplementedError, which
+ * `catch (e: Exception)` lets through as a raw crash out of the seal action.
+ *
+ * A VirtualMachineError is the one thing that is never a seal failure — an OutOfMemoryError
+ * reported as "Failed to write bundle ZIP" is a wrong diagnosis and continuing after one is
+ * unsound. Same dividing line as SessionWriter, chosen over enumerating subclasses so future
+ * JVM-fatal errors land on the correct side by default.
+ *
+ * Applied only to the steps whose failure already means "the seal cannot proceed". The two
+ * narrow `catch (_: Exception)` sites (a reviewed file read, and the zip-loop read) stay
+ * narrow on purpose — see the comments there.
+ */
+private fun rethrowIfFatal(t: Throwable) {
+    if (t is VirtualMachineError) throw t
+}
+
 /** ISO timestamp with colons replaced by dashes, for use in filenames. */
 private fun filenameTimestamp(instant: Instant): String = instant.toString().replace(":", "-")
 
@@ -53,6 +73,8 @@ fun sealBundle(
     computeExtensionHash: () -> String,
     outputDir: Path = workspaceRoot,
     now: () -> Instant = Instant::now,
+    /** Test seam for the manifest/sig write, alongside the existing now/computeExtensionHash seams. */
+    writeFile: (Path, String) -> Unit = { path, contents -> atomicWriteFile(path, contents) },
 ): SealResult {
     // Step 1: list .slog files (excluding .slog.meta).
     if (!Files.isDirectory(provenanceDir)) return SealResult.NoSessions
@@ -74,7 +96,8 @@ fun sealBundle(
         val metaPath = provenanceDir.resolve("$filename.meta")
         val slogText = try {
             String(Files.readAllBytes(slogPath), Charsets.UTF_8)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            rethrowIfFatal(e)
             return SealResult.WriteError("Failed to read $filename: ${e.message}")
         }
 
@@ -109,6 +132,10 @@ fun sealBundle(
             val bytes = Files.readAllBytes(abs)
             Reviewed(rel, true, Sha256.hex(bytes), bytes)
         } catch (_: Exception) {
+            // Deliberately NOT widened to Throwable. This catch's meaning is "record this
+            // file as missing", and that verdict is baked into a signed manifest. Letting a
+            // filesystem Error land here would sign a claim that a file the student did
+            // submit does not exist; failing the seal loudly is the better outcome.
             Reviewed(rel, false, null, null)
         }
     }
@@ -119,7 +146,8 @@ fun sealBundle(
     // Step 4: build the 1.1 manifest.
     val extensionHash = try {
         computeExtensionHash()
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+        rethrowIfFatal(e)
         return SealResult.WriteError("Failed to compute extension hash: ${e.message}")
     }
     val manifest = BundleManifest(
@@ -140,9 +168,10 @@ fun sealBundle(
     val manifestPath = provenanceDir.resolve("manifest.json")
     val sigPath = provenanceDir.resolve("manifest.sig")
     try {
-        atomicWriteFile(manifestPath, signed.canonicalJson)
-        atomicWriteFile(sigPath, signed.signatureHex)
-    } catch (e: Exception) {
+        writeFile(manifestPath, signed.canonicalJson)
+        writeFile(sigPath, signed.signatureHex)
+    } catch (e: Throwable) {
+        rethrowIfFatal(e)
         return SealResult.WriteError("Failed to write manifest/sig: ${e.message}")
     }
     val manifestSha256 = Sha256.hex(signed.canonicalJson.toByteArray(Charsets.UTF_8))
@@ -161,6 +190,10 @@ fun sealBundle(
                 val bytes = try {
                     Files.readAllBytes(provenanceDir.resolve(name))
                 } catch (_: Exception) {
+                    // Deliberately NOT widened, same reasoning as the reviewed-file read:
+                    // "skip" means the file vanished between listing and read. An Error
+                    // silently omitting a .slog would ship a bundle with a missing session.
+                    // An Error here is caught by the enclosing handler and fails the seal.
                     continue // disappeared between listing and read — skip
                 }
                 zip.putNextEntry(ZipEntry(name))
@@ -175,7 +208,8 @@ fun sealBundle(
                 }
             }
         }
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+        rethrowIfFatal(e)
         return SealResult.WriteError("Failed to write bundle ZIP: ${e.message}")
     }
 
