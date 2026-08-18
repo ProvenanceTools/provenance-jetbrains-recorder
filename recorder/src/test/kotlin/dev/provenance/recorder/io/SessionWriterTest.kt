@@ -11,6 +11,7 @@ import dev.provenance.core.serializeEntry
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +46,15 @@ private class FailingSink : ByteSink {
     var closed = false
     override fun write(bytes: ByteArray): Unit = throw java.io.IOException("disk full")
     override fun close() { closed = true }
+}
+
+/** A sink whose write (and optionally close) raises an arbitrary Throwable, incl. an Error. */
+private class ThrowingSink(
+    private val onWrite: Throwable? = null,
+    private val onClose: Throwable? = null,
+) : ByteSink {
+    override fun write(bytes: ByteArray) { onWrite?.let { throw it } }
+    override fun close() { onClose?.let { throw it } }
 }
 
 class SessionWriterTest {
@@ -116,7 +126,7 @@ class SessionWriterTest {
 
     @Test
     fun `write error invokes onError and drops the line`() {
-        val errors = mutableListOf<Exception>()
+        val errors = mutableListOf<Throwable>()
         val sink = FailingSink()
         val w = SessionWriter.openWithSink(sink, FixedClock(0), ManualScheduler(), onError = { errors.add(it) })
         w.flush() // empty — no error
@@ -128,5 +138,70 @@ class SessionWriterTest {
         // A second flush has nothing buffered (line was dropped) → no further error.
         w.flush()
         assertEquals(1, errors.size)
+    }
+
+    // --- an Error must reach the degradation path ------------------------------
+    //
+    // flush()/dispose() caught only Exception, so an Error from the sink bypassed
+    // onError entirely: no DiskFullHandler transition, no recorder.degraded event, no
+    // balloon, no critical-event ring — the student keeps working believing they are
+    // being recorded. IJent answers unimplemented filesystem operations with
+    // kotlin.NotImplementedError, which is exactly such an Error.
+
+    @Test
+    fun `an Error from the sink is reported to onError instead of escaping flush`() {
+        val errors = mutableListOf<Throwable>()
+        val boom = NotImplementedError("An operation is not implemented: FILE_WRITE")
+        val w = SessionWriter.openWithSink(ThrowingSink(onWrite = boom), FixedClock(0), ManualScheduler(), onError = { errors.add(it) })
+        w.append(entry("session.start"))
+        w.flush()
+        assertEquals(1, errors.size)
+        assertSame("the Error itself must reach the disk-full handler", boom, errors[0])
+        // Same drop-the-line semantics as an Exception: nothing is retried.
+        w.flush()
+        assertEquals(1, errors.size)
+    }
+
+    @Test
+    fun `an Error from close is reported to onError instead of escaping dispose`() {
+        val errors = mutableListOf<Throwable>()
+        val boom = NotImplementedError("An operation is not implemented: FILE_CLOSE")
+        val w = SessionWriter.openWithSink(ThrowingSink(onClose = boom), FixedClock(0), ManualScheduler(), onError = { errors.add(it) })
+        w.dispose()
+        assertEquals(1, errors.size)
+        assertSame(boom, errors[0])
+    }
+
+    @Test
+    fun `a VirtualMachineError propagates and is never reported as a write error`() {
+        // An OutOfMemoryError is not a disk failure: "Disk full - free space and restart"
+        // would be a wrong message, and continuing after one is unsound.
+        val errors = mutableListOf<Throwable>()
+        val boom = OutOfMemoryError("heap")
+        val w = SessionWriter.openWithSink(ThrowingSink(onWrite = boom), FixedClock(0), ManualScheduler(), onError = { errors.add(it) })
+        w.append(entry("session.start"))
+        var caught: Throwable? = null
+        try {
+            w.flush()
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("a VirtualMachineError must propagate untouched", boom, caught)
+        assertTrue("it must not be reported as a write error", errors.isEmpty())
+    }
+
+    @Test
+    fun `a VirtualMachineError from close propagates out of dispose`() {
+        val errors = mutableListOf<Throwable>()
+        val boom = StackOverflowError()
+        val w = SessionWriter.openWithSink(ThrowingSink(onClose = boom), FixedClock(0), ManualScheduler(), onError = { errors.add(it) })
+        var caught: Throwable? = null
+        try {
+            w.dispose()
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame(boom, caught)
+        assertTrue(errors.isEmpty())
     }
 }

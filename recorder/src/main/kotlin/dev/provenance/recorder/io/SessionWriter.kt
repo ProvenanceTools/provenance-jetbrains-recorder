@@ -61,7 +61,7 @@ class SessionWriter private constructor(
     private val sink: ByteSink,
     private val clock: Clock,
     private val bufferPolicy: BufferPolicyConfig,
-    private val onError: (Exception) -> Unit,
+    private val onError: (Throwable) -> Unit,
     scheduler: FlushScheduler,
 ) {
     private val writeLock = Object()
@@ -82,7 +82,7 @@ class SessionWriter private constructor(
             clock: Clock,
             scheduler: FlushScheduler,
             bufferPolicy: BufferPolicyConfig = DEFAULT_BUFFER_POLICY,
-            onError: (Exception) -> Unit = {},
+            onError: (Throwable) -> Unit = {},
         ): SessionWriter {
             slogPath.parent?.let { Files.createDirectories(it) }
             val channel = FileChannel.open(slogPath, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
@@ -95,7 +95,7 @@ class SessionWriter private constructor(
             clock: Clock,
             scheduler: FlushScheduler,
             bufferPolicy: BufferPolicyConfig = DEFAULT_BUFFER_POLICY,
-            onError: (Exception) -> Unit = {},
+            onError: (Throwable) -> Unit = {},
         ): SessionWriter = SessionWriter(sink, clock, bufferPolicy, onError, scheduler)
     }
 
@@ -127,7 +127,18 @@ class SessionWriter private constructor(
             try {
                 sink.write(snapshot.toByteArray(StandardCharsets.UTF_8))
                 lastFlushAtMs = clock.now()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, not Exception: a filesystem that answers an unimplemented
+                // operation with an *Error* (IJent raises kotlin.NotImplementedError) is
+                // still a write failure, and must reach DiskFullHandler so the session
+                // degrades, notifies, and keeps critical events in the ring. Catching only
+                // Exception here meant such a failure skipped degradation entirely and the
+                // student kept working believing they were being recorded.
+                //
+                // A VirtualMachineError is the dividing line: OutOfMemoryError and
+                // StackOverflowError are not write errors, the disk-full message would be
+                // wrong, and continuing after one is unsound — so it propagates untouched.
+                if (e is VirtualMachineError) throw e
                 onError(e)
             }
         }
@@ -144,7 +155,9 @@ class SessionWriter private constructor(
         flush()
         try {
             sink.close()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Same rule as flush(): report it, unless the JVM itself is the casualty.
+            if (e is VirtualMachineError) throw e
             onError(e)
         }
     }
