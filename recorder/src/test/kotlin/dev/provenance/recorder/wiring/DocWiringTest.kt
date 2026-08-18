@@ -1,5 +1,6 @@
 package dev.provenance.recorder.wiring
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -139,6 +140,24 @@ class DocWiringTest : BasePlatformTestCase() {
         FileEditorManager.getInstance(project).closeFile(vf)
         assertEquals(1, closes.size)
         assertEquals("hw.py", closes[0].path)
+    }
+
+    /**
+     * Regression for the "IDE error occurred on every project open" bug: production constructs
+     * DocWiring from RecorderSessionManager.startFromActivation, which the platform runs as a
+     * coroutine on DefaultDispatcher-worker — NOT the EDT and with no read action. The catch-up
+     * path calls FileDocumentManager.getDocument(), which does
+     * ThreadingAssertions.softAssertReadAccess() → LOG.error. Under the IntelliJ test logger a
+     * logged error fails the test, so driving construction from a pooled thread reproduces the
+     * user-visible popup exactly.
+     */
+    fun testCatchUpFromBackgroundThreadTakesAReadAction() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        ApplicationManager.getApplication()
+            .executeOnPooledThread { install() }
+            .get(30, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(1, opens.size)
+        assertEquals("print(1)\n", opens[0].content)
     }
 
     fun testTwoFilesWithTheSameRelativeNameInDifferentRootsBothGetDocOpen() {

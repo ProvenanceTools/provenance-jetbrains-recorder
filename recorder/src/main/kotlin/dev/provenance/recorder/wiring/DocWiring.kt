@@ -1,6 +1,7 @@
 package dev.provenance.recorder.wiring
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
@@ -137,9 +138,17 @@ class DocWiring(
     private fun emitDocOpenFor(vf: VirtualFile, sink: RecordableSessionSink) {
         val path = nioPathOf(vf) ?: return
         if (!seenPaths.add(path)) return // defensive de-dup, keyed by absolute path
-        val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return
-        val text = doc.text
-        sink.onDocOpen(buildDocOpenPayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(text), doc.lineCount.toLong(), text))
+        // Model access under a read action. fileOpened arrives on the EDT, but catchUpOpenFiles()
+        // is driven from RecorderSessionManager's activation coroutine (a background dispatcher):
+        // getDocument() asserts read access there, and text/lineCount must come from ONE snapshot
+        // or a concurrent write action tears the doc.open baseline. Hashing + emission are pure/IO
+        // and deliberately stay outside the lock.
+        val snapshot = runReadActionBlocking {
+            val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@runReadActionBlocking null
+            doc.text to doc.lineCount
+        } ?: return
+        val (text, lineCount) = snapshot
+        sink.onDocOpen(buildDocOpenPayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(text), lineCount.toLong(), text))
     }
 
     private fun relativePath(vf: VirtualFile, workspaceRoot: Path): String {

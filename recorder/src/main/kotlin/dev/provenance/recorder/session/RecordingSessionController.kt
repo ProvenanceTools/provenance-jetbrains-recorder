@@ -4,7 +4,6 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationActivationListener
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFrame
@@ -26,6 +25,7 @@ import dev.provenance.recorder.io.MetaWriter
 import dev.provenance.recorder.io.SessionWriter
 import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.startup.RecoveryDecision
+import dev.provenance.recorder.wiring.ActiveFileTracker
 import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.Heartbeat
 import dev.provenance.recorder.wiring.RecordableSessionSink
@@ -227,12 +227,17 @@ class RecordingSessionController(
                 }
             },
         )
+        // active_file is served from an EDT-fed cache, NOT read off the platform on each tick:
+        // the heartbeat ticks on a background scheduler thread, where walking FileEditorManager's
+        // editor/tab state is unsafe and taking the read lock every 30s would contend with write
+        // actions. See ActiveFileTracker.
+        val activeFileTracker = ActiveFileTracker(project, parentDisposable)
         heartbeat = Heartbeat(
             emit = { record("session.heartbeat", it.toJsonObject()) },
             emitResumed = { record("session.resumed", it.toJsonObject()) },
             clock = clock,
             focusedProvider = { focused.get() },
-            getActiveFile = { FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.name },
+            getActiveFile = activeFileTracker::activeFileName,
             intervalMs = heartbeatIntervalMs,
             scheduler = scheduler,
             getWallMs = System::currentTimeMillis,

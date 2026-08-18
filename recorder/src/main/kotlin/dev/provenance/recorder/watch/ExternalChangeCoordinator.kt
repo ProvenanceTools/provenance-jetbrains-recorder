@@ -2,6 +2,7 @@ package dev.provenance.recorder.watch
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
@@ -107,8 +108,13 @@ class ExternalChangeCoordinator(
     private fun seed(vf: VirtualFile) {
         val rel = relativePathOf(vf, workspaceRoot) ?: return
         if (!registry.isWatched(rel)) return
-        val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return
-        registry.getOrCreate(rel, doc.text)
+        // Model access under a read action. fileOpened arrives on the EDT, but start()'s
+        // catch-up runs on RecorderSessionManager's activation coroutine (a background
+        // dispatcher): getDocument() asserts read access there, and an unlocked doc.text can be
+        // torn by a concurrent write action — which would seed a corrupt expected-content
+        // baseline and so corrupt external-change detection for the whole session.
+        val text = runReadActionBlocking { FileDocumentManager.getInstance().getDocument(vf)?.text } ?: return
+        registry.getOrCreate(rel, text)
     }
 
     override fun dispose() {

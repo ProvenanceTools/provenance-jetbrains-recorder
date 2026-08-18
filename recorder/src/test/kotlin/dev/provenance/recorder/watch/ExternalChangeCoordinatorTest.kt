@@ -104,6 +104,28 @@ class ExternalChangeCoordinatorTest : BasePlatformTestCase() {
         assertEquals("cli output\n", c.registry.get(rel)!!.content)
     }
 
+    /**
+     * Regression for the "IDE error occurred on every project open" bug: production calls
+     * start() from RecorderSessionManager.wireExternalChange, reached from
+     * startFromActivation — a platform coroutine on DefaultDispatcher-worker, not the EDT and
+     * with no read action. seed() calls FileDocumentManager.getDocument(), which does
+     * ThreadingAssertions.softAssertReadAccess() → LOG.error, which the IntelliJ test logger
+     * turns into a test failure. It is also a real race: doc.text read without the read lock
+     * can be torn by a concurrent write action, seeding a corrupt baseline.
+     */
+    fun testStartFromBackgroundThreadTakesAReadActionToSeed() {
+        val vf = vfFor("hw.py", "print(1)\n")
+        val rel = relativePathOf(vf, wsRoot)!!
+        val c = coordinator(rel)
+        openInEditor(vf)
+
+        ApplicationManager.getApplication()
+            .executeOnPooledThread { c.start() }
+            .get(30, java.util.concurrent.TimeUnit.SECONDS)
+
+        assertEquals("the already-open watched file must be seeded", "print(1)\n", c.registry.get(rel)!!.content)
+    }
+
     fun testDisposeStopsDetection() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
