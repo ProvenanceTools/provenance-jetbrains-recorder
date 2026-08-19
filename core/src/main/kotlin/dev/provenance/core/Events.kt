@@ -82,6 +82,15 @@ data class SessionStartPayload(
     val manifest: Manifest? = null,
     /** Editor/host metadata (program spec §5). Nullable for the same reason. */
     val host: HostInfo? = null,
+    /**
+     * The student's enrollment identity for this session (program spec §5, §S2).
+     *
+     * Null — and the key then ABSENT from the payload, never present-and-empty —
+     * whenever an identity cannot be produced or cannot be verified. Not being
+     * enrolled is the ordinary pre-enrollment state, not an error, and it must
+     * never stop a session recording.
+     */
+    val identity: SessionIdentity? = null,
 )
 
 fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
@@ -120,10 +129,11 @@ fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
     // hashing, and JCS sorts keys.
     manifest?.let { put("manifest", it.toJsonObject()) }
     host?.let { put("host", it.toJsonObject()) }
-    // NOTE: `identity` is deliberately NOT emitted. Enrollment tokens and the student
-    // per-course key are sub-project S2 and do not exist yet. Emitting a placeholder
-    // would put an unsigned, unverifiable identity claim into a signed chain, which is
-    // worse than emitting nothing.
+    // Absent, never present-and-empty, when the student is not enrolled or the block
+    // failed its chain walk. An unverifiable identity claim inside a signed, hash-chained
+    // entry is permanent and unrepairable, so emitting nothing is strictly better than
+    // emitting something broken.
+    identity?.let { put("identity", it.toJsonObject()) }
 }
 
 data class SessionHeartbeatPayload(val focused: Boolean, val activeFile: String?, val idleSinceMs: Long)

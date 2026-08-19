@@ -187,11 +187,46 @@ class RecorderContextTest {
         }
     }
 
-    /** Enrollment tokens are sub-project S2. Emitting a placeholder would put an
-     * unsigned, unverifiable identity claim into a signed chain. */
+    /**
+     * `identity` is OMITTED, never present-and-empty, when there is none to emit.
+     *
+     * This assertion changed meaning at S2: it used to say "enrollment does not exist yet".
+     * It now states the real rule — an unenrolled student, which is the ordinary
+     * pre-enrollment state, produces a payload with no `identity` key at all. The
+     * enrolled case is covered in SessionIdentityBuilderTest, which can mint a real chain.
+     */
     @Test
-    fun `identity is never emitted`() {
+    fun `identity is omitted when there is none to emit`() {
         assertFalse("identity" in contextFor(v2Manifest()).toJsonObject())
         assertFalse("identity" in contextFor(manifest()).toJsonObject())
+    }
+
+    /** ...and present, verbatim, when one was assembled and chain-verified. */
+    @Test
+    fun `a supplied identity is emitted verbatim`() {
+        val identity = dev.provenance.core.SessionIdentity(
+            enrollment = dev.provenance.recorder.identity.EnrollmentFixtures.token(),
+            enrollmentCert = dev.provenance.recorder.identity.EnrollmentFixtures.cert(),
+            sessionPubkeySig = "ab".repeat(64),
+        )
+        val json = buildRecorderContext(
+            manifest = v2Manifest(),
+            prevSessionId = null,
+            sessionId = "sess-1",
+            sessionPubkeyHex = "d".repeat(64),
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            hostnameProvider = { "host-1" },
+            usernameProvider = { "alice" },
+            identity = identity,
+        ).toJsonObject()
+
+        assertEquals(identity.toJsonObject(), json["identity"])
+        assertEquals(
+            setOf("enrollment", "enrollment_cert", "session_pubkey_sig"),
+            json["identity"]!!.jsonObject.keys,
+        )
     }
 }

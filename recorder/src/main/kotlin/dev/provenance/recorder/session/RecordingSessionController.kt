@@ -23,6 +23,10 @@ import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.failure.DegradedModeNotifier
 import dev.provenance.recorder.failure.DiskFullHandler
+import dev.provenance.recorder.identity.IdentityOutcome
+import dev.provenance.recorder.identity.PasswordSafeSecretStore
+import dev.provenance.recorder.identity.SecretStore
+import dev.provenance.recorder.identity.buildSessionIdentity
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.io.MetaWriter
 import dev.provenance.recorder.io.SessionWriter
@@ -93,6 +97,11 @@ class RecordingSessionController(
      * injectable seam that pass will fill in. Defaults to CleanStart so every existing
      * call site (no prior session to recover) is unaffected.
      */
+    /**
+     * Where the student's identity material lives. Injectable so unit tests can supply a
+     * map without a running IDE; production uses the PasswordSafe credential vault.
+     */
+    secrets: SecretStore = PasswordSafeSecretStore(),
     recovery: RecoveryDecision = RecoveryDecision.CleanStart,
     checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
     /** Plan 8: disk-full user disclosure. Defaults to the real balloon notifier. */
@@ -167,6 +176,20 @@ class RecordingSessionController(
         // never for a corrupt one (corruption is surfaced via recorder.recovered_from_corruption
         // below, not chain linkage). Mirrors chain-recovery.ts's documented rule.
         val prevSessionId = prevSessionIdFor(recovery)
+
+        // Step 2a: the enrollment identity, if the student has one for this course. Assembled
+        // and chain-verified before it is written; a failure at ANY point here yields no
+        // identity and changes nothing else about the session. Never a reason not to record.
+        val identityOutcome = buildSessionIdentity(
+            manifest = activated.manifest,
+            sessionPubkeyHex = keypair.publicKeyHex,
+            sessionStartedAt = clock.wall(),
+            secrets = secrets,
+        )
+        if (identityOutcome is IdentityOutcome.Skipped) {
+            LOG.debug("provenance: session.start identity omitted: ${identityOutcome.reason}")
+        }
+
         val ctx = buildRecorderContext(
             manifest = activated.manifest,
             prevSessionId = prevSessionId,
@@ -176,6 +199,7 @@ class RecordingSessionController(
             platform = platform,
             recorderVersion = recorderVersion,
             recorderExtensionId = recorderExtensionId,
+            identity = (identityOutcome as? IdentityOutcome.Emitted)?.identity,
         )
 
         // Step 3: disk-full handler. Constructed before the writer so handleWriteError can be

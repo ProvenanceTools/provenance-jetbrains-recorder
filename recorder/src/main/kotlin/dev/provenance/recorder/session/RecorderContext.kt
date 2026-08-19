@@ -2,6 +2,7 @@ package dev.provenance.recorder.session
 
 import dev.provenance.core.HostInfo
 import dev.provenance.core.Manifest
+import dev.provenance.core.SessionIdentity
 import dev.provenance.core.SessionStartPayload
 import dev.provenance.core.Sha256
 
@@ -23,6 +24,13 @@ fun buildRecorderContext(
     recorderExtensionId: String,
     hostnameProvider: () -> String? = ::defaultHostname,
     usernameProvider: () -> String = { System.getProperty("user.name") ?: "unknown" },
+    /**
+     * The student's verified enrollment identity, or null when there is none to emit
+     * (program spec §5, §S2). Null is the ordinary pre-enrollment state and is never an
+     * error: the field is simply omitted and the session records exactly as before.
+     * Assembled and CHAIN-VERIFIED by `buildSessionIdentity` before it reaches here.
+     */
+    identity: SessionIdentity? = null,
 ): SessionStartPayload {
     // A silent empty-string hostname would make machine_id collide across different
     // machines with the same username, defeating its purpose — fall back to "unknown".
@@ -77,8 +85,10 @@ fun buildRecorderContext(
             editorBuild = "",
             platform = platform,
         ),
-        // NOTE: `identity` is deliberately NOT emitted. Enrollment tokens and the student
-        // per-course key are sub-project S2 and do not exist yet.
+        // Omitted entirely when absent — never present-and-empty. An unverifiable identity
+        // claim inside a signed, hash-chained entry is permanent, so emitting nothing is
+        // strictly better than emitting something broken.
+        identity = identity,
     )
 }
 
