@@ -53,12 +53,34 @@ import java.util.concurrent.TimeUnit
  */
 class GitWiringStartupActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
-        val state = project.service<RecorderGitState>()
+        installGitWiring(project)
+    }
+}
 
-        // Bounded to ONE thread: that is what keeps emission ordered. Shut down with the
-        // project so there is an explicit teardown path (CLAUDE.md: no background task
-        // without one).
-        val executor = AppExecutorUtil.createBoundedApplicationPoolExecutor(
+/**
+ * A handle on the installed git wiring.
+ *
+ * [settled] exists because emission is asynchronous: `parents` needs a blocking VCS read, so
+ * a `git.event` is NOT on disk by the time the repository state change returns. A test that
+ * asserts on the emitted entry must await this first — otherwise it is racing the graph read
+ * and will pass or fail on machine speed.
+ */
+interface GitWiring {
+    /** Block until every queued graph read has emitted. Returns false on timeout. */
+    fun settled(timeoutMs: Long = 20_000): Boolean
+}
+
+/**
+ * Install the git.event subscription and return a handle. [GitWiringStartupActivity] calls
+ * this and discards the handle; tests keep it so they can await [GitWiring.settled].
+ */
+fun installGitWiring(project: Project): GitWiring {
+    val state = project.service<RecorderGitState>()
+
+    // Bounded to ONE thread: that is what keeps emission ordered. Shut down with the
+    // project so there is an explicit teardown path (CLAUDE.md: no background task
+    // without one).
+    val executor = AppExecutorUtil.createBoundedApplicationPoolExecutor(
             "Provenance Git Graph",
             1,
         )
@@ -96,38 +118,48 @@ class GitWiringStartupActivity : ProjectActivity {
                     // in which case there is nothing to append to.
                     (state.emit ?: emit).invoke(repoRoot, payload)
                 }
-            },
-        )
-    }
+        },
+    )
 
-    /**
-     * Read one commit's parents through git4idea, projected immediately into [GitCommitView].
-     *
-     * `collectCommitsMetadata` returns `VcsCommitMetadata`, which also exposes the author and
-     * the full message. Nothing but `parents` is read off it, and the projection happens here
-     * so no git4idea commit object escapes into the payload path.
-     */
-    private fun commitGraphReader(project: Project, repository: GitRepository): GitCommitGraphReader =
-        GitCommitGraphReader { sha ->
-            try {
-                val metadata = GitHistoryUtils
-                    .collectCommitsMetadata(project, repository.root, sha)
-                    ?.firstOrNull()
-                    ?: return@GitCommitGraphReader null
-                GitCommitView(
-                    sha = sha,
-                    // ONLY parents. Order preserved exactly as git reports it.
-                    parents = metadata.parents.map { it.asString() },
-                )
-            } catch (e: Exception) {
-                // A shallow clone, a corrupt object, a repository closing underneath us.
-                // Unknown parents are OMITTED rather than reported as an empty list.
-                LOG.debug("provenance: could not read commit parents for $sha", e)
-                null
+    return object : GitWiring {
+        override fun settled(timeoutMs: Long): Boolean {
+            // The executor is single-threaded, so a task submitted now runs strictly after
+            // every task already queued. Waiting on it therefore waits on all of them.
+            return try {
+                executor.submit {}.get(timeoutMs, TimeUnit.MILLISECONDS)
+                true
+            } catch (_: Exception) {
+                false
             }
         }
-
-    private companion object {
-        private val LOG = Logger.getInstance(GitWiringStartupActivity::class.java)
     }
 }
+
+/**
+ * Read one commit's parents through git4idea, projected immediately into [GitCommitView].
+ *
+ * `collectCommitsMetadata` returns `VcsCommitMetadata`, which also exposes the author and the
+ * full message. Nothing but `parents` is read off it, and the projection happens HERE so that
+ * no git4idea commit object ever escapes into the payload path.
+ */
+private fun commitGraphReader(project: Project, repository: GitRepository): GitCommitGraphReader =
+    GitCommitGraphReader { sha ->
+        try {
+            val metadata = GitHistoryUtils
+                .collectCommitsMetadata(project, repository.root, sha)
+                ?.firstOrNull()
+                ?: return@GitCommitGraphReader null
+            GitCommitView(
+                sha = sha,
+                // ONLY parents. Order preserved exactly as git reports it.
+                parents = metadata.parents.map { it.asString() },
+            )
+        } catch (e: Exception) {
+            // A shallow clone, a corrupt object, a repository closing underneath us.
+            // Unknown parents are OMITTED rather than reported as an empty list.
+            LOG.debug("provenance: could not read commit parents for $sha", e)
+            null
+        }
+    }
+
+private val LOG = Logger.getInstance(GitWiringStartupActivity::class.java)

@@ -23,9 +23,8 @@ import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.session.ActivatedWorkspace
 import dev.provenance.recorder.session.RecorderSessionManager
 import dev.provenance.recorder.startup.RecoveryDecision
-import dev.provenance.recorder.wiring.git.GitWiringStartupActivity
+import dev.provenance.recorder.wiring.git.installGitWiring
 import git4idea.repo.GitRepositoryManager
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
@@ -118,7 +117,9 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
         assertFalse("git4idea must detect the real repository", mgr.repositories.isEmpty())
 
         // Register our git.event subscription (ProjectActivity is not auto-run in tests).
-        runBlocking { GitWiringStartupActivity().execute(project) }
+        // Keep the handle: emission is async now (reading `parents` is a blocking VCS call),
+        // so the assertions below must await settled() rather than race the graph read.
+        val gitWiring = installGitWiring(project)
 
         val hw = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(ws.resolve("hw.py"))!!
         ApplicationManager.getApplication().invokeAndWait {
@@ -150,6 +151,8 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
         // → our subscription emits git.event and marks the ExplanationTagger.
         ApplicationManager.getApplication().executeOnPooledThread { mgr.repositories[0].update() }.get()
         PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        // The git.event is emitted off the state-change thread, after the commit-graph read.
+        assertTrue("the git wiring must settle", gitWiring.settled())
         // Surface the new file content to VFS → fs.external_change, tagged explanation="git".
         VfsUtil.markDirtyAndRefresh(false, false, false, hw)
         PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
