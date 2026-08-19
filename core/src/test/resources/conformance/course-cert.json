@@ -1,0 +1,286 @@
+{
+  "note": "Course-certificate conformance vectors (program spec §2/§3). The ROOT key signs the cert MINUS root_sig; log-core never hardcodes the root public key, it is always a parameter, so a port must accept it as one too. All keys in the signed payload are fixed ASCII identifiers: a non-ASCII key would sort differently under a bytewise Lua JCS than under a UTF-16 code-unit JS/Kotlin JCS and silently break cross-verification.",
+  "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+  "wrong_root_pubkey_hex": "0b513ad9b4924015ca0902ed079044d3ac5dbec2306f06948c10da8eb6e39f2d",
+  "course_pubkey_hex": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+  "valid_cert": {
+    "course_id": "berkeley-cs61b",
+    "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+    "valid_from": "2026-08-20",
+    "valid_until": "2027-01-15",
+    "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+  },
+  "canonical_json": "{\"course_id\":\"berkeley-cs61b\",\"course_pubkey\":\"66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\"}",
+  "verify_cases": [
+    {
+      "name": "valid",
+      "note": "Genuine cert under the matching root key.",
+      "input": {
+        "cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "bad_root_sig",
+      "note": "Cert signed by a DIFFERENT root key. Chain step 1 must fail; do not activate.",
+      "input": {
+        "cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "bac528c85fb52f6ad0d9b1f44837a4c500cfe8bf2e0f70c822c6c53912b7ebb26ee709e5c41437ae1ebad36c9d680abcceeca86ffcac6dc089dea327bb198a05"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "root_key_is_a_parameter",
+      "note": "The same cert verifies under whichever root actually signed it — proof the root key is never hardcoded.",
+      "input": {
+        "cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "bac528c85fb52f6ad0d9b1f44837a4c500cfe8bf2e0f70c822c6c53912b7ebb26ee709e5c41437ae1ebad36c9d680abcceeca86ffcac6dc089dea327bb198a05"
+        },
+        "root_pubkey_hex": "0b513ad9b4924015ca0902ed079044d3ac5dbec2306f06948c10da8eb6e39f2d"
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "tampered_course_id",
+      "note": "course_id edited after signing. The cert is what binds a course key to a course id, so this must fail.",
+      "input": {
+        "cert": {
+          "course_id": "berkeley-cs61c",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "tampered_valid_until",
+      "note": "Window extended after signing — the classic \"make my expired cert live forever\" edit.",
+      "input": {
+        "cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2099-01-01",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "valid": false
+      }
+    }
+  ],
+  "timestamp_note": "The exact accepting set of the timestamp parser, spelled out because the three implementations have wildly different date libraries and must agree. Grammar: YYYY-MM-DD optionally followed by THH:MM:SS, optional .fraction (padded/truncated to milliseconds), optional Z or +/-HH:MM. Date-only means UTC midnight; a missing offset means UTC. Non-existent calendar dates are REJECTED, not rolled forward — JS Date would turn 2026-02-31 into 2026-03-03, and java.time would throw, so the parser normalises that difference away by rejecting. expected_ms is null for a rejection.",
+  "timestamp_parse_cases": [
+    {
+      "input": "2026-08-20",
+      "expected_ms": 1787184000000
+    },
+    {
+      "input": "2026-09-08T12:34:56Z",
+      "expected_ms": 1788870896000
+    },
+    {
+      "input": "2026-09-08T00:00:00",
+      "expected_ms": 1788825600000
+    },
+    {
+      "input": "2026-09-08T00:00:00.5Z",
+      "expected_ms": 1788825600500
+    },
+    {
+      "input": "2026-09-08T00:00:00.123456Z",
+      "expected_ms": 1788825600123
+    },
+    {
+      "input": "2026-09-08T02:00:00+02:00",
+      "expected_ms": 1788825600000
+    },
+    {
+      "input": "2026-09-07T21:00:00-03:00",
+      "expected_ms": 1788825600000
+    },
+    {
+      "input": "2028-02-29",
+      "expected_ms": 1835395200000
+    },
+    {
+      "input": "0026-09-08",
+      "expected_ms": -61325078400000
+    },
+    {
+      "input": "2026-02-31",
+      "expected_ms": null
+    },
+    {
+      "input": "2027-02-29",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-13-01",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-32",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-08T25:00:00Z",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-08 00:00:00Z",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-12-31T23:59:60Z",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-08T24:00:00Z",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-08T00:00:00+99:00",
+      "expected_ms": null
+    },
+    {
+      "input": "2026-09-08T00:00:00+23:59",
+      "expected_ms": 1788739260000
+    },
+    {
+      "input": "2026/09/08",
+      "expected_ms": null
+    },
+    {
+      "input": "20260908",
+      "expected_ms": null
+    },
+    {
+      "input": "not a date",
+      "expected_ms": null
+    },
+    {
+      "input": "",
+      "expected_ms": null
+    }
+  ],
+  "window_note": "The window is evaluated against manifest.issued_at, NEVER against wall-clock now: a Fall 2026 bundle must still verify in 2028 for an adjudication case. Both bounds are INCLUSIVE, and a date-only bound is the instant of UTC midnight that day (so valid_until \"2027-01-15\" expires at 2027-01-15T00:00:00Z). An out-of-window result is NOT fatal — it never invalidates a signature; the caller decides.",
+  "window_cases": [
+    {
+      "name": "inside",
+      "note": "Ordinary mid-semester manifest.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "2026-09-08T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "at_valid_from",
+      "note": "Lower bound is inclusive.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "2026-08-20T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "at_valid_until",
+      "note": "Upper bound is inclusive.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "2027-01-15T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "before_valid_from",
+      "note": "One second before the window opens.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "2026-08-19T23:59:59Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "before_valid_from"
+      }
+    },
+    {
+      "name": "after_valid_until",
+      "note": "One millisecond past the window. Non-fatal: the recorder still records and stamps the expiry.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "2027-01-15T00:00:00.001Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "after_valid_until"
+      }
+    },
+    {
+      "name": "expired_long_ago_but_contemporaneous",
+      "note": "Cert lapsed decades ago in wall-clock terms, yet the manifest was issued inside it. Must be in_window — this is the test that catches an implementation using now() instead of issued_at.",
+      "input": {
+        "valid_from": "1999-01-01",
+        "valid_until": "1999-12-31",
+        "issued_at": "1999-06-15T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "unparseable_issued_at",
+      "note": "Reported distinctly rather than guessed at.",
+      "input": {
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "issued_at": "sometime last fall"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "unparseable_timestamp"
+      }
+    }
+  ]
+}

@@ -1,0 +1,446 @@
+{
+  "note": "Manifest 2.0 conformance vectors (program spec §3). Two independent signature scopes live in one file: a COURSE-signed payload and a ROOT-signed course_cert that authorizes the course key. buildSignedPayload excludes sig AND course_cert — the course does not sign its own certificate.",
+  "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+  "course_pubkey_hex": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+  "other_course_pubkey_hex": "91a28a0b74381593a4d9469579208926afc8ad82c8839b7644359b9eba9a4b3a",
+  "legacy_no_format_version": {
+    "note": "MANDATORY. A 1.x manifest has no format_version field, so 1.x is identified by its ABSENCE. A parser MUST default a missing format_version to \"1.0\" and parse successfully — never reject. Rejecting it would break every archived submission, which is precisely the adjudication case this whole program exists to serve. The sig below is byte-identical to the one in manifest.json: adding the 2.0 fields did not move the 1.x signed payload by a single byte.",
+    "manifest_json": "{\"assignment_id\":\"hw3\",\"semester\":\"fa25\",\"issued_at\":\"2026-07-14T00:00:00Z\",\"files_under_review\":[\"src/main.py\",\"src/util.py\"],\"sig\":\"c8e897fd64389b0bb86cc804181312a05749e83a4d977088655a8ff6d2d7cb0ff0cbe98c9c04b7c833daa8d22fbc911f0cdaf2a5fcc907f19572410ded9ffa0e\"}",
+    "course_pubkey_hex": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+    "canonical_json": "{\"assignment_id\":\"hw3\",\"files_under_review\":[\"src/main.py\",\"src/util.py\"],\"issued_at\":\"2026-07-14T00:00:00Z\",\"semester\":\"fa25\"}",
+    "expected": {
+      "parses": true,
+      "format_version": "1.0",
+      "sig_verifies": true
+    }
+  },
+  "legacy_explicit_1_0": {
+    "note": "An explicit format_version of \"1.0\" canonicalizes to the same four legacy fields — format_version itself is NOT in the 1.x signed payload. Same sig as above.",
+    "manifest": {
+      "assignment_id": "hw3",
+      "semester": "fa25",
+      "issued_at": "2026-07-14T00:00:00Z",
+      "files_under_review": [
+        "src/main.py",
+        "src/util.py"
+      ],
+      "sig": "c8e897fd64389b0bb86cc804181312a05749e83a4d977088655a8ff6d2d7cb0ff0cbe98c9c04b7c833daa8d22fbc911f0cdaf2a5fcc907f19572410ded9ffa0e",
+      "format_version": "1.0"
+    },
+    "expected": {
+      "sig": "c8e897fd64389b0bb86cc804181312a05749e83a4d977088655a8ff6d2d7cb0ff0cbe98c9c04b7c833daa8d22fbc911f0cdaf2a5fcc907f19572410ded9ffa0e"
+    }
+  },
+  "valid_2_0": {
+    "note": "A complete 2.0 manifest. canonical_json is the exact byte string the COURSE key signed; note the absence of both sig and course_cert. Every key is a fixed ASCII identifier — never a course id, path, or other user-derived string promoted to a key — because a bytewise-sorting Lua JCS and a UTF-16-sorting JS/Kotlin JCS agree only for ASCII. files_under_review is the only array in the signed payload.",
+    "manifest": {
+      "format_version": "2.0",
+      "course_id": "berkeley-cs61b",
+      "assignment_id": "proj2",
+      "semester": "fa26",
+      "issued_at": "2026-09-08T00:00:00Z",
+      "files_under_review": [
+        "src/Main.java"
+      ],
+      "collaboration": "solo",
+      "submission": "bundle",
+      "scope": "directory",
+      "policy": {
+        "capture": {
+          "selection_change": true,
+          "focus_change": true,
+          "terminal": true,
+          "doc_open_close": true,
+          "inline_content": true,
+          "heartbeat_interval_ms": 30000
+        }
+      },
+      "course_cert": {
+        "course_id": "berkeley-cs61b",
+        "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+        "valid_from": "2026-08-20",
+        "valid_until": "2027-01-15",
+        "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+      },
+      "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+    },
+    "canonical_json": "{\"assignment_id\":\"proj2\",\"collaboration\":\"solo\",\"course_id\":\"berkeley-cs61b\",\"files_under_review\":[\"src/Main.java\"],\"format_version\":\"2.0\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"policy\":{\"capture\":{\"doc_open_close\":true,\"focus_change\":true,\"heartbeat_interval_ms\":30000,\"inline_content\":true,\"selection_change\":true,\"terminal\":true}},\"scope\":\"directory\",\"semester\":\"fa26\",\"submission\":\"bundle\"}"
+  },
+  "unknown_keys_ignored": {
+    "note": "MANDATORY. Unknown top-level keys MUST be ignored, for forward compatibility. This is safe precisely because canonicalization operates on the NAMED fields only, so an unknown key can never silently change the signed bytes — the signature below still verifies with the extra keys present.",
+    "manifest_json": "{\"format_version\":\"2.0\",\"course_id\":\"berkeley-cs61b\",\"assignment_id\":\"proj2\",\"semester\":\"fa26\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"files_under_review\":[\"src/Main.java\"],\"collaboration\":\"solo\",\"submission\":\"bundle\",\"scope\":\"directory\",\"policy\":{\"capture\":{\"selection_change\":true,\"focus_change\":true,\"terminal\":true,\"doc_open_close\":true,\"inline_content\":true,\"heartbeat_interval_ms\":30000}},\"course_cert\":{\"course_id\":\"berkeley-cs61b\",\"course_pubkey\":\"66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\",\"root_sig\":\"ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206\"},\"sig\":\"4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b\",\"some_future_field\":\"ignored\",\"another_one\":[1,2]}",
+    "expected": {
+      "parses": true,
+      "chain": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "window": {
+          "in_window": true
+        }
+      }
+    }
+  },
+  "chain_note": "Step 0 gates on format_version === \"2.0\" before anything else, and that gate is a SECURITY CONTROL. At 1.x, course_id / collaboration / submission / scope / policy are all outside the signed payload, so a student holding any genuinely-signed 1.x manifest from their own course can staple on that course’s (public, root-signed, copyable) certificate, add a matching course_id to satisfy step 3, and staple on a policy that disables capture — with every individual signature still verifying. See the downgrade_1x_with_stapled_cert case. Then: the four verification steps run IN THIS ORDER and the order is load-bearing: (1) course_cert minus root_sig against the embedded root pubkey; (2) payload minus sig and course_cert against course_cert.course_pubkey; (3) manifest.course_id === course_cert.course_id; (4) issued_at within [valid_from, valid_until] — non-fatal, reported not thrown.",
+  "chain_cases": [
+    {
+      "name": "valid",
+      "note": "Root -> cert -> manifest all agree.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "window": {
+          "in_window": true
+        }
+      }
+    },
+    {
+      "name": "bad_root_sig",
+      "note": "Step 1 fails: the cert is not root-signed. Do not activate.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "bac528c85fb52f6ad0d9b1f44837a4c500cfe8bf2e0f70c822c6c53912b7ebb26ee709e5c41437ae1ebad36c9d680abcceeca86ffcac6dc089dea327bb198a05"
+          },
+          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid_root_signature"
+      }
+    },
+    {
+      "name": "wrong_course_key",
+      "note": "Step 2 fails: signed by a course key the cert does not vouch for.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "sig": "e3baad4837b9506f064aae94bb876aaad07342877e443c9fd5bcefabf4c7577bef0fac6f56ad4a28ae376c39dbc9db8637eda052567137bbcb1ad8cd02eb310d"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid_course_signature"
+      }
+    },
+    {
+      "name": "tampered_payload",
+      "note": "Step 2 fails: files_under_review edited after signing.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Sneaky.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid_course_signature"
+      }
+    },
+    {
+      "name": "course_id_mismatch",
+      "note": "MANDATORY. Step 3 fails. Both signatures are GENUINE: the cert really is root-signed for berkeley-cs61b, and the payload really is signed by the key that cert authorizes. Only comparing manifest.course_id to course_cert.course_id catches it. Skip step 3 and 61B’s key can forge a 61C manifest.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61c",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "sig": "10d0a07b07948f78e712e4af3f60c3b40057abb54f86a9433cf0111cf19b2b162f97f0477b5e96b825e4eb6bd8f00c30b02ecb4bf1fb53bc1bc12c725cc4600a"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "course_id_mismatch",
+        "manifest_course_id": "berkeley-cs61c",
+        "cert_course_id": "berkeley-cs61b"
+      }
+    },
+    {
+      "name": "issued_at_after_valid_until",
+      "note": "Step 4. NOT an error: the chain succeeds and the expiry is reported on the result. A course letting a cert lapse mid-semester must not silently stop recording for a whole class.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2027-06-01T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "sig": "b2376f98b78ab05f27f83364408f51e08a5c8e515b1f434c12e8bc6ca52fd53bee79c2c6076252eb246b0ac729a666c1c49c1fbec7d8d9ee88600eec5e4e8b0d"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "window": {
+          "in_window": false,
+          "reason": "after_valid_until"
+        }
+      }
+    },
+    {
+      "name": "not_manifest_2_0",
+      "note": "Step 0. A 1.x manifest has no trust chain by definition.",
+      "input": {
+        "manifest": {
+          "assignment_id": "hw3",
+          "semester": "fa25",
+          "issued_at": "2026-07-14T00:00:00Z",
+          "files_under_review": [
+            "src/main.py",
+            "src/util.py"
+          ],
+          "sig": "c8e897fd64389b0bb86cc804181312a05749e83a4d977088655a8ff6d2d7cb0ff0cbe98c9c04b7c833daa8d22fbc911f0cdaf2a5fcc907f19572410ded9ffa0e"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "not_manifest_2_0",
+        "format_version": "1.0"
+      }
+    },
+    {
+      "name": "missing_course_cert",
+      "note": "A 2.0 manifest with the cert removed.",
+      "input": {
+        "manifest": {
+          "format_version": "2.0",
+          "course_id": "berkeley-cs61b",
+          "assignment_id": "proj2",
+          "semester": "fa26",
+          "issued_at": "2026-09-08T00:00:00Z",
+          "files_under_review": [
+            "src/Main.java"
+          ],
+          "collaboration": "solo",
+          "submission": "bundle",
+          "scope": "directory",
+          "policy": {
+            "capture": {
+              "selection_change": true,
+              "focus_change": true,
+              "terminal": true,
+              "doc_open_close": true,
+              "inline_content": true,
+              "heartbeat_interval_ms": 30000
+            }
+          },
+          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "missing_course_cert"
+      }
+    },
+    {
+      "name": "downgrade_1x_with_stapled_cert",
+      "note": "MANDATORY. Step 0. Needs no private key: a genuinely-signed 1.x manifest, plus the course’s real certificate copied out of any 2.0 manifest, plus a course_id chosen to satisfy step 3, plus an INVENTED policy that turns capture off. verifyCourseCert passes, verifyManifest passes, and course_id matches — every signature is genuine. Only the format_version gate refuses it. An implementation that walks steps 1-4 without checking the version hands students an off switch.",
+      "input": {
+        "manifest": {
+          "assignment_id": "hw3",
+          "semester": "fa25",
+          "issued_at": "2026-09-01T00:00:00Z",
+          "files_under_review": [
+            "a.py"
+          ],
+          "sig": "550a6d1b78fc206490cae11ce1f2e8ab4156f2ed163e60619e3d41961299a0ec75cbc1cc91f08051147b24ac48c0a8b1010e7e360a71aa060b0a9f198da1ad00",
+          "course_cert": {
+            "course_id": "berkeley-cs61b",
+            "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+          },
+          "course_id": "berkeley-cs61b",
+          "collaboration": "group",
+          "submission": "git",
+          "scope": "repo",
+          "policy": {
+            "capture": {
+              "selection_change": false,
+              "focus_change": false,
+              "terminal": false,
+              "doc_open_close": false,
+              "inline_content": false,
+              "heartbeat_interval_ms": 120000
+            }
+          }
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "not_manifest_2_0",
+        "format_version": "1.0"
+      }
+    }
+  ]
+}

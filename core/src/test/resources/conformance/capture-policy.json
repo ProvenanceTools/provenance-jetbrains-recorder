@@ -1,0 +1,300 @@
+{
+  "note": "Capture-policy resolution (program spec §4). The policy block lives INSIDE the course-signed manifest payload, which is the point: a professor can turn capture down, a student cannot turn it off. Every capture key is a fixed ASCII identifier and must stay that way — see course-cert.json for why.",
+  "defaults": {
+    "selection_change": true,
+    "focus_change": true,
+    "terminal": true,
+    "doc_open_close": true,
+    "inline_content": true,
+    "heartbeat_interval_ms": 30000
+  },
+  "heartbeat_clamp": {
+    "min_ms": 5000,
+    "max_ms": 120000
+  },
+  "floor_note": "Event kinds that can NEVER be disabled, because validation checks 3-8 and the integrity story depend on them. Enforced by the SCHEMA: a floor kind simply has no key in policy.capture, so \"off\" is not expressible. session.heartbeat is on the floor because bundle-level Active/Idle and the gap_in_heartbeats heuristic need it — only its interval is tunable. paste.anomaly is on the floor by the same schema rule even though the program spec’s prose list omits it.",
+  "floor_event_kinds": [
+    "session.start",
+    "session.end",
+    "session.resumed",
+    "session.heartbeat",
+    "doc.change",
+    "doc.save",
+    "paste",
+    "paste.anomaly",
+    "fs.external_change",
+    "git.event",
+    "clock.skew",
+    "chain.broken",
+    "ext.snapshot",
+    "ext.activate",
+    "recorder.degraded",
+    "recorder.recovered_from_corruption"
+  ],
+  "policy_gated_event_kinds": {
+    "doc.open": "doc_open_close",
+    "doc.close": "doc_open_close",
+    "selection.change": "selection_change",
+    "focus.change": "focus_change",
+    "terminal.open": "terminal",
+    "terminal.command": "terminal"
+  },
+  "absence_vs_disabled_note": "The effective policy MUST travel into the bundle (it does, inside the manifest carried by session.start). Without it an analyzer cannot tell \"this student produced no selection.change events\" from \"this course disabled selection.change\", and heuristics mis-fire on the difference.",
+  "cases": [
+    {
+      "name": "absent_block",
+      "note": "A 1.x manifest has no policy at all and must resolve to the v1.x capture set: everything on, 30s heartbeat.",
+      "input": null,
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "empty_block",
+      "note": "A policy object with no capture key.",
+      "input": {},
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "empty_capture",
+      "note": "An empty capture object.",
+      "input": {
+        "capture": {}
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "all_on",
+      "note": "Everything explicitly enabled.",
+      "input": {
+        "capture": {
+          "selection_change": true,
+          "focus_change": true,
+          "terminal": true,
+          "doc_open_close": true,
+          "inline_content": true,
+          "heartbeat_interval_ms": 30000
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "all_off",
+      "note": "Every optional signal disabled. Floor kinds are unaffected.",
+      "input": {
+        "capture": {
+          "selection_change": false,
+          "focus_change": false,
+          "terminal": false,
+          "doc_open_close": false,
+          "inline_content": false
+        }
+      },
+      "expected": {
+        "selection_change": false,
+        "focus_change": false,
+        "terminal": false,
+        "doc_open_close": false,
+        "inline_content": false,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "partial_falls_back_per_key",
+      "note": "Only the keys the course specified move; the rest take defaults.",
+      "input": {
+        "capture": {
+          "selection_change": false
+        }
+      },
+      "expected": {
+        "selection_change": false,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "unknown_key_ignored",
+      "note": "Forward compatibility: an unrecognised capture key is ignored, not an error.",
+      "input": {
+        "capture": {
+          "future_signal": true,
+          "terminal": false
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": false,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "heartbeat_below_floor",
+      "note": "Clamped UP to 5000.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 1000
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 5000
+      }
+    },
+    {
+      "name": "heartbeat_at_floor",
+      "note": "Boundary is inclusive.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 5000
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 5000
+      }
+    },
+    {
+      "name": "heartbeat_in_range",
+      "note": "Passed through unchanged.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 45000
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 45000
+      }
+    },
+    {
+      "name": "heartbeat_at_ceiling",
+      "note": "Boundary is inclusive.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 120000
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 120000
+      }
+    },
+    {
+      "name": "heartbeat_above_ceiling",
+      "note": "Clamped DOWN to 120000.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 999999
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 120000
+      }
+    },
+    {
+      "name": "heartbeat_zero",
+      "note": "Clamped up to the floor, not treated as \"disabled\".",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": 0
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 5000
+      }
+    },
+    {
+      "name": "heartbeat_non_number",
+      "note": "Falls back to the DEFAULT (30000), not to the floor — clamping a non-number is meaningless and a course that wrote garbage should get the safe cadence.",
+      "input": {
+        "capture": {
+          "heartbeat_interval_ms": "10000"
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    },
+    {
+      "name": "non_boolean_flag",
+      "note": "Falls back to the default for that key.",
+      "input": {
+        "capture": {
+          "terminal": "off"
+        }
+      },
+      "expected": {
+        "selection_change": true,
+        "focus_change": true,
+        "terminal": true,
+        "doc_open_close": true,
+        "inline_content": true,
+        "heartbeat_interval_ms": 30000
+      }
+    }
+  ]
+}
