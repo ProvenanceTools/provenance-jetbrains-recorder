@@ -5,6 +5,7 @@ import dev.provenance.core.ChainCheck
 import dev.provenance.core.ParseResult
 import dev.provenance.core.SessionEntry
 import dev.provenance.core.Sha256
+import dev.provenance.core.SignedBundleManifest
 import dev.provenance.core.SubmissionFileEntry
 import dev.provenance.core.parseEntries
 import dev.provenance.core.signBundleManifest
@@ -75,6 +76,8 @@ fun sealBundle(
     now: () -> Instant = Instant::now,
     /** Test seam for the manifest/sig write, alongside the existing now/computeExtensionHash seams. */
     writeFile: (Path, String) -> Unit = { path, contents -> atomicWriteFile(path, contents) },
+    /** Test seam for the manifest signing step; production uses the real [signBundleManifest]. */
+    signManifest: (BundleManifest, ByteArray) -> SignedBundleManifest = ::signBundleManifest,
 ): SealResult {
     // Step 1: list .slog files (excluding .slog.meta).
     if (!Files.isDirectory(provenanceDir)) return SealResult.NoSessions
@@ -161,8 +164,15 @@ fun sealBundle(
 
     // Step 5: sign + atomic-write manifest.json (the exact signed bytes) and manifest.sig.
     val signed = try {
-        signBundleManifest(manifest, sessionPrivkey)
-    } catch (e: Exception) {
+        signManifest(manifest, sessionPrivkey)
+    } catch (e: Throwable) {
+        // Widened for the same reason as the other seal steps, from a different cause: the
+        // ed25519 provider initialises lazily at the first sign() call, so a provider whose
+        // class init fails raises NoClassDefFoundError / ExceptionInInitializerError — Errors
+        // an `Exception` catch lets straight out of sealBundle. Different failure class from
+        // the IJent NotImplementedError, identical consequence on this path: a dead seal with
+        // no typed result and no notification, and no second chance for the student.
+        rethrowIfFatal(e)
         return SealResult.WriteError("Failed to sign manifest: ${e.message}")
     }
     val manifestPath = provenanceDir.resolve("manifest.json")

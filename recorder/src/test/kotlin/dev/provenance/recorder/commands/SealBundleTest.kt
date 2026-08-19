@@ -167,6 +167,42 @@ class SealBundleTest {
     }
 
     @Test
+    fun `an Error from manifest signing becomes a WriteError instead of escaping`() {
+        // The ed25519 provider initialises lazily, at the first sign() call. A provider whose
+        // static init fails (a stripped/relocated crypto class in a repackaged IDE) surfaces as
+        // NoClassDefFoundError / ExceptionInInitializerError — Errors, not Exceptions. Different
+        // cause from the IJent NotImplementedError, identical consequence: the seal dies with no
+        // SealResult and no notification, on the one path where the student has no second chance.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val result = sealBundle(
+            prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+            signManifest = { _, _ -> throw NoClassDefFoundError("com/google/crypto/tink/subtle/Ed25519Sign") },
+        )
+        assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
+        assertTrue((result as SealResult.WriteError).message.contains("sign manifest"))
+    }
+
+    @Test
+    fun `a VirtualMachineError from manifest signing still propagates`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val boom = OutOfMemoryError("heap")
+        var caught: Throwable? = null
+        try {
+            sealBundle(
+                prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+                signManifest = { _, _ -> throw boom },
+            )
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame("a VirtualMachineError must propagate untouched", boom, caught)
+    }
+
+    @Test
     fun `a VirtualMachineError propagates instead of being reported as a seal failure`() {
         // An OutOfMemoryError is not a seal failure: reporting it as one would be a wrong
         // diagnosis, and continuing after one is unsound. Same rule as SessionWriter.
