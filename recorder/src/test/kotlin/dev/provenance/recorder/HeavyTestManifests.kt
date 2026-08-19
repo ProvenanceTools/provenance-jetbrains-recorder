@@ -10,14 +10,19 @@ import kotlinx.serialization.json.putJsonArray
 
 /**
  * Shared manifest helpers for the heavy end-to-end fixtures (real project open +
- * real production activation). Signs `.provenance-manifest` files with the DEV
- * course keypair whose public half is the embedded [COURSE_PUBLIC_KEY_HEX]
- * (`958d262b…`, seed in the session scratchpad dev-key.txt) — so a manifest built
- * here verifies against the real, unmodified activation gate, exactly as a genuine
- * course-signed manifest would.
+ * real production activation). Signs Manifest **1.x** `.provenance-manifest` files
+ * with the DEV course keypair whose public half is the embedded
+ * [dev.provenance.recorder.activation.LEGACY_COURSE_PUBLIC_KEY_HEX] (`958d262b…`,
+ * seed in the session scratchpad dev-key.txt) — so a manifest built here verifies
+ * against the real, unmodified activation gate, exactly as a genuine course-signed
+ * 1.x manifest would.
+ *
+ * The constant these verify against was renamed at Manifest 2.0
+ * (`COURSE_PUBLIC_KEY_HEX` → `LEGACY_COURSE_PUBLIC_KEY_HEX`) but its VALUE is
+ * unchanged, which is what keeps the 1.x path here byte-for-byte identical.
  */
 object HeavyTestManifests {
-    /** DEV course private seed; its ed25519 pubkey == the embedded COURSE_PUBLIC_KEY_HEX. */
+    /** DEV course private seed; its ed25519 pubkey == the embedded LEGACY_COURSE_PUBLIC_KEY_HEX. */
     private const val COURSE_PRIV_SEED_HEX =
         "e1cd3820d5d4867defcd98e4436a80d92e99db284451b7595e75a66a4e8c7b75"
 

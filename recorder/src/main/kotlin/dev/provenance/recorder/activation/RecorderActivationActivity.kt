@@ -70,7 +70,10 @@ class RecorderActivationActivity internal constructor(
         // `readAction {}`: it is EDT-hostile, and ActivationResilienceTest / RecorderStateTest
         // drive `execute()` inside `runBlocking` on the EDT.
         val discovered = ReadAction.computeBlocking<List<DiscoveredManifest>, Throwable> {
-            discoverer(project, COURSE_PUBLIC_KEY_HEX)
+            // The root key is not threaded here: the discoverer seam exists so tests can
+            // swap the 1.x key, and ROOT_PUBLIC_KEY_HEX is a compile-time constant the
+            // discoverer picks up by default. Same shape as before Manifest 2.0.
+            discoverer(project, LEGACY_COURSE_PUBLIC_KEY_HEX)
         }
         val state = project.service<RecorderState>()
         state.deactivateAll()
