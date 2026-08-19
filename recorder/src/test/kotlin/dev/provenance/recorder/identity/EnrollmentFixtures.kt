@@ -36,6 +36,13 @@ object EnrollmentFixtures {
     val coursePriv: ByteArray = ByteArray(32) { 0x52 }
     val enrollmentPriv: ByteArray = ByteArray(32) { 0x53 }
 
+    /**
+     * A real ed25519 course key that NO course_cert in these fixtures names. Used to mint a
+     * GENUINELY SIGNED enrollment cert that the chain must still reject at step 1: the point of
+     * the identity chain is that a valid signature from the wrong signer is worth nothing.
+     */
+    val foreignCoursePriv: ByteArray = ByteArray(32) { 0x66 }
+
     /** The student's 32-byte master secret. Per-course keys derive from this. */
     val masterSecret: ByteArray = ByteArray(32) { 0x2a }
 
@@ -64,6 +71,8 @@ object EnrollmentFixtures {
         formatVersion: String = ENROLLMENT_FORMAT_VERSION,
         validFrom: String = "2026-08-20",
         validUntil: String = "2027-01-15",
+        /** Which course key signs it. Defaults to the one [courseCert] names. */
+        signingKey: ByteArray = coursePriv,
     ): EnrollmentCert {
         val unsigned = EnrollmentCert(
             formatVersion = formatVersion,
@@ -73,7 +82,7 @@ object EnrollmentFixtures {
             validUntil = validUntil,
             courseSig = "",
         )
-        return unsigned.copy(courseSig = signEnrollmentCert(unsigned, coursePriv))
+        return unsigned.copy(courseSig = signEnrollmentCert(unsigned, signingKey))
     }
 
     /** The enrollment-signed statement binding a student pubkey to a roster entry. */
@@ -104,6 +113,8 @@ object EnrollmentFixtures {
         tokenFormatVersion: String = ENROLLMENT_FORMAT_VERSION,
         studentPubkey: String = studentPubkeyHex(courseId),
         expiresAt: String = "2027-01-15",
+        /** Which course key signs the enrollment cert. Defaults to the legitimate one. */
+        certSigningKey: ByteArray = coursePriv,
     ): String = buildJsonObject {
         put(
             "enrollment",
@@ -114,7 +125,14 @@ object EnrollmentFixtures {
                 expiresAt = expiresAt,
             ).toJsonObject(),
         )
-        put("enrollment_cert", cert(courseId = certCourseId, formatVersion = certFormatVersion).toJsonObject())
+        put(
+            "enrollment_cert",
+            cert(
+                courseId = certCourseId,
+                formatVersion = certFormatVersion,
+                signingKey = certSigningKey,
+            ).toJsonObject(),
+        )
     }.toString()
 
     /** A signed Manifest 2.0 whose `course_cert` anchors the identity chain. */

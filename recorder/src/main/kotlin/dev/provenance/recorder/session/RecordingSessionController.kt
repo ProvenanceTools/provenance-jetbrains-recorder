@@ -23,6 +23,7 @@ import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.failure.DegradedModeNotifier
 import dev.provenance.recorder.failure.DiskFullHandler
+import dev.provenance.recorder.identity.CourseKeyCache
 import dev.provenance.recorder.identity.IdentityOutcome
 import dev.provenance.recorder.identity.PasswordSafeSecretStore
 import dev.provenance.recorder.identity.SecretStore
@@ -102,6 +103,15 @@ class RecordingSessionController(
      * map without a running IDE; production uses the PasswordSafe credential vault.
      */
     secrets: SecretStore = PasswordSafeSecretStore(),
+    /**
+     * The application-scoped derived-key cache. Resolved defensively: under a test harness or
+     * a partially-initialised container the service may be unavailable, and a missing cache
+     * must degrade to direct derivation rather than fail session start — the cache is a
+     * performance detail, never a correctness one.
+     */
+    keyCache: CourseKeyCache? = runCatching {
+        ApplicationManager.getApplication()?.getService(CourseKeyCache::class.java)
+    }.getOrNull(),
     recovery: RecoveryDecision = RecoveryDecision.CleanStart,
     checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
     /** Plan 8: disk-full user disclosure. Defaults to the real balloon notifier. */
@@ -185,6 +195,7 @@ class RecordingSessionController(
             sessionPubkeyHex = keypair.publicKeyHex,
             sessionStartedAt = clock.wall(),
             secrets = secrets,
+            keyCache = keyCache,
         )
         if (identityOutcome is IdentityOutcome.Skipped) {
             LOG.debug("provenance: session.start identity omitted: ${identityOutcome.reason}")

@@ -96,12 +96,17 @@ private val IDENTITY_HEX_64_RE = Regex("^[0-9a-f]{64}$")
  *                         against this, never wall-clock now, so an archived bundle still
  *                         reads correctly years later.
  * @param secrets          The PasswordSafe-backed store in production.
+ * @param keyCache         Optional derived-key cache ([CourseKeyCache]). When null the key is
+ *                         derived directly, which is always correct — the cache is a
+ *                         performance detail, never a correctness one, and a cache miss and a
+ *                         cache absence must produce byte-identical keys.
  */
 fun buildSessionIdentity(
     manifest: Manifest,
     sessionPubkeyHex: String,
     sessionStartedAt: String,
     secrets: SecretStore,
+    keyCache: CourseKeyCache? = null,
 ): IdentityOutcome {
     try {
         // --- Anchor. There is no identity chain without a course cert to anchor it.
@@ -135,7 +140,18 @@ fun buildSessionIdentity(
                 )
         }
 
-        val derived = deriveCourseKeypair(master, courseId)
+        // Via the cache when one is supplied, else derived directly. Both paths MUST yield the
+        // same key: the cache is keyed on a fingerprint of this master secret, so a stale entry
+        // from a previously-imported secret can never be returned here.
+        val derived = if (keyCache != null) {
+            keyCache.get(master, courseId)
+                ?: return IdentityOutcome.Skipped(
+                    IdentitySkipReason.MasterSecretUnavailable("derive_failed"),
+                )
+        } else {
+            deriveCourseKeypair(master, courseId)
+        }
+
         if (derived.publicKeyHex != stored.enrollment.studentPubkey) {
             return IdentityOutcome.Skipped(
                 IdentitySkipReason.StudentKeyMismatch(

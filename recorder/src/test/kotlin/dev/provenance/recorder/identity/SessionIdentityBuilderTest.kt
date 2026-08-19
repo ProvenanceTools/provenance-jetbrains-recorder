@@ -7,6 +7,7 @@ import dev.provenance.core.IdentityChain
 import dev.provenance.core.SessionPubkeyBinding
 import dev.provenance.core.deriveCourseKeypair
 import dev.provenance.core.toJsonObject
+import dev.provenance.core.verifyEnrollmentCert
 import dev.provenance.core.verifySessionPubkeySig
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -213,6 +214,89 @@ class SessionIdentityBuilderTest {
         val skipped = build(s) as IdentityOutcome.Skipped
         val reason = skipped.reason as IdentitySkipReason.ChainDidNotVerify
         assertTrue(reason.error is IdentityChain.InvalidCourseSignature)
+    }
+
+    /**
+     * Rule 2, stated at full strength: a **genuinely signed** enrollment cert from a key the
+     * `course_cert` does not name must produce NO identity block.
+     *
+     * This is the case a garbage signature does not cover. Every byte here is a real ed25519
+     * signature over a real JCS payload — the cert verifies perfectly against
+     * `foreignCoursePriv`'s public half — so nothing about its SHAPE is wrong. The only thing
+     * wrong is the signer, and that is exactly what step 1 of the walk exists to catch: it
+     * verifies `enrollment_cert` minus `course_sig` against `course_cert.course_pubkey`, not
+     * against whatever key happens to have signed it.
+     *
+     * If this ever emitted, anyone able to mint their own ed25519 keypair could write a
+     * self-consistent identity claiming any `student_ref` into a signed, hash-chained
+     * `session.start` that can never be amended.
+     */
+    @Test
+    fun `a genuinely signed cert from a key the course cert does not name emits no identity`() {
+        val s = FakeSecretStore()
+        importMasterSecret(s, Ed25519.bytesToHex(EnrollmentFixtures.masterSecret))
+        // Correct course_id, correct enrollment pubkey, correct student pubkey, real signature
+        // over the real payload — signed by a course key the manifest's course_cert never names.
+        saveEnrollment(s, EnrollmentFixtures.blobJson(certSigningKey = EnrollmentFixtures.foreignCoursePriv))
+
+        // Sanity: the cert really is validly signed under the foreign key, so this test is
+        // about the SIGNER and not about a malformed artifact.
+        val foreignCert = EnrollmentFixtures.cert(signingKey = EnrollmentFixtures.foreignCoursePriv)
+        assertTrue(
+            verifyEnrollmentCert(foreignCert, Ed25519.bytesToHex(Ed25519.publicKeyOf(EnrollmentFixtures.foreignCoursePriv))),
+        )
+        assertFalse(
+            "and it must NOT verify against the course cert's key",
+            verifyEnrollmentCert(foreignCert, EnrollmentFixtures.coursePubkeyHex),
+        )
+
+        val outcome = build(s)
+        assertTrue("a foreign-signed cert must never be emitted", outcome is IdentityOutcome.Skipped)
+        val reason = (outcome as IdentityOutcome.Skipped).reason as IdentitySkipReason.ChainDidNotVerify
+        assertTrue(reason.error is IdentityChain.InvalidCourseSignature)
+    }
+
+    // -----------------------------------------------------------------------
+    // The key cache is a timing detail, never a correctness one
+    // -----------------------------------------------------------------------
+
+    /**
+     * Passing a [CourseKeyCache] must not change a single emitted byte. The cache exists to
+     * avoid re-deriving a key; if it ever changed the key, the countersignature would stop
+     * verifying against the token's `student_pubkey`.
+     */
+    @Test
+    fun `an identity built through the key cache is identical to one built without it`() {
+        val cache = CourseKeyCache()
+        val withCache = buildSessionIdentity(
+            EnrollmentFixtures.manifest(),
+            sessionPubkey,
+            startedAt,
+            EnrollmentFixtures.enrolledStore(),
+            cache,
+        ) as IdentityOutcome.Emitted
+        val without = build(EnrollmentFixtures.enrolledStore()) as IdentityOutcome.Emitted
+
+        assertEquals(without.identity.toJsonObject(), withCache.identity.toJsonObject())
+        assertEquals(EnrollmentFixtures.studentPubkeyHex(), withCache.verified.studentPubkey)
+    }
+
+    /**
+     * Rule 1 reaches into the cache too: a cache that cannot derive yields no identity and
+     * still does not throw, so the session goes on to record.
+     */
+    @Test
+    fun `a key cache that cannot derive skips instead of throwing`() {
+        val broken = CourseKeyCache { _, _ -> throw IllegalStateException("no ed25519 provider") }
+        val outcome = buildSessionIdentity(
+            EnrollmentFixtures.manifest(),
+            sessionPubkey,
+            startedAt,
+            EnrollmentFixtures.enrolledStore(),
+            broken,
+        )
+        assertTrue(outcome is IdentityOutcome.Skipped)
+        assertTrue((outcome as IdentityOutcome.Skipped).reason is IdentitySkipReason.MasterSecretUnavailable)
     }
 
     /**

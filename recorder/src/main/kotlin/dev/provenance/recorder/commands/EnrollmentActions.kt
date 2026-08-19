@@ -8,6 +8,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import dev.provenance.core.deriveCourseKeypair
+import dev.provenance.recorder.identity.CourseKeyCache
 import dev.provenance.recorder.identity.IdentityStoreError
 import dev.provenance.recorder.identity.PasswordSafeSecretStore
 import dev.provenance.recorder.identity.SecretStore
@@ -40,6 +41,17 @@ import dev.provenance.recorder.session.RecorderSessionManager
  * already holds keeps working and nothing has to be re-minted.
  */
 private fun storeOf(): SecretStore = PasswordSafeSecretStore()
+
+/**
+ * The application-scoped derived-key cache, or null when the service container cannot supply
+ * it. Shared with the session-start path so the key shown here and the key that countersigns
+ * `session_pubkey` are the same derivation — resolved defensively because a missing cache
+ * must degrade to direct derivation, never fail the command.
+ */
+private fun keyCacheOf(): CourseKeyCache? = runCatching {
+    com.intellij.openapi.application.ApplicationManager.getApplication()
+        ?.getService(CourseKeyCache::class.java)
+}.getOrNull()
 
 private fun notify(project: Project, type: NotificationType, title: String, body: String) {
     com.intellij.notification.NotificationGroupManager.getInstance()
@@ -104,7 +116,8 @@ class ShowEnrollmentKeyAction : AnAction() {
             )
 
             is StoreResult.Ok -> {
-                val keypair = deriveCourseKeypair(master.value, courseId)
+                val keypair = keyCacheOf()?.get(master.value, courseId)
+                    ?: deriveCourseKeypair(master.value, courseId)
                 // showCopyableInfoMessage, not a plain info dialog: the student must be able
                 // to select and copy this to send to course staff.
                 Messages.showInfoMessage(
