@@ -8,6 +8,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.util.concurrency.AppExecutorUtil
+import dev.provenance.core.CapturePolicy
 import dev.provenance.core.Clock
 import dev.provenance.core.FocusChangePayload
 import dev.provenance.core.Manifest
@@ -16,6 +17,8 @@ import dev.provenance.core.SessionEndPayload
 import dev.provenance.core.SessionResumedPayload
 import dev.provenance.core.SystemClock
 import dev.provenance.core.encryptSessionPrivkey
+import dev.provenance.core.isEventKindCaptured
+import dev.provenance.core.resolveCapturePolicy
 import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.failure.DegradedModeNotifier
@@ -76,7 +79,12 @@ class RecordingSessionController(
     private val parentDisposable: Disposable,
     clock: Clock = SystemClock(),
     scheduler: FlushScheduler = DEFAULT_SCHEDULER,
-    heartbeatIntervalMs: Long = Heartbeat.DEFAULT_INTERVAL_MS,
+    /**
+     * Explicit heartbeat cadence, overriding the course's capture policy. Null (the
+     * default) means "use the policy", whose own default is [Heartbeat.DEFAULT_INTERVAL_MS]
+     * and which is already clamped to [5000, 120000] by `resolveCapturePolicy`.
+     */
+    heartbeatIntervalMs: Long? = null,
     /**
      * Plan 8: the startup chain-recovery decision for this workspace's .provenance dir,
      * already computed by the caller (recoverPreviousSession, via NioRecoveryDeps). This
@@ -124,6 +132,14 @@ class RecordingSessionController(
      */
     val sessionPrivkey: ByteArray
 
+    /**
+     * The course's capture policy, resolved from the VERIFIED manifest. `activated.manifest`
+     * reached this constructor only via `evaluateManifestText`, so at 2.0 the policy inside it
+     * is course-signed and root-chained; at 1.x there is no policy block and this resolves to
+     * the everything-on default, i.e. exactly the pre-2.0 capture set.
+     */
+    private val policy: CapturePolicy
+
     private val writer: SessionWriter
     private val meta: MetaWriter
     private val host: SessionHost
@@ -136,6 +152,11 @@ class RecordingSessionController(
     private var ended = false
 
     init {
+        // Step 0: resolve the course's capture policy BEFORE anything can emit. Total by
+        // construction — an absent, malformed, or out-of-range block resolves to a
+        // well-defined value, so this cannot fail and cannot leave the gate undefined.
+        policy = resolveCapturePolicy(activated.manifest.policy)
+
         Files.createDirectories(activated.provenanceDir)
         // Step 1: session keypair.
         val keypair = generateSessionKeypair()
@@ -238,7 +259,7 @@ class RecordingSessionController(
             clock = clock,
             focusedProvider = { focused.get() },
             getActiveFile = activeFileTracker::activeFileName,
-            intervalMs = heartbeatIntervalMs,
+            intervalMs = heartbeatIntervalMs ?: policy.heartbeatIntervalMs,
             scheduler = scheduler,
             getWallMs = System::currentTimeMillis,
         )
@@ -305,9 +326,60 @@ class RecordingSessionController(
      * Route a wiring-sourced event to the session host, unless the session has already
      * ended. After endSession() the writer is disposed; late events (e.g. a doc.close
      * fired during editor/fixture teardown) must be dropped, not appended.
+     *
+     * **This is also the capture-policy gate, and it is the ONLY one.** Every
+     * policy-controllable kind funnels here: the doc.open/doc.close/selection.change/
+     * focus.change/paste emitters call it directly via the [RecordableSessionSink] methods
+     * above, and terminal.open,
+     * terminal.command, git.event, fs.external_change and ext.activate arrive through
+     * [append], which is this same function. Nothing else can emit — `host` is private and
+     * the wiring modules hold no other seam — so no present or future wiring module can
+     * emit a disabled kind by forgetting a check.
+     *
+     * **Suppression MUST happen before [SessionHost.emit], and does.** `emit` is what
+     * chains the entry and assigns its `seq`. Dropping an event *after* that point would
+     * consume a sequence number and leave a hole, which validation check 3 reads as a
+     * DELETED ENTRY — turning a course's privacy setting into a tamper signal against the
+     * student. A policy must never be able to manufacture an accusation. Returning here,
+     * before `emit` is called, is what makes a suppressed event cost nothing: no seq, no
+     * chain link, no gap.
+     *
+     * Floor kinds are not special-cased and must not be: [isEventKindCaptured] returns true
+     * for any kind with no `policy.capture` key, so the schema itself is the floor.
      */
     private fun record(kind: String, data: kotlinx.serialization.json.JsonObject) {
-        if (!ended) host.emit(kind, data)
+        if (ended) return
+        if (!isEventKindCaptured(kind, policy)) return
+        host.emit(kind, withPolicyRedaction(kind, data))
+    }
+
+    /**
+     * Strip inlined content bytes when the course disabled `inline_content`.
+     *
+     * `inline_content` is not an event gate: `paste` and `fs.external_change` are both floor
+     * kinds and still fire, with their `seq` and chain position intact. Only the verbatim
+     * student text is withheld. Everything the heuristics actually reason over survives —
+     * `length`, `sha256`, `new_content_size`, `old_hash`, `new_hash`, `diff_size` — so a
+     * course can turn off content capture without turning off paste detection.
+     *
+     * Done here, at the one chokepoint, rather than in the payload builders: it keeps the
+     * policy entirely inside this controller, so the terminal and git wiring — which sit
+     * behind optional `<depends>` declarations and must not gain new main-path imports —
+     * need to know nothing about it. Keyed on the format-contract field names, which are
+     * pinned in `core/`'s events.
+     */
+    private fun withPolicyRedaction(
+        kind: String,
+        data: kotlinx.serialization.json.JsonObject,
+    ): kotlinx.serialization.json.JsonObject {
+        if (policy.inlineContent) return data
+        val drop = when (kind) {
+            "paste" -> PASTE_CONTENT_FIELDS
+            "fs.external_change" -> EXTERNAL_CHANGE_CONTENT_FIELDS
+            else -> return data
+        }
+        if (drop.none { it in data }) return data
+        return kotlinx.serialization.json.JsonObject(data.filterKeys { it !in drop })
     }
 
     /**
@@ -348,6 +420,13 @@ class RecordingSessionController(
 
     companion object {
         private val LOG = Logger.getInstance(RecordingSessionController::class.java)
+
+        /** `paste` payload keys withheld when `inline_content` is off (core events.ts §5.1). */
+        private val PASTE_CONTENT_FIELDS = setOf("content", "content_head", "content_tail")
+
+        /** `fs.external_change` payload keys withheld when `inline_content` is off. */
+        private val EXTERNAL_CHANGE_CONTENT_FIELDS =
+            setOf("new_content", "new_content_head", "new_content_tail")
 
         val DEFAULT_SCHEDULER: FlushScheduler = FlushScheduler { periodMs, task ->
             AppExecutorUtil.getAppScheduledExecutorService()
