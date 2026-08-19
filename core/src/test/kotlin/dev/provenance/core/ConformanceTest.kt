@@ -6,14 +6,18 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -378,6 +382,462 @@ class ConformanceTest {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // S2 identity layer (program spec §S2)
+    // -----------------------------------------------------------------------
+
+    private fun enrollmentCertOf(o: JsonObject): EnrollmentCert {
+        fun str(k: String) = (o[k] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+        return EnrollmentCert(
+            formatVersion = str("format_version"),
+            courseId = str("course_id"),
+            enrollmentPubkey = str("enrollment_pubkey"),
+            validFrom = str("valid_from"),
+            validUntil = str("valid_until"),
+            courseSig = str("course_sig"),
+        )
+    }
+
+    private fun enrollmentTokenOf(o: JsonObject): EnrollmentToken {
+        fun str(k: String) = (o[k] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+        return EnrollmentToken(
+            formatVersion = str("format_version"),
+            studentRef = str("student_ref"),
+            courseId = str("course_id"),
+            studentPubkey = str("student_pubkey"),
+            issuedAt = str("issued_at"),
+            expiresAt = str("expires_at"),
+            enrollmentSig = str("enrollment_sig"),
+        )
+    }
+
+    /**
+     * Rebuild a [SessionIdentity] from raw JSON WITHOUT validating it — the Kotlin
+     * stand-in for TypeScript's structural cast. The chain vectors deliberately include
+     * artifacts the parsers would reject, because the property under test is that
+     * `verifyIdentityChain` gates and re-validates whatever it is handed.
+     */
+    private fun identityOf(o: JsonObject): SessionIdentity = SessionIdentity(
+        enrollment = enrollmentTokenOf(o["enrollment"]!!.jsonObject),
+        enrollmentCert = enrollmentCertOf(o["enrollment_cert"]!!.jsonObject),
+        sessionPubkeySig = o["session_pubkey_sig"]!!.jsonPrimitive.content,
+    )
+
+    /** `student-keys.json` — the HKDF derivation, a byte-for-byte cross-language contract. */
+    @Nested
+    inner class StudentKeyVectors {
+        private val v by lazy { vector("student-keys.json") }
+
+        /**
+         * The HKDF parameters themselves, not just their output. A port that got the salt
+         * or the info prefix wrong would produce plausible-looking keys that simply never
+         * match another editor's, and the failure would surface as a signature mismatch
+         * that reads like tampering.
+         */
+        @Test
+        fun `hkdf parameters match log-core`() {
+            val p = v["hkdf_params"]!!.jsonObject
+            assertEquals("SHA-256", p["hash"]!!.jsonPrimitive.content)
+            assertEquals(
+                p["salt_utf8"]!!.jsonPrimitive.content,
+                STUDENT_KEY_HKDF_SALT_UTF8,
+            )
+            assertEquals(
+                p["salt_hex"]!!.jsonPrimitive.content,
+                Ed25519.bytesToHex(studentKeyHkdfSalt()),
+            )
+            // 25 bytes, deliberately non-empty: HKDF's absent-salt rule is a place three
+            // implementations can quietly disagree.
+            assertEquals(25, studentKeyHkdfSalt().size)
+            assertEquals(
+                p["info_prefix_utf8"]!!.jsonPrimitive.content,
+                STUDENT_KEY_HKDF_INFO_PREFIX,
+            )
+            assertEquals(p["output_length_bytes"]!!.jsonPrimitive.int, STUDENT_KEY_SEED_BYTES)
+            assertEquals(v["master_secret_bytes"]!!.jsonPrimitive.int, STUDENT_MASTER_SECRET_BYTES)
+        }
+
+        /** Every derivation case: the info string, the seed, and the derived public key. */
+        @Test
+        fun `derivation cases match log-core byte for byte`() {
+            for (case in v["derivation_cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val input = o["input"]!!.jsonObject
+                val expected = o["expected"]!!.jsonObject
+                val master = Ed25519.hexToBytes(input["master_secret_hex"]!!.jsonPrimitive.content)
+                val courseId = input["course_id"]!!.jsonPrimitive.content
+
+                assertEquals(
+                    expected["info_utf8"]!!.jsonPrimitive.content,
+                    STUDENT_KEY_HKDF_INFO_PREFIX + courseId,
+                    courseId,
+                )
+                val seed = deriveCourseKeySeed(master, courseId)
+                assertEquals(expected["seed_hex"]!!.jsonPrimitive.content, Ed25519.bytesToHex(seed), courseId)
+
+                val keypair = deriveCourseKeypair(master, courseId)
+                assertEquals(expected["pubkey_hex"]!!.jsonPrimitive.content, keypair.publicKeyHex, courseId)
+                // The seed IS the private key: no rejection sampling, no retry loop.
+                assertArrayEquals(seed, keypair.privateKey)
+            }
+        }
+
+        /**
+         * MANDATORY. The `cs61b` / `cs61b-extra` pair exists specifically to catch a port
+         * that concatenates the info prefix without its trailing colon separator. This
+         * asserts the property directly rather than only through the pinned hexes.
+         */
+        @Test
+        fun `a course id that is a prefix of another derives a different key`() {
+            val cases = v["derivation_cases"]!!.jsonArray.associateBy {
+                it.jsonObject["input"]!!.jsonObject["course_id"]!!.jsonPrimitive.content
+            }
+            assertTrue("cs61b" in cases, "student-keys.json lost the prefix-collision guard")
+            assertTrue("cs61b-extra" in cases, "student-keys.json lost the prefix-collision guard")
+
+            val master = Ed25519.hexToBytes(
+                cases["cs61b"]!!.jsonObject["input"]!!.jsonObject["master_secret_hex"]!!.jsonPrimitive.content,
+            )
+            assertFalse(
+                deriveCourseKeySeed(master, "cs61b").contentEquals(
+                    deriveCourseKeySeed(master, "cs61b-extra"),
+                ),
+                "the trailing colon in the info prefix is load-bearing",
+            )
+            // The trailing colon is what makes that true — state it so a future edit that
+            // drops it fails here with the reason, not just with a hex mismatch.
+            assertTrue(STUDENT_KEY_HKDF_INFO_PREFIX.endsWith(":"))
+        }
+
+        /**
+         * Same master, different course: unlinkable keys. This is the privacy claim the
+         * whole derivation exists to make.
+         */
+        @Test
+        fun `the same master secret yields unlinkable keys across courses`() {
+            val master = ByteArray(32) { 0x2a }
+            assertNotEquals(
+                deriveCourseKeypair(master, "berkeley-cs61b").publicKeyHex,
+                deriveCourseKeypair(master, "berkeley-cs61c").publicKeyHex,
+            )
+            // Deterministic: re-deriving on a new machine needs only the master secret,
+            // which is what makes recovery-without-escrow work.
+            assertEquals(
+                deriveCourseKeypair(master, "berkeley-cs61b").publicKeyHex,
+                deriveCourseKeypair(master, "berkeley-cs61b").publicKeyHex,
+            )
+        }
+
+        @Test
+        fun `derivation rejects a malformed master secret or empty course id`() {
+            assertThrows(IllegalArgumentException::class.java) {
+                deriveCourseKeySeed(ByteArray(31), "berkeley-cs61b")
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                deriveCourseKeySeed(ByteArray(32), "")
+            }
+            assertEquals(STUDENT_MASTER_SECRET_BYTES, generateStudentMasterSecret().size)
+        }
+    }
+
+    /** `enrollment.json` — the identity chain and its two non-fatal windows. */
+    @Nested
+    inner class EnrollmentVectors {
+        private val v by lazy { vector("enrollment.json") }
+
+        /** The exact bytes all three ports must reproduce for each of the three payloads. */
+        @Test
+        fun `signed payloads reproduce log-core canonical json`() {
+            val canonical = v["canonical_json"]!!.jsonObject
+            assertEquals(
+                canonical["enrollment_cert"]!!.jsonPrimitive.content,
+                String(
+                    buildEnrollmentCertSignedPayload(
+                        enrollmentCertOf(v["valid_enrollment_cert"]!!.jsonObject),
+                    ),
+                    Charsets.UTF_8,
+                ),
+            )
+            assertEquals(
+                canonical["enrollment_token"]!!.jsonPrimitive.content,
+                String(
+                    buildEnrollmentTokenSignedPayload(
+                        enrollmentTokenOf(v["valid_enrollment_token"]!!.jsonObject),
+                    ),
+                    Charsets.UTF_8,
+                ),
+            )
+            val binding = v["session_pubkey_binding"]!!.jsonObject
+            assertEquals(
+                canonical["session_pubkey_binding"]!!.jsonPrimitive.content,
+                String(
+                    buildSessionPubkeyBindingPayload(
+                        SessionPubkeyBinding(
+                            courseId = binding["course_id"]!!.jsonPrimitive.content,
+                            studentRef = binding["student_ref"]!!.jsonPrimitive.content,
+                            sessionPubkey = binding["session_pubkey"]!!.jsonPrimitive.content,
+                        ),
+                    ),
+                    Charsets.UTF_8,
+                ),
+            )
+            // The domain-separation tag is part of the contract, not an implementation detail.
+            assertEquals(
+                v["session_pubkey_binding_purpose"]!!.jsonPrimitive.content,
+                SESSION_PUBKEY_BINDING_PURPOSE,
+            )
+            assertEquals(v["format_version"]!!.jsonPrimitive.content, ENROLLMENT_FORMAT_VERSION)
+        }
+
+        /** Each link verifies in isolation against the key the layer above vouched for. */
+        @Test
+        fun `each single link verifies against its own issuer key`() {
+            val cert = enrollmentCertOf(v["valid_enrollment_cert"]!!.jsonObject)
+            val token = enrollmentTokenOf(v["valid_enrollment_token"]!!.jsonObject)
+            val binding = v["session_pubkey_binding"]!!.jsonObject
+
+            assertTrue(verifyEnrollmentCert(cert, v["course_pubkey_hex"]!!.jsonPrimitive.content))
+            assertTrue(verifyEnrollmentToken(token, v["enrollment_pubkey_hex"]!!.jsonPrimitive.content))
+            assertFalse(
+                verifyEnrollmentToken(token, v["wrong_enrollment_pubkey_hex"]!!.jsonPrimitive.content),
+            )
+            assertTrue(
+                verifySessionPubkeySig(
+                    SessionPubkeyBinding(
+                        courseId = binding["course_id"]!!.jsonPrimitive.content,
+                        studentRef = binding["student_ref"]!!.jsonPrimitive.content,
+                        sessionPubkey = binding["session_pubkey"]!!.jsonPrimitive.content,
+                    ),
+                    binding["sig"]!!.jsonPrimitive.content,
+                    v["student_pubkey_hex"]!!.jsonPrimitive.content,
+                ),
+            )
+        }
+
+        /**
+         * The ordered chain walk.
+         *
+         * `cross_course_forgery` is the one that carries the security argument: 61B's
+         * course key certifies an enrollment key "for 61C", that key mints a genuine 61C
+         * token, and steps 1 and 2 BOTH pass because every signature really is valid. Only
+         * comparing the course id across all three links catches it, which is why three
+         * ids are compared and not two.
+         *
+         * Both expiry cases must come back `ok` — an out-of-window credential is reported,
+         * never enforced, because silently refusing to record for a whole class is a worse
+         * failure for an integrity tool than recording under a stale credential.
+         */
+        @Test
+        fun `chain cases match log-core`() {
+            val cases = v["chain_cases"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val input = o["input"]!!.jsonObject
+                val expected = o["expected"]!!.jsonObject
+
+                val actual = verifyIdentityChain(
+                    identity = identityOf(input["identity"]!!.jsonObject),
+                    sessionPubkey = input["session_pubkey"]!!.jsonPrimitive.content,
+                    courseCert = certOf(input["course_cert"]!!.jsonObject),
+                    sessionStartedAt = input["session_started_at"]!!.jsonPrimitive.content,
+                )
+
+                if (expected["ok"]!!.jsonPrimitive.boolean) {
+                    val ok = assertInstanceOf(IdentityChain.Ok::class.java, actual, name)
+                    assertEquals(expected["course_id"]!!.jsonPrimitive.content, ok.courseId, name)
+                    assertEquals(expected["student_ref"]!!.jsonPrimitive.content, ok.studentRef, name)
+                    assertEquals(expected["student_pubkey"]!!.jsonPrimitive.content, ok.studentPubkey, name)
+                    assertEquals(
+                        expected["enrollment_pubkey"]!!.jsonPrimitive.content,
+                        ok.enrollmentPubkey,
+                        name,
+                    )
+                    assertWindow(expected["cert_window"]!!.jsonObject, ok.certWindow, "$name cert_window")
+                    assertWindow(expected["token_window"]!!.jsonObject, ok.tokenWindow, "$name token_window")
+                } else {
+                    val err = assertInstanceOf(IdentityChain.Err::class.java, actual, name)
+                    val expectedErr = expected["error"]!!.jsonObject
+                    assertEquals(expectedErr["kind"]!!.jsonPrimitive.content, err.kind, name)
+                    if (err is IdentityChain.NotEnrollment20) {
+                        assertEquals(expectedErr["artifact"]!!.jsonPrimitive.content, err.artifact, name)
+                        assertEquals(
+                            expectedErr["format_version"]!!.jsonPrimitive.content,
+                            err.formatVersion,
+                            name,
+                        )
+                    }
+                    if (err is IdentityChain.CourseIdMismatch) {
+                        assertEquals(
+                            expectedErr["token_course_id"]!!.jsonPrimitive.content,
+                            err.tokenCourseId,
+                            name,
+                        )
+                        assertEquals(
+                            expectedErr["cert_course_id"]!!.jsonPrimitive.content,
+                            err.certCourseId,
+                            name,
+                        )
+                        assertEquals(
+                            expectedErr["course_cert_course_id"]!!.jsonPrimitive.content,
+                            err.courseCertCourseId,
+                            name,
+                        )
+                    }
+                }
+            }
+            // Guard against the vector silently losing a mandatory case.
+            val names = cases.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet()
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "valid",
+                        "cert_not_2_0",
+                        "token_not_2_0",
+                        "cert_signed_by_wrong_course_key",
+                        "token_signed_by_uncertified_key",
+                        "cross_course_forgery",
+                        "session_pubkey_sig_from_another_student",
+                        "session_pubkey_not_the_countersigned_one",
+                        "expired_token_is_NOT_fatal",
+                        "expired_enrollment_cert_is_NOT_fatal",
+                    ),
+                ),
+                "enrollment.json lost a mandatory chain case",
+            )
+        }
+
+        /**
+         * The cross-course forgery, stated as the property rather than as a vector lookup:
+         * BOTH signatures are genuine, and only step 3 rejects it.
+         */
+        @Test
+        fun `cross-course forgery is caught only by comparing every course id`() {
+            val input = v["chain_cases"]!!.jsonArray
+                .first { it.jsonObject["name"]!!.jsonPrimitive.content == "cross_course_forgery" }
+                .jsonObject["input"]!!.jsonObject
+            val identity = identityOf(input["identity"]!!.jsonObject)
+            val courseCert = certOf(input["course_cert"]!!.jsonObject)
+
+            // Steps 1 and 2 both pass: the 61B course key really did certify this enrollment
+            // key, and that key really did mint this token.
+            assertTrue(verifyEnrollmentCert(identity.enrollmentCert, courseCert.coursePubkey))
+            assertTrue(
+                verifyEnrollmentToken(identity.enrollment, identity.enrollmentCert.enrollmentPubkey),
+            )
+            // The cert and token agree with each other — only the course_cert disagrees.
+            assertEquals(identity.enrollment.courseId, identity.enrollmentCert.courseId)
+            assertNotEquals(identity.enrollmentCert.courseId, courseCert.courseId)
+
+            val err = assertInstanceOf(
+                IdentityChain.CourseIdMismatch::class.java,
+                verifyIdentityChain(
+                    identity,
+                    input["session_pubkey"]!!.jsonPrimitive.content,
+                    courseCert,
+                    input["session_started_at"]!!.jsonPrimitive.content,
+                ),
+            )
+            assertEquals(courseCert.courseId, err.courseCertCourseId)
+        }
+
+        /**
+         * The token window, judged against the SESSION start time — never wall-clock now,
+         * so an archived bundle still reads as in-window years later. A date-only
+         * `expires_at` covers its whole day and ends at the next midnight, the same
+         * asymmetric rule `course_cert.valid_until` uses.
+         */
+        @Test
+        fun `token window cases match log-core`() {
+            for (case in v["token_window_cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val input = o["input"]!!.jsonObject
+                val token = enrollmentTokenOf(v["valid_enrollment_token"]!!.jsonObject).copy(
+                    issuedAt = input["issued_at"]!!.jsonPrimitive.content,
+                    expiresAt = input["expires_at"]!!.jsonPrimitive.content,
+                )
+                assertWindow(
+                    o["expected"]!!.jsonObject,
+                    checkTokenWindow(token, input["at"]!!.jsonPrimitive.content),
+                    name,
+                )
+            }
+        }
+
+        /** Shape is validated before any signature work, for both artifacts. */
+        @Test
+        fun `a malformed artifact is rejected before signature verification`() {
+            val input = v["chain_cases"]!!.jsonArray
+                .first { it.jsonObject["name"]!!.jsonPrimitive.content == "valid" }
+                .jsonObject["input"]!!.jsonObject
+            val identity = identityOf(input["identity"]!!.jsonObject)
+            val courseCert = certOf(input["course_cert"]!!.jsonObject)
+            val startedAt = input["session_started_at"]!!.jsonPrimitive.content
+            val sessionPubkey = input["session_pubkey"]!!.jsonPrimitive.content
+
+            // JCS omits an absent key, so an artifact missing a required field would sign and
+            // verify cleanly while carrying nothing there. Shape must be checked first.
+            assertInstanceOf(
+                IdentityChain.InvalidCertShape::class.java,
+                verifyIdentityChain(
+                    identity.copy(enrollmentCert = identity.enrollmentCert.copy(courseId = "")),
+                    sessionPubkey,
+                    courseCert,
+                    startedAt,
+                ),
+            )
+            assertInstanceOf(
+                IdentityChain.InvalidTokenShape::class.java,
+                verifyIdentityChain(
+                    identity.copy(enrollment = identity.enrollment.copy(studentRef = "")),
+                    sessionPubkey,
+                    courseCert,
+                    startedAt,
+                ),
+            )
+            // A window whose upper bound precedes its lower bound never binds, which would
+            // silently remove the only offline control this scheme has.
+            assertInstanceOf(
+                IdentityChain.InvalidCertShape::class.java,
+                verifyIdentityChain(
+                    identity.copy(
+                        enrollmentCert = identity.enrollmentCert.copy(validUntil = "2020-01-01"),
+                    ),
+                    sessionPubkey,
+                    courseCert,
+                    startedAt,
+                ),
+            )
+            // A non-hex session pubkey is reported distinctly from a bad signature.
+            assertInstanceOf(
+                IdentityChain.InvalidSessionPubkey::class.java,
+                verifyIdentityChain(identity, "not-hex", courseCert, startedAt),
+            )
+        }
+
+        /** Both artifacts round-trip through their transport form. */
+        @Test
+        fun `enrollment artifacts round-trip through transport`() {
+            val cert = enrollmentCertOf(v["valid_enrollment_cert"]!!.jsonObject)
+            val token = enrollmentTokenOf(v["valid_enrollment_token"]!!.jsonObject)
+            assertEquals(
+                cert,
+                assertInstanceOf(
+                    EnrollmentParse.Ok::class.java,
+                    parseEnrollmentCert(cert.toJsonObject()),
+                ).value,
+            )
+            assertEquals(
+                token,
+                assertInstanceOf(
+                    EnrollmentParse.Ok::class.java,
+                    parseEnrollmentToken(token.toJsonObject()),
+                ).value,
+            )
+        }
+    }
+
     /** `manifest-v2.json` — the two signature scopes and the ordered chain walk. */
     @Nested
     inner class ManifestV2Vectors {
@@ -645,6 +1105,20 @@ class ConformanceTest {
                 verifyManifestChain(manifest, v["root_pubkey_hex"]!!.jsonPrimitive.content),
             )
             assertEquals(MANIFEST_FORMAT_VERSION_LEGACY, err.formatVersion)
+        }
+    }
+
+    private fun assertWindow(expected: JsonObject, actual: CertWindowStatus, label: String) {
+        assertEquals(expected["in_window"]!!.jsonPrimitive.boolean, actual.inWindow, label)
+        val reason = expected["reason"]?.jsonPrimitive?.content
+        if (reason == null) {
+            assertInstanceOf(CertWindowStatus.InWindow::class.java, actual, label)
+        } else {
+            assertEquals(
+                reason,
+                assertInstanceOf(CertWindowStatus.OutOfWindow::class.java, actual, label).reason.wire,
+                label,
+            )
         }
     }
 }

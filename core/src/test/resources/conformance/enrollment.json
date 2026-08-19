@@ -1,0 +1,556 @@
+{
+  "note": "Enrollment conformance vectors (program spec §S2). The identity chain is course_cert -> enrollment_cert -> enrollment token -> session_pubkey_sig. The COURSE key signs the enrollment cert (offline); the ENROLLMENT key, which is the only private key that lives on a server, signs per-student tokens; the STUDENT per-course key countersigns the ephemeral session pubkey. A port walks all of it with only the embedded root key. Every object key in every signed payload is a fixed ASCII identifier and there are no JSON arrays — student_ref is always a VALUE, never a key. See course-cert.json for why.",
+  "course_pubkey_hex": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+  "enrollment_pubkey_hex": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+  "wrong_enrollment_pubkey_hex": "d9bf2148748a85c89da5aad8ee0b0fc2d105fd39d41a4c796536354f0ae2900c",
+  "student_pubkey_hex": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+  "other_student_pubkey_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+  "session_pubkey_hex": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+  "course_cert": {
+    "course_id": "berkeley-cs61b",
+    "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+    "valid_from": "2026-08-20",
+    "valid_until": "2027-01-15",
+    "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+  },
+  "valid_enrollment_cert": {
+    "format_version": "2.0",
+    "course_id": "berkeley-cs61b",
+    "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+    "valid_from": "2026-08-20",
+    "valid_until": "2027-01-15",
+    "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+  },
+  "valid_enrollment_token": {
+    "format_version": "2.0",
+    "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "course_id": "berkeley-cs61b",
+    "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+    "issued_at": "2026-09-01T00:00:00Z",
+    "expires_at": "2027-01-15",
+    "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+  },
+  "session_pubkey_binding": {
+    "course_id": "berkeley-cs61b",
+    "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+    "sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+  },
+  "format_version_note": "Both artifacts carry format_version INSIDE the signed payload, and the chain gates on it BEFORE any signature work. There is no 1.x identity artifact to grandfather — the field exists so a future 3.0 cannot be replayed as a 2.0 artifact, which is the S0 downgrade lesson applied before it bites rather than after.",
+  "format_version": "2.0",
+  "session_pubkey_binding_purpose": "provenance-session-pubkey-binding-v1",
+  "canonical_json": {
+    "enrollment_cert": "{\"course_id\":\"berkeley-cs61b\",\"enrollment_pubkey\":\"0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc\",\"format_version\":\"2.0\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\"}",
+    "enrollment_token": "{\"course_id\":\"berkeley-cs61b\",\"expires_at\":\"2027-01-15\",\"format_version\":\"2.0\",\"issued_at\":\"2026-09-01T00:00:00Z\",\"student_pubkey\":\"5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84\",\"student_ref\":\"3f2504e0-4f89-41d3-9a0c-0305e82c3301\"}",
+    "session_pubkey_binding": "{\"course_id\":\"berkeley-cs61b\",\"purpose\":\"provenance-session-pubkey-binding-v1\",\"session_pubkey\":\"204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21\",\"student_ref\":\"3f2504e0-4f89-41d3-9a0c-0305e82c3301\"}"
+  },
+  "chain_cases": [
+    {
+      "name": "valid",
+      "note": "The whole chain, every link genuine.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+        "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+        "cert_window": {
+          "in_window": true
+        },
+        "token_window": {
+          "in_window": true
+        }
+      }
+    },
+    {
+      "name": "cert_not_2_0",
+      "note": "Version gate, step 0: an enrollment cert declaring another version is refused before any signature work.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "1.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "6c809fe0ef22479a5e6a5eaa2afcade216bc971e377584244075af9307b2c79a510291fd95059f7cf7730bccadd8f1c5005da6b216c6e1510b588843a2a1e40a"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "not_enrollment_2_0",
+          "artifact": "cert",
+          "format_version": "1.0"
+        }
+      }
+    },
+    {
+      "name": "token_not_2_0",
+      "note": "Version gate, step 0, token side.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "3.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "8e3b2ae58f68b2b1e29c968137a602b1fe2fa557dec4be3d9298a6b4e149b1a96dd9c6b1dc38ed1e694ce689a04f5ddae829887acac56ce3685ce554b4db940b"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "not_enrollment_2_0",
+          "artifact": "token",
+          "format_version": "3.0"
+        }
+      }
+    },
+    {
+      "name": "cert_signed_by_wrong_course_key",
+      "note": "Step 1: the enrollment cert was signed by a course key the root cert does not name.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "084b27b47f0c0f64d0be13e9f46f61aa7527783ab50ccb2b41e00b0960f6812d6e00b789b4e5f2672860e1cbecad99d87026a68455c5461a8bfab2b5295f2900"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_course_signature"
+        }
+      }
+    },
+    {
+      "name": "token_signed_by_uncertified_key",
+      "note": "Step 2: token signed by an enrollment key the course never certified.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "546a84500ad6c69b4eb0ff0668ae8584128b1526405c714e09db67050cd83055849a81e6b7bbd8d8a0208aed8d0108426a0a5c849bec48af4bebc6e51cc48f0c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_enrollment_signature"
+        }
+      }
+    },
+    {
+      "name": "cross_course_forgery",
+      "note": "Step 3, MANDATORY: 61B certifies an enrollment key \"for 61C\" and it mints a 61C token. Every signature is genuine; only comparing course_id at every link rejects it.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61c",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "977ed40ebab15182bf79abc82f167e9472f8a9548b4813cdd86658d5b3f112c047d5ce99a0456c53a5161cd4760b335038624a59220160dcf43fec1860163305"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61c",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "f03fcdf374acdc7e8b503cee3971911f6574101d9a9665bbabeb94e3ebb05f7a2cb05c3a18b67fa2a42839e12cb51dbd3e14357af71701c3318096353156f40e"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "course_id_mismatch",
+          "token_course_id": "berkeley-cs61c",
+          "cert_course_id": "berkeley-cs61c",
+          "course_cert_course_id": "berkeley-cs61b"
+        }
+      }
+    },
+    {
+      "name": "session_pubkey_sig_from_another_student",
+      "note": "Step 4: the countersignature came from a different student key.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "85a20b0fce453c01ed52b28dc8a38303894d2abe9fed5296023fc11aa03172ad75e390e8bfd9d8ad660c6b427c511698094246581fdbba344deda5ff0f545700"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_session_pubkey_signature"
+        }
+      }
+    },
+    {
+      "name": "session_pubkey_not_the_countersigned_one",
+      "note": "Step 4: a genuine countersignature lifted onto a different session key.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "66cd608b928b88e50e0efeaa33faf1c43cefe07294b0b87e9fe0aba6a3cf7633",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_session_pubkey_signature"
+        }
+      }
+    },
+    {
+      "name": "expired_token_is_NOT_fatal",
+      "note": "Step 5: an expired token still returns ok, reporting token_window. An expired credential must never stop a recorder from recording (program spec §4); the analyzer decides.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2025-09-01T00:00:00Z",
+            "expires_at": "2025-12-15",
+            "enrollment_sig": "889e762e6c8018ea0e1d6e2b6d9d093b5fb8e4cfdafac08e95c487d416fbc633787dfee0669a13bf8329306eaa26ddacc3632f93867a86e88ca8d20e4d4b1b01"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+        "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+        "cert_window": {
+          "in_window": false,
+          "reason": "before_valid_from"
+        },
+        "token_window": {
+          "in_window": false,
+          "reason": "after_valid_until"
+        }
+      }
+    },
+    {
+      "name": "expired_enrollment_cert_is_NOT_fatal",
+      "note": "Step 5, cert side. Same rule.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2020-01-01",
+            "valid_until": "2020-12-31",
+            "course_sig": "31d0467c3a1f0a4eebdaf4361bd8755c7f326cd477f3ece00488e531a7664e4548315ffbc64e5fb630244afd06940df6561f5add2bc0a02db23c2c23b19b420f"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "course_id": "berkeley-cs61b",
+        "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+        "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+        "cert_window": {
+          "in_window": false,
+          "reason": "after_valid_until"
+        },
+        "token_window": {
+          "in_window": true
+        }
+      }
+    }
+  ],
+  "window_note": "Every window is judged against the RELEVANT ISSUE TIME, never wall-clock now, so an archived bundle still verifies years later in an adjudication. The enrollment cert is judged against the token's issued_at; the token is judged against the session start. A date-only expires_at is inclusive THROUGH THE END of that day, exactly as course_cert.valid_until — same resolution rule, implemented once.",
+  "token_window_cases": [
+    {
+      "name": "in_window",
+      "note": "Mid-semester.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2026-10-01T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "before_issued",
+      "note": "Session predates issuance.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2026-08-25T00:00:00Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "before_valid_from"
+      }
+    },
+    {
+      "name": "date_only_expiry_covers_that_whole_day",
+      "note": "expires_at 2027-01-15 covers all of Jan 15.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2027-01-15T23:59:59Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "date_only_expiry_ends_at_next_midnight",
+      "note": "and expires at the first instant of Jan 16.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2027-01-16T00:00:00Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "after_valid_until"
+      }
+    },
+    {
+      "name": "unparseable",
+      "note": "A bad instant reports unparseable_timestamp rather than throwing.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "whenever"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "unparseable_timestamp"
+      }
+    }
+  ]
+}
