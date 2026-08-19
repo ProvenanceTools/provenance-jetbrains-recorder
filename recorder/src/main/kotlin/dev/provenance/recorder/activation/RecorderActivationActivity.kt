@@ -26,7 +26,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * that slips straight through an `Exception` catch), the failed root stays activated and is
  * marked degraded with its reason so the status bar can render "not recording (error)", and
  * the widget refresh runs in a `finally` so activation can never leave [RecorderState] claiming
- * "active" with no indicator ever drawn.
+ * "active" with no indicator ever drawn. A root whose [com.intellij.openapi.vfs.VirtualFile] has
+ * no filesystem path is degraded by the same rule: it is activated and can never record, so it
+ * must not render as recording either.
  *
  * [sessionStarter], [refreshWidget] and [discoverer] are injectable for tests (via the internal
  * constructors); production wires the real VFS-backed [discoverManifestRoots], the real
@@ -69,7 +71,8 @@ class RecorderActivationActivity internal constructor(
             // Activation state (the privacy gate / status bar) must not silently no-op just
             // because a real filesystem path can't be resolved (e.g. an in-memory test
             // fixture) — only *starting a session* additionally requires one.
-            val resolvedRoot = runCatching { found.root.toNioPath() }.getOrNull()
+            val nioPath = runCatching { found.root.toNioPath() }
+            val resolvedRoot = nioPath.getOrNull()
                 ?.let { runCatching { it.toRealPath() }.getOrDefault(it.normalize()) }
             val stateKey = resolvedRoot ?: Paths.get(found.root.path)
             state.activate(stateKey, found.manifest)
@@ -88,7 +91,18 @@ class RecorderActivationActivity internal constructor(
                     state.markDegraded(stateKey, degradedReason(t))
                 }
             } else {
-                LOG.info("discovered manifest at ${found.root.path} has no resolvable nio path; recording not started")
+                // Activated but structurally unable to record: a session needs a real filesystem
+                // path, and this root has none (an in-memory test fixture, or a non-local project
+                // root in production). Marked degraded for the same reason a failed session start
+                // is — unmarked, the root rendered the NORMAL "recording" indicator while nothing
+                // was ever written, which is the active-but-silent failure this indicator exists
+                // to make impossible. The cause goes to the log; the tooltip gets the short form.
+                LOG.warn(
+                    "discovered manifest at ${found.root.path} has no resolvable nio path; " +
+                        "marking it degraded (recording not started)",
+                    nioPath.exceptionOrNull(),
+                )
+                state.markDegraded(stateKey, "no local filesystem path (${found.root.fileSystem.protocol})")
             }
         }
     }

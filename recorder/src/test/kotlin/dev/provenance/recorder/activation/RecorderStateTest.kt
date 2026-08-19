@@ -107,6 +107,28 @@ class RecorderStateTest : BasePlatformTestCase() {
         assertEquals("hw07", state.manifest?.assignmentId)
     }
 
+    fun `test a root with no resolvable filesystem path is activated but marked degraded`() = runBlocking {
+        // A discovered root whose VirtualFile has no nio path (the light fixture's in-memory VFS
+        // here; a non-local project root in production) is activated but can NEVER record —
+        // activation only attempts a session start for a root it can resolve. Left unmarked it
+        // rendered the NORMAL "recording" indicator while nothing was ever written: the exact
+        // active-but-silent failure the degraded indicator exists to eliminate.
+        val m = myFixture.addFileToProject("hw09/.provenance-manifest", "{}").virtualFile.parent
+        assertNull(
+            "guard: this case is vacuous if the fixture's root DOES resolve to an nio path",
+            runCatching { m.toNioPath() }.getOrNull(),
+        )
+        val activity = RecorderActivationActivity { _, _ -> listOf(DiscoveredManifest(m, manifest("hw09"))) }
+
+        activity.execute(project)
+
+        val state = project.service<RecorderState>()
+        val key = Paths.get(m.path)
+        assertTrue("the root must stay activated so an indicator still renders", state.isActive)
+        assertTrue("a root that can never record must not read as recording", state.isDegraded(key))
+        assertNotNull("the degraded reason must say why", state.degradedRoots[key.normalize()])
+    }
+
     fun `test activity leaves state inactive when discoverer returns nothing`() = runBlocking {
         val state = project.service<RecorderState>()
         state.activate(root("stale"), manifest())
