@@ -17,12 +17,16 @@ import kotlinx.serialization.json.JsonPrimitive
  *     "selection_change":      true,
  *     "focus_change":          true,
  *     "terminal":              true,
- *     "doc_open_close":        true,
- *     "inline_content":        true,   // paste + fs.external_change content snippets
  *     "heartbeat_interval_ms": 30000   // clamped to [5000, 120000]
  *   }
  * }
  * ```
+ *
+ * Two knobs were briefly defined here and have been RETIRED — see
+ * [FLOOR_EVENT_KINDS] for why. A manifest still carrying `doc_open_close` or
+ * `inline_content` is inert: they are treated as unknown keys, ignored rather than
+ * rejected, because forward and backward compatibility both depend on unknown keys
+ * being ignored. Pinned by conformance vectors.
  *
  * ## Why this type lives in `core/` and not `recorder/`
  *
@@ -37,8 +41,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * ## The hard floor
  *
- * Most event kinds cannot be disabled at all, because validation checks 3–8 and
- * the integrity story depend on them. The floor is enforced **by the schema
+ * Most event kinds cannot be disabled at all. The floor is enforced **by the schema
  * itself**: a floor event simply has no key in `policy.capture`, so there is no
  * way to express "off" for it. [FLOOR_EVENT_KINDS] is that set written out so an
  * implementation can assert it, and [POLICY_GATED_EVENT_KINDS] is its complement —
@@ -64,14 +67,6 @@ data class CapturePolicy(
     val focusChange: Boolean,
     /** Capture `terminal.open` and `terminal.command` events. */
     val terminal: Boolean,
-    /** Capture `doc.open` and `doc.close` events. */
-    val docOpenClose: Boolean,
-    /**
-     * Inline content snippets in `paste` and `fs.external_change` payloads.
-     * Not an event gate — the events themselves are on the floor; this controls
-     * whether their `content` / `new_content` fields are populated.
-     */
-    val inlineContent: Boolean,
     /** Heartbeat cadence in milliseconds, always within the clamp range. */
     val heartbeatIntervalMs: Long,
 )
@@ -85,8 +80,6 @@ val DEFAULT_CAPTURE_POLICY = CapturePolicy(
     selectionChange = true,
     focusChange = true,
     terminal = true,
-    docOpenClose = true,
-    inlineContent = true,
     heartbeatIntervalMs = 30_000L,
 )
 
@@ -97,12 +90,37 @@ const val HEARTBEAT_INTERVAL_MIN_MS: Long = 5_000L
 const val HEARTBEAT_INTERVAL_MAX_MS: Long = 120_000L
 
 /**
- * Event kinds that can NEVER be disabled, because validation checks 3–8 and the
- * integrity story depend on them.
+ * Event kinds that can NEVER be disabled.
  *
  * These have no key in `policy.capture` **by design** — the schema is the
  * enforcement mechanism, this list is only the assertable statement of it. Do not
  * add a `policy.capture` key for anything on this list.
+ *
+ * ## The test for every future knob
+ *
+ * **The floor is defined by what reconstruction and validation depend on, not by
+ * privacy sensitivity.** Sensitivity is an argument FOR a knob; being load-bearing
+ * is a VETO on one. A signal whose absence degrades CORRECTNESS — rather than
+ * merely detail — must not be configurable, because a course cannot be allowed to
+ * silently break the analyzer's ability to reason about its own students' work.
+ * Apply that test before adding any key to [CapturePolicy].
+ *
+ * Two knobs failed it and were retired:
+ *
+ *  - **`doc_open_close`** — `DocOpenPayload.content` is the reconstruction SEED.
+ *    Switching `doc.open` off breaks file reconstruction, replay, and the Source
+ *    tab for a whole cohort, with nothing warning the course. `doc.close` carries
+ *    `{ path }` only, so a knob governing it was surface for nothing.
+ *  - **`inline_content`** — it stripped the content fields from `paste` and
+ *    `fs.external_change` without removing the events. But `internal_move` reads a
+ *    paste's inline content to match it against the student's own prior typed code,
+ *    and a match DOWNGRADES `large_paste`. Strip the content and that exculpatory
+ *    check cannot run, so a genuine self-relocation keeps full severity on a flag
+ *    used in academic-integrity proceedings. A course must not be able to configure
+ *    the system into being MORE likely to falsely accuse its own students.
+ *
+ * Note the 64 KB inline size cap in the recorder's payload builders is a separate,
+ * unaffected mechanism: over-cap content is still truncated to head/tail.
  *
  * `session.heartbeat` is here because bundle-level Active/Idle and the
  * `gap_in_heartbeats` heuristic depend on it; only its *interval* is tunable.
@@ -115,6 +133,8 @@ val FLOOR_EVENT_KINDS: List<String> = listOf(
     "session.end",
     "session.resumed",
     "session.heartbeat",
+    "doc.open",
+    "doc.close",
     "doc.change",
     "doc.save",
     "paste",
@@ -139,8 +159,6 @@ val FLOOR_EVENT_KINDS: List<String> = listOf(
  * vector pins both lists instead.
  */
 val POLICY_GATED_EVENT_KINDS: Map<String, String> = mapOf(
-    "doc.open" to "doc_open_close",
-    "doc.close" to "doc_open_close",
     "selection.change" to "selection_change",
     "focus.change" to "focus_change",
     "terminal.open" to "terminal",
@@ -196,8 +214,8 @@ fun resolveCapturePolicy(block: JsonElement?): CapturePolicy {
         selectionChange = resolveBool(capture["selection_change"], DEFAULT_CAPTURE_POLICY.selectionChange),
         focusChange = resolveBool(capture["focus_change"], DEFAULT_CAPTURE_POLICY.focusChange),
         terminal = resolveBool(capture["terminal"], DEFAULT_CAPTURE_POLICY.terminal),
-        docOpenClose = resolveBool(capture["doc_open_close"], DEFAULT_CAPTURE_POLICY.docOpenClose),
-        inlineContent = resolveBool(capture["inline_content"], DEFAULT_CAPTURE_POLICY.inlineContent),
+        // `doc_open_close` and `inline_content` are deliberately NOT read: they are
+        // retired keys and must be inert, exactly like any other unknown key.
         heartbeatIntervalMs = resolveHeartbeatInterval(capture["heartbeat_interval_ms"]),
     )
 }
@@ -210,11 +228,8 @@ fun resolveCapturePolicy(block: JsonElement?): CapturePolicy {
 fun isEventKindCaptured(kind: String, policy: CapturePolicy): Boolean =
     when (POLICY_GATED_EVENT_KINDS[kind]) {
         null -> true
-        "doc_open_close" -> policy.docOpenClose
         "selection_change" -> policy.selectionChange
         "focus_change" -> policy.focusChange
         "terminal" -> policy.terminal
-        // `inline_content` deliberately has no case: it gates payload FIELDS on
-        // floor events, not any event kind, so it never appears as a gate here.
         else -> true
     }

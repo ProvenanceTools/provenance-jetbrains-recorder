@@ -268,8 +268,6 @@ class ConformanceTest {
             selectionChange = o["selection_change"]!!.jsonPrimitive.boolean,
             focusChange = o["focus_change"]!!.jsonPrimitive.boolean,
             terminal = o["terminal"]!!.jsonPrimitive.boolean,
-            docOpenClose = o["doc_open_close"]!!.jsonPrimitive.boolean,
-            inlineContent = o["inline_content"]!!.jsonPrimitive.boolean,
             heartbeatIntervalMs = o["heartbeat_interval_ms"]!!.jsonPrimitive.long,
         )
 
@@ -325,10 +323,41 @@ class ConformanceTest {
                         "heartbeat_above_ceiling",
                         "heartbeat_zero",
                         "heartbeat_non_number",
+                        "retired_doc_open_close_key_ignored",
+                        "retired_inline_content_key_ignored",
                     ),
                 ),
-                "capture-policy.json lost a heartbeat clamp boundary case",
+                "capture-policy.json lost a heartbeat clamp or retired-key case",
             )
+        }
+
+        /**
+         * A manifest still carrying a RETIRED key must be inert — ignored exactly like any
+         * unknown key, never an error. Forward and backward compatibility both depend on
+         * that, and the two keys are retired precisely because they were load-bearing:
+         * `doc.open` seeds reconstruction, and a paste's content is what lets
+         * `internal_move` downgrade `large_paste`. Honouring either key would reintroduce
+         * the harm it was removed for.
+         */
+        @Test
+        fun `retired capture keys are inert and cannot suppress their old kinds`() {
+            for (name in listOf("retired_doc_open_close_key_ignored", "retired_inline_content_key_ignored")) {
+                val case = v["cases"]!!.jsonArray
+                    .first { it.jsonObject["name"]!!.jsonPrimitive.content == name }
+                val policy = resolveCapturePolicy(case.jsonObject["input"]!!)
+                // Resolves to the everything-on default: the retired key changed nothing.
+                assertEquals(DEFAULT_CAPTURE_POLICY, policy, name)
+                // And the kinds it used to govern are now floor, so they stay captured.
+                for (kind in listOf("doc.open", "doc.close", "paste", "fs.external_change")) {
+                    assertTrue(isEventKindCaptured(kind, policy), "$name must not suppress $kind")
+                }
+            }
+            // The retired keys are gone from the gate map entirely.
+            assertFalse(POLICY_GATED_EVENT_KINDS.values.contains("doc_open_close"))
+            assertFalse(POLICY_GATED_EVENT_KINDS.values.contains("inline_content"))
+            for (kind in listOf("doc.open", "doc.close", "paste", "fs.external_change")) {
+                assertTrue(kind in FLOOR_EVENT_KINDS, "$kind must be on the floor")
+            }
         }
 
         @Test
@@ -601,7 +630,7 @@ class ConformanceTest {
             val stapled = resolveCapturePolicy(manifest.policy)
             assertFalse(stapled.selectionChange)
             assertFalse(stapled.terminal)
-            assertFalse(stapled.inlineContent)
+            assertFalse(stapled.focusChange)
 
             // Steps 1-3 would all have passed: the cert is genuinely root-signed,
             // the (1.x) payload is genuinely course-signed, and course_id matches.

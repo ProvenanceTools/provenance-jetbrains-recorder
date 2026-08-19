@@ -346,40 +346,18 @@ class RecordingSessionController(
      *
      * Floor kinds are not special-cased and must not be: [isEventKindCaptured] returns true
      * for any kind with no `policy.capture` key, so the schema itself is the floor.
+     *
+     * The policy reaches only WHETHER a kind is emitted; it never edits a payload. An
+     * `inline_content` knob that stripped the content fields off `paste` and
+     * `fs.external_change` was removed for that reason — `internal_move` needs a paste's
+     * content to DOWNGRADE `large_paste`, so withholding it made the system more accusatory,
+     * not less. (The 64 KB inline size cap in the payload builders is a separate mechanism
+     * and is untouched by any of this.)
      */
     private fun record(kind: String, data: kotlinx.serialization.json.JsonObject) {
         if (ended) return
         if (!isEventKindCaptured(kind, policy)) return
-        host.emit(kind, withPolicyRedaction(kind, data))
-    }
-
-    /**
-     * Strip inlined content bytes when the course disabled `inline_content`.
-     *
-     * `inline_content` is not an event gate: `paste` and `fs.external_change` are both floor
-     * kinds and still fire, with their `seq` and chain position intact. Only the verbatim
-     * student text is withheld. Everything the heuristics actually reason over survives —
-     * `length`, `sha256`, `new_content_size`, `old_hash`, `new_hash`, `diff_size` — so a
-     * course can turn off content capture without turning off paste detection.
-     *
-     * Done here, at the one chokepoint, rather than in the payload builders: it keeps the
-     * policy entirely inside this controller, so the terminal and git wiring — which sit
-     * behind optional `<depends>` declarations and must not gain new main-path imports —
-     * need to know nothing about it. Keyed on the format-contract field names, which are
-     * pinned in `core/`'s events.
-     */
-    private fun withPolicyRedaction(
-        kind: String,
-        data: kotlinx.serialization.json.JsonObject,
-    ): kotlinx.serialization.json.JsonObject {
-        if (policy.inlineContent) return data
-        val drop = when (kind) {
-            "paste" -> PASTE_CONTENT_FIELDS
-            "fs.external_change" -> EXTERNAL_CHANGE_CONTENT_FIELDS
-            else -> return data
-        }
-        if (drop.none { it in data }) return data
-        return kotlinx.serialization.json.JsonObject(data.filterKeys { it !in drop })
+        host.emit(kind, data)
     }
 
     /**
@@ -420,13 +398,6 @@ class RecordingSessionController(
 
     companion object {
         private val LOG = Logger.getInstance(RecordingSessionController::class.java)
-
-        /** `paste` payload keys withheld when `inline_content` is off (core events.ts §5.1). */
-        private val PASTE_CONTENT_FIELDS = setOf("content", "content_head", "content_tail")
-
-        /** `fs.external_change` payload keys withheld when `inline_content` is off. */
-        private val EXTERNAL_CHANGE_CONTENT_FIELDS =
-            setOf("new_content", "new_content_head", "new_content_tail")
 
         val DEFAULT_SCHEDULER: FlushScheduler = FlushScheduler { periodMs, task ->
             AppExecutorUtil.getAppScheduledExecutorService()

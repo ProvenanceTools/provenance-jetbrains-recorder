@@ -61,7 +61,13 @@ data class CourseCert(
     val coursePubkey: String,
     /** Inclusive lower bound of the validity window. ISO 8601 date or timestamp. */
     val validFrom: String,
-    /** Inclusive upper bound of the validity window. ISO 8601 date or timestamp. */
+    /**
+     * Inclusive upper bound of the validity window. ISO 8601 date or timestamp.
+     *
+     * A DATE-ONLY value is inclusive **through the end of that day**, not merely its
+     * first instant — see [resolveValidUntilExclusiveMs]. A full timestamp means
+     * exactly that instant, unchanged.
+     */
     val validUntil: String,
     /** Hex ed25519 signature by the ROOT key, 128 chars (64 bytes). */
     val rootSig: String,
@@ -128,8 +134,10 @@ private const val MS_PER_DAY = 86_400_000L
  * Deliberate rules, all shared with log-core:
  *
  *  - A **date-only** string (`YYYY-MM-DD`) is the instant of UTC midnight that
- *    day. So `valid_until: "2027-01-15"` expires at `2027-01-15T00:00:00Z`, not
- *    at the end of that day. Harmless, because being out of window is non-fatal.
+ *    day. `valid_until` is the one field that does NOT stop there: it is read
+ *    through [resolveValidUntilExclusiveMs], which extends a date-only value to
+ *    the end of that day. This function's own day-start reading is unchanged;
+ *    only the caller-side interpretation for that one field moves.
  *  - A timestamp with **no offset suffix** is treated as UTC.
  *  - `second > 59` rejects leap seconds (`:60`) and `hour > 23` rejects the
  *    legal-ISO `24:00:00`. `java.time` accepts both (normalizing the latter to
@@ -180,6 +188,39 @@ fun parseIsoInstantMs(value: String): Long? {
     }
 
     return ms
+}
+
+/** Matches ONLY a bare `YYYY-MM-DD` — no time component at all. */
+private val DATE_ONLY_RE = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+
+/**
+ * Resolve a `valid_until` value to an EXCLUSIVE upper-bound instant, in epoch
+ * milliseconds: the certificate is out of window once `issued >= result`.
+ *
+ * `valid_until` is documented as an inclusive upper bound, but a date-only value
+ * (`YYYY-MM-DD`) means inclusive **through the end of that day**, not merely its
+ * first instant — "valid until Jan 15" should cover Jan 15.
+ *
+ * This is expressed as an exclusive bound at the START OF THE NEXT DAY rather than
+ * as an inclusive `<day-start> + 23:59:59.999`, on purpose: an exclusive
+ * "next midnight" bound cannot be undercut by a precision trap — a stray
+ * leap-second adjustment, a sub-millisecond source, or an off-by-one in a port's
+ * "last millisecond of the day" arithmetic — the way a literal 23:59:59.999
+ * constant could be. Since every instant this is compared against
+ * (`manifest.issued_at`) is itself parsed to millisecond resolution, the two
+ * framings denote the identical set of in-window instants; "exclusive next
+ * midnight" is chosen for robustness across the three ports, not because it
+ * changes behaviour.
+ *
+ * A full timestamp keeps its historical, exact-instant meaning: valid AT that
+ * instant, expired the millisecond after — so the exclusive bound is `ms + 1`.
+ *
+ * Returns null if [value] does not match the timestamp grammar (delegates to
+ * [parseIsoInstantMs] for the grammar check).
+ */
+fun resolveValidUntilExclusiveMs(value: String): Long? {
+    val ms = parseIsoInstantMs(value) ?: return null
+    return if (DATE_ONLY_RE.matches(value)) ms + MS_PER_DAY else ms + 1
 }
 
 /**
@@ -294,7 +335,14 @@ fun verifyCourseCert(cert: CourseCert, rootPubkeyHex: String): Boolean {
 
 /**
  * Step 4 of the Manifest 2.0 verification order: is [issuedAt] inside
- * `[valid_from, valid_until]` (both bounds inclusive)?
+ * `[valid_from, valid_until]`?
+ *
+ * Both bounds are inclusive, but a date-only bound resolves **asymmetrically**:
+ * `valid_from` is the FIRST instant of its day, while `valid_until` is inclusive
+ * THROUGH THE END of its day (see [resolveValidUntilExclusiveMs]). So
+ * `valid_until: "2027-01-15"` covers all of the 15th and expires at the first
+ * instant of the 16th. A full-timestamp bound at either end means exactly that
+ * instant, unaffected by the date-only extension.
  *
  * [issuedAt] is the manifest's `issued_at`. **Wall-clock now is never consulted** —
  * a cert that lapsed decades ago still reports `in_window` for a manifest issued
@@ -302,14 +350,14 @@ fun verifyCourseCert(cert: CourseCert, rootPubkeyHex: String): Boolean {
  */
 fun checkCertWindow(cert: CourseCert, issuedAt: String): CertWindowStatus {
     val from = parseIsoInstantMs(cert.validFrom)
-    val until = parseIsoInstantMs(cert.validUntil)
+    val untilExclusive = resolveValidUntilExclusiveMs(cert.validUntil)
     val issued = parseIsoInstantMs(issuedAt)
 
-    if (from == null || until == null || issued == null) {
+    if (from == null || untilExclusive == null || issued == null) {
         return CertWindowStatus.OutOfWindow(CertWindowReason.UNPARSEABLE_TIMESTAMP)
     }
     if (issued < from) return CertWindowStatus.OutOfWindow(CertWindowReason.BEFORE_VALID_FROM)
-    if (issued > until) return CertWindowStatus.OutOfWindow(CertWindowReason.AFTER_VALID_UNTIL)
+    if (issued >= untilExclusive) return CertWindowStatus.OutOfWindow(CertWindowReason.AFTER_VALID_UNTIL)
     return CertWindowStatus.InWindow
 }
 

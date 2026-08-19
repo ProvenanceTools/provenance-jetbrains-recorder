@@ -147,7 +147,7 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
      * hash chain validates end to end.
      */
     fun testSuppressedEventConsumesNoSequenceNumber() {
-        val c = controller(manifestWithCapture("""{"selection_change":false,"doc_open_close":false}"""))
+        val c = controller(manifestWithCapture("""{"selection_change":false,"focus_change":false}"""))
 
         // Interleave suppressed and captured events so a hole would land mid-chain.
         c.onSelectionChange(selection())
@@ -159,13 +159,13 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
 
         val entries = readEntries(c)
 
-        // The disabled kinds are absent...
+        // The disabled kind is absent...
         assertTrue(entries.none { it.kind == "selection.change" })
-        assertTrue(entries.none { it.kind == "doc.open" })
-        assertTrue(entries.none { it.kind == "doc.close" })
-        // ...the floor kinds around them survived...
+        // ...the floor kinds around it survived, doc.open and doc.close included...
         assertEquals("session.start", entries[0].kind)
         assertEquals(2, entries.count { it.kind == "doc.save" })
+        assertEquals(1, entries.count { it.kind == "doc.open" })
+        assertEquals(1, entries.count { it.kind == "doc.close" })
 
         // ...and crucially, NO HOLE: seq is dense from 0, so nothing consumed a number on
         // its way to being dropped.
@@ -193,8 +193,7 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
      * asserts the controller does not reimplement it as a check that could drift.
      */
     fun testEveryFloorKindSurvivesAnAllOffPolicy() {
-        val allOff = """{"selection_change":false,"focus_change":false,"terminal":false,""" +
-            """"doc_open_close":false,"inline_content":false}"""
+        val allOff = """{"selection_change":false,"focus_change":false,"terminal":false}"""
         val c = controller(manifestWithCapture(allOff))
 
         // session.start is already emitted by construction; append the rest of the floor
@@ -234,56 +233,58 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
     }
 
     // -----------------------------------------------------------------------
-    // inline_content: a field gate, not an event gate
+    // Retired knobs: doc_open_close and inline_content
     // -----------------------------------------------------------------------
 
-    fun testInlineContentOffWithholdsPasteTextButKeepsLengthAndSha() {
+    /**
+     * `inline_content` is GONE, and a manifest still carrying it must be inert.
+     *
+     * The knob stripped `content` / `content_head` / `content_tail` from `paste` and the
+     * `new_content*` fields from `fs.external_change`. It was removed because
+     * `internal_move` reads a paste's content to match it against the student's own prior
+     * typed code, and a match DOWNGRADES `large_paste`. Withhold the content and that
+     * exculpatory check cannot run, so a genuine self-relocation keeps full severity on a
+     * flag used in academic-integrity proceedings. This test is the regression guard: a
+     * course asking for the old behaviour must not get it.
+     *
+     * Separately: the 64 KB inline size cap in the payload builders is untouched by any of
+     * this — see PastePayloadBuilderTest / ExternalChangeContentTest and the pinned
+     * recorder conformance vectors.
+     */
+    fun testRetiredInlineContentKeyCannotWithholdContent() {
         val c = controller(manifestWithCapture("""{"inline_content":false}"""))
         c.onPaste(paste("secret student text"))
-
-        val pasteEntry = readEntries(c).firstOrNull { it.kind == "paste" }
-        assertNotNull("paste is a floor kind and must still fire", pasteEntry)
-        val data = pasteEntry!!.data
-        assertFalse("content must be withheld", "content" in data)
-        assertFalse("content_head must be withheld", "content_head" in data)
-        assertFalse("content_tail must be withheld", "content_tail" in data)
-        // Everything the paste heuristics reason over survives.
-        assertEquals(19L, data["length"]!!.jsonPrimitive.long)
-        assertEquals("cd".repeat(32), data["sha256"]!!.jsonPrimitive.content)
-        assertEquals("hw.py", data["path"]!!.jsonPrimitive.content)
-        assertNotNull(data["range"])
-    }
-
-    fun testInlineContentOffWithholdsExternalChangeTextButKeepsSizeAndHashes() {
-        val c = controller(manifestWithCapture("""{"inline_content":false}"""))
         c.append("fs.external_change", externalChange("pasted from elsewhere"))
 
-        val entry = readEntries(c).firstOrNull { it.kind == "fs.external_change" }
-        assertNotNull("fs.external_change is a floor kind and must still fire", entry)
-        val data = entry!!.data
-        assertFalse("new_content must be withheld", "new_content" in data)
-        assertFalse("new_content_head must be withheld", "new_content_head" in data)
-        assertFalse("new_content_tail must be withheld", "new_content_tail" in data)
-        assertEquals(21L, data["new_content_size"]!!.jsonPrimitive.long)
-        assertEquals("00".repeat(32), data["old_hash"]!!.jsonPrimitive.content)
-        assertEquals("11".repeat(32), data["new_hash"]!!.jsonPrimitive.content)
-        assertEquals(12L, data["diff_size"]!!.jsonPrimitive.long)
+        val entries = readEntries(c)
+        val pasteData = entries.first { it.kind == "paste" }.data
+        assertEquals("secret student text", pasteData["content"]!!.jsonPrimitive.content)
+        assertEquals(19L, pasteData["length"]!!.jsonPrimitive.long)
+        assertEquals("cd".repeat(32), pasteData["sha256"]!!.jsonPrimitive.content)
+
+        val changeData = entries.first { it.kind == "fs.external_change" }.data
+        assertEquals("pasted from elsewhere", changeData["new_content"]!!.jsonPrimitive.content)
+        assertEquals(21L, changeData["new_content_size"]!!.jsonPrimitive.long)
     }
 
-    fun testInlineContentOnKeepsTheText() {
-        val c = controller(manifestWithCapture("""{"inline_content":true}"""))
-        c.onPaste(paste("visible text"))
-        c.append("fs.external_change", externalChange("visible change"))
+    /**
+     * `doc_open_close` is GONE, and a manifest still carrying it must be inert.
+     *
+     * `DocOpenPayload.content` is the reconstruction SEED, so switching `doc.open` off
+     * would break file reconstruction, replay, and the Source tab for a whole cohort with
+     * nothing warning the course. `doc.close` is `{ path }` only. Both are floor now.
+     */
+    fun testRetiredDocOpenCloseKeyCannotSuppressDocEvents() {
+        val c = controller(manifestWithCapture("""{"doc_open_close":false}"""))
+        c.onDocOpen(DocOpenPayload("hw.py", "ef".repeat(32), 3, "print(1)", false))
+        c.onDocClose(dev.provenance.core.DocClosePayload("hw.py"))
 
         val entries = readEntries(c)
-        assertEquals(
-            "visible text",
-            entries.first { it.kind == "paste" }.data["content"]!!.jsonPrimitive.content,
-        )
-        assertEquals(
-            "visible change",
-            entries.first { it.kind == "fs.external_change" }.data["new_content"]!!.jsonPrimitive.content,
-        )
+        val open = entries.firstOrNull { it.kind == "doc.open" }
+        assertNotNull("doc.open is floor and must survive a retired doc_open_close key", open)
+        // The reconstruction seed itself is intact.
+        assertEquals("print(1)", open!!.data["content"]!!.jsonPrimitive.content)
+        assertNotNull(entries.firstOrNull { it.kind == "doc.close" })
     }
 
     // -----------------------------------------------------------------------

@@ -50,8 +50,6 @@
           "selection_change": true,
           "focus_change": true,
           "terminal": true,
-          "doc_open_close": true,
-          "inline_content": true,
           "heartbeat_interval_ms": 30000
         }
       },
@@ -62,13 +60,13 @@
         "valid_until": "2027-01-15",
         "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
       },
-      "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+      "sig": "a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102"
     },
-    "canonical_json": "{\"assignment_id\":\"proj2\",\"collaboration\":\"solo\",\"course_id\":\"berkeley-cs61b\",\"files_under_review\":[\"src/Main.java\"],\"format_version\":\"2.0\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"policy\":{\"capture\":{\"doc_open_close\":true,\"focus_change\":true,\"heartbeat_interval_ms\":30000,\"inline_content\":true,\"selection_change\":true,\"terminal\":true}},\"scope\":\"directory\",\"semester\":\"fa26\",\"submission\":\"bundle\"}"
+    "canonical_json": "{\"assignment_id\":\"proj2\",\"collaboration\":\"solo\",\"course_id\":\"berkeley-cs61b\",\"files_under_review\":[\"src/Main.java\"],\"format_version\":\"2.0\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"policy\":{\"capture\":{\"focus_change\":true,\"heartbeat_interval_ms\":30000,\"selection_change\":true,\"terminal\":true}},\"scope\":\"directory\",\"semester\":\"fa26\",\"submission\":\"bundle\"}"
   },
   "unknown_keys_ignored": {
     "note": "MANDATORY. Unknown top-level keys MUST be ignored, for forward compatibility. This is safe precisely because canonicalization operates on the NAMED fields only, so an unknown key can never silently change the signed bytes — the signature below still verifies with the extra keys present.",
-    "manifest_json": "{\"format_version\":\"2.0\",\"course_id\":\"berkeley-cs61b\",\"assignment_id\":\"proj2\",\"semester\":\"fa26\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"files_under_review\":[\"src/Main.java\"],\"collaboration\":\"solo\",\"submission\":\"bundle\",\"scope\":\"directory\",\"policy\":{\"capture\":{\"selection_change\":true,\"focus_change\":true,\"terminal\":true,\"doc_open_close\":true,\"inline_content\":true,\"heartbeat_interval_ms\":30000}},\"course_cert\":{\"course_id\":\"berkeley-cs61b\",\"course_pubkey\":\"66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\",\"root_sig\":\"ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206\"},\"sig\":\"4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b\",\"some_future_field\":\"ignored\",\"another_one\":[1,2]}",
+    "manifest_json": "{\"format_version\":\"2.0\",\"course_id\":\"berkeley-cs61b\",\"assignment_id\":\"proj2\",\"semester\":\"fa26\",\"issued_at\":\"2026-09-08T00:00:00Z\",\"files_under_review\":[\"src/Main.java\"],\"collaboration\":\"solo\",\"submission\":\"bundle\",\"scope\":\"directory\",\"policy\":{\"capture\":{\"selection_change\":true,\"focus_change\":true,\"terminal\":true,\"heartbeat_interval_ms\":30000}},\"course_cert\":{\"course_id\":\"berkeley-cs61b\",\"course_pubkey\":\"66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\",\"root_sig\":\"ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206\"},\"sig\":\"a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102\",\"some_future_field\":\"ignored\",\"another_one\":[1,2]}",
     "expected": {
       "parses": true,
       "chain": {
@@ -103,8 +101,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -115,7 +111,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
           },
-          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+          "sig": "a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -148,8 +144,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -160,7 +154,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "bac528c85fb52f6ad0d9b1f44837a4c500cfe8bf2e0f70c822c6c53912b7ebb26ee709e5c41437ae1ebad36c9d680abcceeca86ffcac6dc089dea327bb198a05"
           },
-          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+          "sig": "a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -190,8 +184,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -202,7 +194,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
           },
-          "sig": "e3baad4837b9506f064aae94bb876aaad07342877e443c9fd5bcefabf4c7577bef0fac6f56ad4a28ae376c39dbc9db8637eda052567137bbcb1ad8cd02eb310d"
+          "sig": "c8eebcb0657c09d9edcdf2a30e799080c3ad52e414e68773d2a8573d3ab3b9899e83fd05ab85e25ecb6a51ece72fc3f91844f835bef5f924b134636032c6ec08"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -232,8 +224,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -244,7 +234,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
           },
-          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+          "sig": "a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -274,8 +264,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -286,7 +274,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
           },
-          "sig": "10d0a07b07948f78e712e4af3f60c3b40057abb54f86a9433cf0111cf19b2b162f97f0477b5e96b825e4eb6bd8f00c30b02ecb4bf1fb53bc1bc12c725cc4600a"
+          "sig": "330a040c375aae9caad982fea8c98f49c69f9c01593d00055c7b3897186fae7f912352ad4f04811aab80533223bbba480a1403248dd3ff49bc49d9856540f50a"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -318,8 +306,6 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
@@ -330,7 +316,7 @@
             "valid_until": "2027-01-15",
             "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
           },
-          "sig": "b2376f98b78ab05f27f83364408f51e08a5c8e515b1f434c12e8bc6ca52fd53bee79c2c6076252eb246b0ac729a666c1c49c1fbec7d8d9ee88600eec5e4e8b0d"
+          "sig": "ea9886b80d670f19045a0c19e5f16655dad0b880900405298d25fc739f88f2f42005ac5046ab1e685cadcff94d5e93f22e21a6086fd87dc0f21b47632b835307"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -386,12 +372,10 @@
               "selection_change": true,
               "focus_change": true,
               "terminal": true,
-              "doc_open_close": true,
-              "inline_content": true,
               "heartbeat_interval_ms": 30000
             }
           },
-          "sig": "4e2a605a1085675850cbb623ef292352a75394f55b833521d72e2b76d108f4556cf5176eedd62cf3d2232304e20fb19478591f2aafcf9d006a07c1c29a2f190b"
+          "sig": "a90df2908c3c90d0502d1a2b7bd83ea7eacff92ca34835701cf4c97abf26d9b17d14259a7d753364fe908c22b865b5e21fd4897b068957009b89b881c7cc3102"
         },
         "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
       },
@@ -428,8 +412,6 @@
               "selection_change": false,
               "focus_change": false,
               "terminal": false,
-              "doc_open_close": false,
-              "inline_content": false,
               "heartbeat_interval_ms": 120000
             }
           }
