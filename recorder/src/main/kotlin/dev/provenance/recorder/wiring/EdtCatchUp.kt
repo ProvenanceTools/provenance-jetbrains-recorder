@@ -1,7 +1,7 @@
 package dev.provenance.recorder.wiring
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.invokeAndWaitIfNeeded
 
 /**
  * Run [block] on the EDT and block the caller until it finishes — or run it inline when the
@@ -35,7 +35,23 @@ import com.intellij.openapi.application.invokeAndWaitIfNeeded
  * as the student leaves it there. `any()` is safe here because the block only reads the platform
  * model and appends to the log; it starts no write action and modifies no model state. Callers
  * that already hold a read action must NOT use this.
+ *
+ * **Why this is spelled out rather than delegated.** This used to call
+ * `com.intellij.openapi.application.invokeAndWaitIfNeeded`, which is `@ApiStatus.Internal` and
+ * therefore rejected by JetBrains Marketplace plugin verification. The body below is that
+ * helper's exact logic against public API: it dispatches on [com.intellij.openapi.application.Application.isDispatchThread]
+ * and otherwise calls [com.intellij.openapi.application.Application.invokeAndWait], which is
+ * what the internal helper delegates to. The explicit EDT branch is not redundant with
+ * `invokeAndWait`'s own on-EDT shortcut: `ApplicationImpl.doInvokeAndWait` runs an on-EDT
+ * runnable through `runIntendedWriteActionOnCurrentThread`, i.e. under the write-intent lock.
+ * Running [block] directly keeps the already-on-EDT path taking no lock the caller did not
+ * already hold — the same behaviour this function has always had.
  */
 fun runOnEdtAndWait(block: () -> Unit) {
-    invokeAndWaitIfNeeded(ModalityState.any()) { block() }
+    val application = ApplicationManager.getApplication()
+    if (application.isDispatchThread) {
+        block()
+    } else {
+        application.invokeAndWait({ block() }, ModalityState.any())
+    }
 }

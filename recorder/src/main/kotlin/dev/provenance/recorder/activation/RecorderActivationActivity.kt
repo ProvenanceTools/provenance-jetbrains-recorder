@@ -62,7 +62,14 @@ class RecorderActivationActivity internal constructor(
         // traverses the VFS and reads each candidate manifest, all of which are read-lock
         // contracts inside PersistentFSImpl. A ProjectActivity coroutine is not the EDT, so
         // read access is never implicit here.
-        val discovered = ReadAction.compute<List<DiscoveredManifest>, Throwable> {
+        //
+        // computeBlocking, not the deprecated compute: `ReadAction.compute` is `@Deprecated` in
+        // the platform (Marketplace verification flags it) and its body is a straight delegation
+        // to `computeBlocking`, so this is the same call with the same semantics — one blocking
+        // read action held for the whole computable. Deliberately NOT the suspending
+        // `readAction {}`: it is EDT-hostile, and ActivationResilienceTest / RecorderStateTest
+        // drive `execute()` inside `runBlocking` on the EDT.
+        val discovered = ReadAction.computeBlocking<List<DiscoveredManifest>, Throwable> {
             discoverer(project, COURSE_PUBLIC_KEY_HEX)
         }
         val state = project.service<RecorderState>()
