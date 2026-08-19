@@ -98,6 +98,24 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <p><b>0.2.1</b> &mdash; reliability fixes. No change to what is recorded.</p>
+    <ul>
+      <li>Fixed: on Windows, the recorder did not start at all for a project stored on the
+          <b>WSL filesystem</b> &mdash; no recording, no indicator, and no
+          &ldquo;Prepare Submission Bundle&rdquo; command. It now records there normally.</li>
+      <li>Fixed: an <b>&ldquo;IDE error occurred&rdquo;</b> notification could appear when
+          opening a project.</li>
+      <li>Fixed: a file that was <b>already open</b> when recording began could be recorded
+          without its starting contents, so a reviewer's replay of that file started from an
+          empty page instead of the code you began with.</li>
+      <li>The status bar now tells you when recording has <b>stopped working</b>, instead of
+          continuing to show the normal &ldquo;recording&rdquo; indicator. If you ever see it,
+          tell your course staff &mdash; it means the log is incomplete.</li>
+      <li>Preparing a submission bundle now reports a clear error instead of failing
+          quietly, and no longer leaves a stray temporary file behind.</li>
+      <li>Fixed: sealed bundles reported a recorder fingerprint that course staff's checker
+          did not recognize, which flagged every submission for manual review.</li>
+    </ul>
     <p><b>0.2.0</b></p>
     <ul>
       <li>Records <b>every authorized assignment open in the project at once</b>, including
