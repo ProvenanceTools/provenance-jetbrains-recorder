@@ -338,7 +338,7 @@ class RecordingSessionController(
      *
      * **Suppression MUST happen before [SessionHost.emit], and does.** `emit` is what
      * chains the entry and assigns its `seq`. Dropping an event *after* that point would
-     * consume a sequence number and leave a hole, which validation check 3 reads as a
+     * consume a sequence number and leave a hole, which validation check 4 (seq_gaps) reads as a
      * DELETED ENTRY — turning a course's privacy setting into a tamper signal against the
      * student. A policy must never be able to manufacture an accusation. Returning here,
      * before `emit` is called, is what makes a suppressed event cost nothing: no seq, no

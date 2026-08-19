@@ -140,7 +140,7 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
      *
      * Suppression happens before [SessionHost.emit], which is what chains an entry and
      * assigns its `seq`. Drop an event *after* that point and the log carries a hole that
-     * validation check 3 reads as a DELETED ENTRY — so a course quietly turning off
+     * validation check 4 (seq_gaps) reads as a DELETED ENTRY — so a course quietly turning off
      * selection capture would manufacture a tamper finding against every student in the
      * class. This test is the guard against that failure mode: it asserts the seqs are
      * densely contiguous from 0 with no gap where the suppressed events were, and that the
