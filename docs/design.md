@@ -107,10 +107,13 @@ Two facts established from `log-core`:
 
 Mirror the VS Code recorder's `build:prod` flow:
 
-- **Course public key** embedded at build time. A Gradle task replaces a
-  constant in `CoursePublicKey.kt` from an env var, builds, then reverts the
-  source (exactly as `tools/embed-course-key.ts` + the `git checkout` step do in
-  the monorepo).
+- **Trust anchors** embedded at build time. A Gradle task (`embedTrustAnchors`)
+  replaces a constant in `RootPublicKey.kt` and one in `LegacyCoursePublicKey.kt`
+  from env vars, builds, then reverts both sources (exactly as
+  `tools/embed-root-key.ts` + the `git checkout` step do in the monorepo). The
+  root key is required and is the Manifest 2.0 anchor; the legacy course key is
+  optional and exists only to keep pre-2.0 manifests activating until every
+  course has re-issued.
 - **`extension_hash`** in the sealed manifest = SHA-256 of the plugin
   distribution `.zip`. This is what the analyzer's allowlist checks.
 - The plugin **never modifies** `manifest.json` / `manifest.sig` after seal —
