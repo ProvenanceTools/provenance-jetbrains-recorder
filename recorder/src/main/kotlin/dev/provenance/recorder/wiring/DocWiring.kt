@@ -67,7 +67,23 @@ class DocWiring(
             object : DocumentListener {
                 override fun beforeDocumentChange(event: DocumentEvent) {
                     val vf = FileDocumentManager.getInstance().getFile(event.document) ?: return
-                    if (sinkFor(vf) == null) return
+                    val sink = sinkFor(vf) ?: return
+                    // Lazy doc.open for a document that no editor-TAB signal can ever reach.
+                    // fileOpened and catchUpOpenFiles() are both tab-based (FileEditorManager),
+                    // but this DocumentListener is application-wide and fires for ANY document —
+                    // Replace in Files, a cross-file rename refactor, reformat on a directory,
+                    // and code generation all mutate documents that were never opened in a tab.
+                    // Without this, those files produce doc.change with no baseline, and replay
+                    // reconstructs them from an empty buffer. The analyzer treats a missing
+                    // doc.open as indeterminate rather than invalid, so it fails silently.
+                    //
+                    // It MUST be emitted here, not in documentChanged: this runs before the edit
+                    // lands, so event.document still holds the PRE-change text. A post-change
+                    // baseline would bake the edit in and then apply it again as a delta —
+                    // replay would count it twice (the same hazard the init comment above
+                    // describes for the registration/catch-up window). seenPaths de-dups against
+                    // the tab-based path, so a file that later gets a tab is not re-emitted.
+                    emitDocOpenFor(vf, sink, event.document)
                     pending[event.document] = rangeOf(event.document, event.offset, event.oldLength)
                 }
 
@@ -153,7 +169,15 @@ class DocWiring(
         return router.sinkFor(path)
     }
 
-    private fun emitDocOpenFor(vf: VirtualFile, sink: RecordableSessionSink) {
+    /**
+     * [document], when non-null, is a document the caller already holds and is already guaranteed
+     * a stable, correct snapshot of — the `beforeDocumentChange` caller, which runs on the EDT
+     * inside the write action that is about to mutate it. That caller must NOT go through
+     * [runReadActionBlocking]: it needs the exact pre-change text (a re-resolve is pointless), it
+     * already has read access, and taking a nested cancellable read action inside a write action
+     * is a needless hazard. Every other caller passes null and re-resolves under a read action.
+     */
+    private fun emitDocOpenFor(vf: VirtualFile, sink: RecordableSessionSink, document: Document? = null) {
         val path = nioPathOf(vf) ?: return
         if (!seenPaths.add(path)) return // defensive de-dup, keyed by absolute path
         // Model access under a read action. fileOpened arrives on the EDT, but catchUpOpenFiles()
@@ -161,9 +185,13 @@ class DocWiring(
         // getDocument() asserts read access there, and text/lineCount must come from ONE snapshot
         // or a concurrent write action tears the doc.open baseline. Hashing + emission are pure/IO
         // and deliberately stay outside the lock.
-        val snapshot = runReadActionBlocking {
-            val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@runReadActionBlocking null
-            doc.text to doc.lineCount
+        val snapshot = if (document != null) {
+            document.text to document.lineCount
+        } else {
+            runReadActionBlocking {
+                val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@runReadActionBlocking null
+                doc.text to doc.lineCount
+            }
         } ?: return
         val (text, lineCount) = snapshot
         sink.onDocOpen(buildDocOpenPayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(text), lineCount.toLong(), text))

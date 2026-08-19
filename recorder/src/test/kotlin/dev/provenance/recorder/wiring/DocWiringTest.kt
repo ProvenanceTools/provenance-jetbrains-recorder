@@ -280,4 +280,124 @@ class DocWiringTest : BasePlatformTestCase() {
         assertEquals(1, opens.size)
         assertEquals(1, opensB.size)
     }
+
+    // -----------------------------------------------------------------------------------
+    // Tab-less documents (Replace in Files, rename refactor, reformat-on-directory, codegen)
+    //
+    // doc.open used to come only from editor-TAB signals (fileOpened + the getOpenFiles()
+    // catch-up), while doc.change comes from the application-wide DocumentListener, which
+    // fires for any Document whether or not a tab exists. A file edited without ever being
+    // opened therefore produced doc.change entries with no baseline, and replay rebuilt it
+    // from an empty buffer. A missing doc.open is *indeterminate* to the analyzer, not
+    // invalid, so nothing was flagged — the file was just reconstructed wrong.
+    // -----------------------------------------------------------------------------------
+
+    /** Applies doc.change deltas to a doc.open baseline the way replay does. */
+    private fun applyDeltas(baseline: String, deltas: List<dev.provenance.core.DocChangeDelta>): String {
+        var text = baseline
+        for (d in deltas) {
+            val start = offsetOf(text, d.range.start.line.toInt(), d.range.start.character.toInt())
+            val end = offsetOf(text, d.range.end.line.toInt(), d.range.end.character.toInt())
+            text = text.substring(0, start) + d.text + text.substring(end)
+        }
+        return text
+    }
+
+    private fun offsetOf(text: String, line: Int, character: Int): Int {
+        var offset = 0
+        repeat(line) { offset = text.indexOf('\n', offset) + 1 }
+        return offset + character
+    }
+
+    fun testDocChangeToAFileWithNoEditorTabIsPrecededByDocOpen() {
+        // addFileToProject creates the file WITHOUT opening an editor for it — the exact
+        // population getOpenFiles()/fileOpened can never see.
+        val vf = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        install()
+        assertTrue("no tab is open, so the tab-based catch-up must emit nothing", opens.isEmpty())
+
+        val doc = FileDocumentManager.getInstance().getDocument(vf)!!
+        assertNull("the file must have no editor tab", FileEditorManager.getInstance(project).getSelectedEditor(vf))
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+
+        assertEquals("doc.open must precede doc.change for a tab-less file", listOf("doc.open", "doc.change"), order)
+        assertEquals(1, opens.size)
+        assertEquals("hw.py", opens[0].path)
+        assertEquals(1, changes.size)
+        assertEquals("hw.py", changes[0].path)
+    }
+
+    /**
+     * The double-count guard. The lazy doc.open MUST be emitted from `beforeDocumentChange`,
+     * i.e. with the PRE-change text — emitting it from `documentChanged` would bake the edit
+     * into the baseline and then apply the same edit again as a delta, so replay would count
+     * it twice. Applying the deltas to the baseline must reproduce the post-change text
+     * exactly once.
+     */
+    fun testLazyDocOpenBaselineIsPreChangeSoTheDeltaIsNotDoubleCounted() {
+        val vf = myFixture.addFileToProject("hw.py", "aaa\nbbb\n").virtualFile
+        install()
+        val doc = FileDocumentManager.getInstance().getDocument(vf)!!
+        // Snapshot the true pre-change state to assert the baseline against.
+        val preChange = doc.text
+        val preChangeLineCount = doc.lineCount.toLong()
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(6, "Z") }
+        val postChange = doc.text
+
+        assertEquals(1, opens.size)
+        assertEquals("aaa\nbbb\n", preChange)
+        assertEquals(preChange, opens[0].content)
+        assertEquals(Sha256.hex(preChange), opens[0].sha256)
+        assertEquals(preChangeLineCount, opens[0].lineCount)
+        assertEquals("aaa\nbbZb\n", postChange)
+        assertEquals(
+            "baseline + deltas must reproduce the post-change text exactly once",
+            postChange,
+            applyDeltas(opens[0].content!!, changes.flatMap { it.deltas }),
+        )
+    }
+
+    /** A second edit to the same tab-less file must not emit a second doc.open. */
+    fun testLazyDocOpenIsEmittedOncePerTablessFile() {
+        val vf = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        install()
+        val doc = FileDocumentManager.getInstance().getDocument(vf)!!
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Y") }
+        assertEquals(1, opens.size)
+        assertEquals(listOf("doc.open", "doc.change", "doc.change"), order)
+    }
+
+    /** The tab-based path is unchanged: still exactly one doc.open, none added by the new path. */
+    fun testTabOpenedFileStillGetsExactlyOneDocOpenAcrossSubsequentChanges() {
+        myFixture.configureByText("hw.py", "print(1)\n")
+        install()
+        val doc = document()
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Y") }
+        assertEquals(1, opens.size)
+        assertEquals("print(1)\n", opens[0].content)
+        assertEquals(listOf("doc.open", "doc.change", "doc.change"), order)
+    }
+
+    /** A file edited tab-less and only later opened in a tab still gets exactly one doc.open. */
+    fun testLazilyOpenedFileDoesNotGetASecondDocOpenWhenATabOpensLater() {
+        val vf = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        install()
+        val doc = FileDocumentManager.getInstance().getDocument(vf)!!
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+        assertEquals(1, opens.size)
+        FileEditorManager.getInstance(project).openFile(vf, false)
+        assertEquals("opening a tab later must not re-emit doc.open", 1, opens.size)
+    }
+
+    /** The privacy gate still wins: a tab-less file no session owns records nothing. */
+    fun testTablessFileWithNoOwningSessionEmitsNothing() {
+        val vf = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        install(router = SessionRouter { null })
+        val doc = FileDocumentManager.getInstance().getDocument(vf)!!
+        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "Z") }
+        assertTrue(opens.isEmpty())
+        assertTrue(changes.isEmpty())
+    }
 }
