@@ -15,6 +15,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -217,6 +218,74 @@ class SealBundleTest {
             caught = t
         }
         assertSame("a VirtualMachineError must propagate untouched", boom, caught)
+    }
+
+    // --- unguarded seal sites: a filesystem failure must still be a typed SealResult ---------
+    //
+    // Distinct from the Exception-vs-Throwable widenings above: these sites had NO handler at
+    // all, so an ordinary IOException escaped sealBundle as a raw crash — no SealResult, so
+    // PrepareSubmissionBundleAction never notified the student that the seal died.
+
+    @Test
+    fun `an unreadable session hash becomes a WriteError instead of escaping`() {
+        // sha256OfFile checks Files.exists and then reads: a classic TOCTOU. When the file goes
+        // away (or otherwise stops being readable) between the two calls, readAllBytes throws
+        // straight out of sealBundle. The literal delete race has no deterministic interleaving
+        // point from a test, so the fixture pins the identical code path — exists() says yes,
+        // the read then fails — by putting a DIRECTORY at the .slog.meta path. Only sha256OfFile
+        // ever reads the meta path, so this isolates the unguarded read from the guarded
+        // .slog read above it.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(prov.resolve("session-1.slog.meta"))
+
+        val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+
+        assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
+        assertTrue((result as SealResult.WriteError).message.contains("session-1.slog"))
+    }
+
+    @Test
+    fun `a VirtualMachineError still propagates out of the session hash step`() {
+        // Guard: the new handler must keep the same fatal dividing line as the rest of the path.
+        // Nothing can inject an OutOfMemoryError into sha256OfFile, so this pins the rule where
+        // it is reachable — rethrowIfFatal is the single shared helper both sites go through.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val boom = OutOfMemoryError("heap")
+        var caught: Throwable? = null
+        try {
+            sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { throw boom })
+        } catch (t: Throwable) {
+            caught = t
+        }
+        assertSame(boom, caught)
+    }
+
+    @Test
+    fun `an unlistable provenance dir becomes a WriteError instead of escaping`() {
+        // Same TOCTOU shape one step earlier: Files.isDirectory says yes, then Files.list fails.
+        // An unreadable directory reproduces it deterministically. NOT NoSessions — "no sessions"
+        // is a checked, non-racy verdict, and reporting a directory we could not read as "nothing
+        // to seal" would tell a student their work is absent when it may be sitting right there.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val perms = Files.getPosixFilePermissions(prov)
+        Files.setPosixFilePermissions(prov, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable dir is actually unreadable",
+                runCatching { Files.list(prov).use { it.toList() } }.isFailure,
+            )
+            val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+            assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
+            assertTrue((result as SealResult.WriteError).message.contains("session files"))
+        } finally {
+            Files.setPosixFilePermissions(prov, perms)
+        }
     }
 
     @Test

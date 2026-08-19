@@ -81,11 +81,21 @@ fun sealBundle(
 ): SealResult {
     // Step 1: list .slog files (excluding .slog.meta).
     if (!Files.isDirectory(provenanceDir)) return SealResult.NoSessions
-    val slogFiles = Files.list(provenanceDir).use { stream ->
-        stream.filter { it.fileName.toString().endsWith(".slog") && !it.fileName.toString().endsWith(".slog.meta") }
-            .map { it.fileName.toString() }
-            .sorted()
-            .toList()
+    val slogFiles = try {
+        Files.list(provenanceDir).use { stream ->
+            stream.filter { it.fileName.toString().endsWith(".slog") && !it.fileName.toString().endsWith(".slog.meta") }
+                .map { it.fileName.toString() }
+                .sorted()
+                .toList()
+        }
+    } catch (e: Throwable) {
+        // WriteError, deliberately NOT NoSessions. The isDirectory check above is the checked,
+        // non-racy "this workspace has no recording" verdict; reaching here means the directory
+        // existed and we still could not read it (permissions, IO error, or the dir vanishing
+        // between the two calls). Reporting that as "no session data to seal" would tell a
+        // student their work is absent when it may be sitting right there, unreadable.
+        rethrowIfFatal(e)
+        return SealResult.WriteError("Failed to list session files in $provenanceDir: ${e.message}")
     }
     if (slogFiles.isEmpty()) return SealResult.NoSessions
 
@@ -104,8 +114,21 @@ fun sealBundle(
             return SealResult.WriteError("Failed to read $filename: ${e.message}")
         }
 
-        val slogSha = sha256OfFile(slogPath)
-        val metaSha = sha256OfFile(metaPath)
+        // sha256OfFile checks Files.exists and then reads — a TOCTOU: a file that disappears
+        // between the two calls throws out of readAllBytes. Unguarded, that escaped sealBundle
+        // with no SealResult at all, so the seal action never told the student it had died.
+        // These hashes also go into the SIGNED manifest, so a read failure must never be
+        // quietly folded into the "absent file" empty hash — that would sign a claim that a
+        // session the student recorded does not exist.
+        val slogSha: String
+        val metaSha: String
+        try {
+            slogSha = sha256OfFile(slogPath)
+            metaSha = sha256OfFile(metaPath)
+        } catch (e: Throwable) {
+            rethrowIfFatal(e)
+            return SealResult.WriteError("Failed to hash $filename: ${e.message}")
+        }
 
         when (val parsed = parseEntries(slogText)) {
             is ParseResult.Err -> {
