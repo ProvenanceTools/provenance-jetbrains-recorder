@@ -214,6 +214,7 @@ fun isEventKindCaptured(kind: String, policy: CapturePolicy): Boolean =
         "selection_change" -> policy.selectionChange
         "focus_change" -> policy.focusChange
         "terminal" -> policy.terminal
-        "inline_content" -> policy.inlineContent
+        // `inline_content` deliberately has no case: it gates payload FIELDS on
+        // floor events, not any event kind, so it never appears as a gate here.
         else -> true
     }
