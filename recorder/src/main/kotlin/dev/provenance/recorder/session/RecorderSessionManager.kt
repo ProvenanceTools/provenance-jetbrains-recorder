@@ -110,7 +110,12 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         val terminalState = project.service<RecorderTerminalState>()
         terminalState.emitTerminalOpen = { cwd, payload -> routeTerminalOpen(cwd, payload) }
         terminalState.emitTerminalCommand = { cwd, payload -> routeTerminalCommand(cwd, payload) }
-        project.service<RecorderGitState>().emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
+        project.service<RecorderGitState>().apply {
+            emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
+            // Separate seam so the tag lands at the state change, not after the async
+            // commit-graph read the emit path now performs. See RecorderGitState.markGit.
+            markGit = { repoRoot -> repoRoot?.let(::sessionOwning)?.explanationTagger?.markGit() }
+        }
         // Paste signal 2 (the EditorPaste action wrapper) is routed by path the same way, so
         // concurrent sessions don't clobber a shared slot: the nearest-enclosing session's own
         // pasteCorrelator, or null when no session owns the pasted-into file (privacy gate).
@@ -124,7 +129,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         routedWiring = null
         Disposer.dispose(rw.disposable)
         project.service<RecorderTerminalState>().apply { emitTerminalOpen = null; emitTerminalCommand = null }
-        project.service<RecorderGitState>().emit = null
+        project.service<RecorderGitState>().apply { emit = null; markGit = null }
         project.service<RecorderPasteState>().resolveCorrelator = null
     }
 

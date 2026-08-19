@@ -1,10 +1,12 @@
 package dev.provenance.core
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * Per-event-kind payload shapes (recorder PRD §4.2, §5.1). Ported from log-core's
@@ -336,18 +338,76 @@ fun TerminalCommandPayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
- * git.event payload (recorder PRD §4.4). Mirrors log-core's GitEventPayload
- * (events.ts:188-191) and the VS Code git-wiring.ts, which always emits
- * `operation: "state_change"` regardless of the underlying git operation (commit /
- * checkout / branch switch / index change all look the same through the change topic).
- * Matched exactly per this repo's "port the wiring, not a new product" mandate.
- * [commitSha] is optional — omitted when null (no HEAD yet, e.g. an empty repo).
+ * git.event payload (recorder PRD §4.4), carrying enough of the commit graph for replay to
+ * show branch and merge structure (program spec S5). Mirrors log-core's GitEventPayload.
+ *
+ * ## Why the graph is recorded rather than shipped
+ *
+ * Gradescope delivers no `.git`, and a `.git` that did travel would prove less than it
+ * appears to: `commit --amend`, `rebase`, and `filter-branch` rewrite history after the
+ * fact, so a repository handed in at submission time is evidence of what a student ended up
+ * with, not of what happened. The recorder sits on the live repository while the work is
+ * being done, so capturing the graph here puts it inside the signed hash chain at the
+ * instant it existed, where it can no longer be rewritten.
+ *
+ * ## No author identity. Ever.
+ *
+ * There is deliberately no `author_name`, no `author_email`, no author date and no commit
+ * message here, and none anywhere else in the log. The approved CPHS protocol treats a new
+ * category of identifier as requiring a filed modification BEFORE implementation, and git
+ * author identity is exactly that — a real name and a real email address, in clear, attached
+ * to every commit. `sha`, `parents`, and `branch` are structural: they describe the SHAPE of
+ * the history, not who produced it.
+ *
+ * Attribution already has a designed home, and it is opaque on purpose: the `student_ref`
+ * UUID inside `session.start.identity`. Adding an author field here would reintroduce,
+ * unsigned and unreviewed, precisely the identifier that design went to some trouble to
+ * avoid.
+ *
+ * ## Every new field is optional, permanently
+ *
+ * 1.x bundles, and the 2.0 bundles recorded before this landed, carry only [operation] and
+ * [commitSha]. 1.x support is permanent (program spec §9), so these stay optional rather
+ * than becoming required at some future version.
  */
-data class GitEventPayload(val operation: String, val commitSha: String?)
+data class GitEventPayload(
+    val operation: String,
+    /**
+     * Superseded by [sha], which means the same thing. Retained — and still EMITTED by 2.0
+     * writers — so 1.x readers keep working through the reader-before-writer migration
+     * (program spec §9).
+     */
+    val commitSha: String?,
+    /** Full 40-char hex sha of the commit HEAD points at. Absent if unreadable. */
+    val sha: String? = null,
+    /**
+     * Parent shas of [sha], in git's own order — the FIRST parent is the branch that was
+     * merged into. Order is therefore meaningful and must NEVER be sorted: reversing it
+     * inverts the meaning of a merge, and JCS canonicalizes object keys but leaves array
+     * elements alone, so a sort here changes the signed bytes and the chain hash.
+     *
+     * Length is the structure: 0 is a root commit, 1 an ordinary commit, 2 or more a merge.
+     * An EMPTY LIST and an ABSENT FIELD mean different things — `[]` is "this commit
+     * genuinely has no parents", absent is "the recorder could not read them" — so a reader
+     * must not collapse the two, and neither may a writer.
+     */
+    val parents: List<String>? = null,
+    /** Current branch name. Absent when HEAD is detached; never invented. */
+    val branch: String? = null,
+)
 
 fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
     put("operation", operation)
     if (commitSha != null) put("commit_sha", commitSha)
+    if (sha != null) put("sha", sha)
+    // `parents != null` and not `isNotEmpty()`: an empty list is a positive claim of "root
+    // commit" and must survive to the wire as `[]`.
+    if (parents != null) {
+        putJsonArray("parents") {
+            for (p in parents) add(JsonPrimitive(p))
+        }
+    }
+    if (branch != null) put("branch", branch)
 }
 
 /**

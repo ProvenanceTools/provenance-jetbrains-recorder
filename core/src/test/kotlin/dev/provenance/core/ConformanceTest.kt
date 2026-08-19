@@ -423,6 +423,154 @@ class ConformanceTest {
         sessionPubkeySig = o["session_pubkey_sig"]!!.jsonPrimitive.content,
     )
 
+    /** `git-event.json` — the commit graph, its canonical bytes, and its chain hashes. */
+    @Nested
+    inner class GitEventVectors {
+        private val v by lazy { vector("git-event.json") }
+
+        private fun payloadOf(o: JsonObject): GitEventPayload = GitEventPayload(
+            operation = o["operation"]!!.jsonPrimitive.content,
+            commitSha = (o["commit_sha"] as? JsonPrimitive)?.content,
+            sha = (o["sha"] as? JsonPrimitive)?.content,
+            // Absent stays null; `[]` stays an empty list. Collapsing them here would make
+            // the empty-vs-absent cases below vacuous.
+            parents = (o["parents"] as? JsonArray)?.map { it.jsonPrimitive.content },
+            branch = (o["branch"] as? JsonPrimitive)?.content,
+        )
+
+        /**
+         * Every case, pinned twice: the JCS canonical bytes AND the resulting chain hash. A
+         * port that orders keys differently, sorts `parents`, or collapses `[]` into absent
+         * fails here rather than producing a log whose hashes silently disagree with every
+         * other recorder's.
+         */
+        @Test
+        fun `git event cases reproduce log-core canonical json and chain hashes`() {
+            val cases = v["cases"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val data = o["data"]!!.jsonObject
+
+                // Round-trip through the typed payload: what a recorder would actually emit.
+                val rebuilt = payloadOf(data).toJsonObject()
+                assertEquals(data, rebuilt, name)
+                assertEquals(
+                    o["canonical_json"]!!.jsonPrimitive.content,
+                    Canonical.canonicalize(rebuilt.toString()),
+                    name,
+                )
+
+                val e = o["envelope"]!!.jsonObject
+                val chained = chainEntry(
+                    o["prev_hash"]!!.jsonPrimitive.content,
+                    Envelope(
+                        seq = e["seq"]!!.jsonPrimitive.long,
+                        t = e["t"]!!.jsonPrimitive.long,
+                        wall = e["wall"]!!.jsonPrimitive.content,
+                        kind = e["kind"]!!.jsonPrimitive.content,
+                        data = rebuilt,
+                    ),
+                )
+                assertEquals(o["hash"]!!.jsonPrimitive.content, chained.hash, name)
+            }
+            val names = cases.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet()
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "legacy_1x",
+                        "operation_only",
+                        "root_commit",
+                        "unknown_parents",
+                        "ordinary_commit",
+                        "merge_commit",
+                        "merge_commit_parents_flipped",
+                        "detached_head",
+                        "branch_with_slash",
+                        "branch_non_ascii",
+                        "octopus_merge",
+                    ),
+                ),
+                "git-event.json lost a mandatory case",
+            )
+        }
+
+        /**
+         * MANDATORY. `parents[0]` is the branch merged INTO, so flipping the order is a
+         * different claim — and the vector pins it to a DIFFERENT hash. A port that sorts
+         * `parents` would make these two collide.
+         */
+        @Test
+        fun `flipping parent order changes the chain hash`() {
+            val byName = v["cases"]!!.jsonArray.associateBy {
+                it.jsonObject["name"]!!.jsonPrimitive.content
+            }
+            val straight = byName["merge_commit"]!!.jsonObject
+            val flipped = byName["merge_commit_parents_flipped"]!!.jsonObject
+            assertNotEquals(
+                straight["hash"]!!.jsonPrimitive.content,
+                flipped["hash"]!!.jsonPrimitive.content,
+            )
+            // The payloads differ ONLY in parent order.
+            assertEquals(
+                straight["data"]!!.jsonObject["parents"]!!.jsonArray.toSet(),
+                flipped["data"]!!.jsonObject["parents"]!!.jsonArray.toSet(),
+            )
+        }
+
+        /** MANDATORY. `[]` (root commit) and absent (unreadable) are different bytes. */
+        @Test
+        fun `an empty parents array and an absent one are different cases`() {
+            val byName = v["cases"]!!.jsonArray.associateBy {
+                it.jsonObject["name"]!!.jsonPrimitive.content
+            }
+            val rootCommit = byName["root_commit"]!!.jsonObject
+            val unknown = byName["unknown_parents"]!!.jsonObject
+            assertTrue("parents" in rootCommit["data"]!!.jsonObject)
+            assertFalse("parents" in unknown["data"]!!.jsonObject)
+            assertNotEquals(
+                rootCommit["hash"]!!.jsonPrimitive.content,
+                unknown["hash"]!!.jsonPrimitive.content,
+            )
+        }
+
+        /**
+         * NO AUTHOR IDENTITY, anywhere in the vector family. The approved CPHS protocol
+         * treats a new category of identifier as requiring a filed modification BEFORE
+         * implementation, so a port that adds an author field is out of protocol — and the
+         * vector file says so in `no_author_identity_note`.
+         */
+        @Test
+        fun `no case carries git author identity`() {
+            assertTrue(
+                v["no_author_identity_note"]!!.jsonPrimitive.content.isNotEmpty(),
+                "the vector must keep stating the constraint",
+            )
+            val allowed = setOf("operation", "commit_sha", "sha", "parents", "branch")
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                assertTrue(
+                    allowed.containsAll(o["data"]!!.jsonObject.keys),
+                    "$name carries a key outside the structural set: ${o["data"]!!.jsonObject.keys}",
+                )
+            }
+        }
+
+        /**
+         * `git.event` is a FLOOR kind and adding fields to its payload does not change that.
+         * The commit graph is the exculpatory evidence that a large insert was a merge or a
+         * checkout rather than a paste — a course must not be able to switch that off.
+         */
+        @Test
+        fun `git event is on the floor and has no policy gate`() {
+            assertTrue("git.event" in FLOOR_EVENT_KINDS)
+            assertFalse("git.event" in POLICY_GATED_EVENT_KINDS)
+            assertTrue(isEventKindCaptured("git.event", DEFAULT_CAPTURE_POLICY))
+            assertTrue(v["floor_note"]!!.jsonPrimitive.content.isNotEmpty())
+        }
+    }
+
     /** `student-keys.json` — the HKDF derivation, a byte-for-byte cross-language contract. */
     @Nested
     inner class StudentKeyVectors {
