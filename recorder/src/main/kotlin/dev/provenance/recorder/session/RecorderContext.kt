@@ -1,5 +1,6 @@
 package dev.provenance.recorder.session
 
+import dev.provenance.core.HostInfo
 import dev.provenance.core.Manifest
 import dev.provenance.core.SessionStartPayload
 import dev.provenance.core.Sha256
@@ -28,6 +29,10 @@ fun buildRecorderContext(
     val hostname = hostnameProvider() ?: "unknown"
     val username = usernameProvider()
     return SessionStartPayload(
+        // This is the LOG format version, not the manifest's. It stays "1.0": the
+        // session.start 2.0 additions below are additive optional fields, and the VS
+        // Code recorder likewise did not bump it. Bumping it here would invalidate
+        // every reader that gates on it while changing nothing about the envelope.
         formatVersion = "1.0",
         sessionId = sessionId,
         prevSessionId = prevSessionId,
@@ -42,6 +47,38 @@ fun buildRecorderContext(
         recorderVersion = recorderVersion,
         recorderExtensionId = recorderExtensionId,
         sessionPubkey = sessionPubkeyHex,
+        // The FULL manifest — signed payload + sig + course_cert (program spec §5).
+        // This is what turns validation check 2 into a real check: an analyzer can
+        // otherwise only compare manifest_sig across sessions for equality, because the
+        // signed payload never enters the bundle. Carrying the whole manifest lets it
+        // walk root -> course -> manifest -> session entirely offline, and it is how the
+        // certificate's validity window reaches the analyzer at all — an expired cert
+        // does not stop the recorder (program spec §4), so course_cert + issued_at
+        // travelling here are what let the analyzer re-run checkCertWindow and decide.
+        //
+        // Emitted for 1.x manifests too: additive, and a 1.x manifest's parsed form
+        // carries no 2.0-only fields, so nothing unsigned can ride along.
+        //
+        // MUST already have passed activation (evaluateManifestText). Passing an
+        // unverified manifest here would put an unverified trust chain into a signed
+        // chain, which reads downstream as proof it never was.
+        manifest = manifest,
+        // `host` replaces the VS Code-shaped `vscode` block (program spec §5). `vscode`
+        // is retained above, populated, so 1.x readers keep working through the
+        // reader-before-writer migration (program spec §9); a later change drops it.
+        host = HostInfo(
+            editor = "jetbrains",
+            editorVersion = ideVersion,
+            // "" is permitted. The IDE build number is available to the plugin, but it is
+            // not what editor_build means for the VS Code writer (a build/commit id it
+            // cannot expose), and inventing a differently-shaped value across recorders
+            // would make the field unusable for cross-host comparison. Left empty until
+            // the field's cross-recorder semantics are pinned.
+            editorBuild = "",
+            platform = platform,
+        ),
+        // NOTE: `identity` is deliberately NOT emitted. Enrollment tokens and the student
+        // per-course key are sub-project S2 and do not exist yet.
     )
 }
 

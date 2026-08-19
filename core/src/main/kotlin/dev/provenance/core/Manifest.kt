@@ -610,3 +610,38 @@ private fun JsonObject.nonEmptyString(key: String): String? {
     if (!p.isString) return null
     return p.content.ifEmpty { null }
 }
+
+/**
+ * Serialize a manifest back to its on-wire JSON shape, round-tripping through
+ * [parseManifestValue].
+ *
+ * `session.start` 2.0 carries the FULL manifest into the bundle (program spec §5).
+ * That is what turns validation check 2 into a real check: today an analyzer can
+ * only compare `manifest_sig` across sessions for equality, because the signed
+ * payload never enters the bundle. Carrying the whole manifest lets it walk root →
+ * course → manifest → session offline, trusting nothing from the server — and it is
+ * how the certificate's validity window reaches the analyzer at all, since an
+ * expired cert does not stop the recorder (program spec §4).
+ *
+ * A null field is OMITTED rather than emitted as JSON null, exactly as
+ * `JSON.stringify` drops `undefined` in log-core. So a 1.x manifest serializes to
+ * `format_version` plus the four legacy fields plus `sig`, and nothing unsigned
+ * rides along: the 2.0-only keys are absent because the parsed 1.x form never had
+ * them.
+ */
+fun Manifest.toJsonObject(): JsonObject = buildJsonObject {
+    formatVersion?.let { put("format_version", it) }
+    courseId?.let { put("course_id", it) }
+    put("assignment_id", assignmentId)
+    put("semester", semester)
+    put("issued_at", issuedAt)
+    putJsonArray("files_under_review") {
+        for (f in filesUnderReview) add(JsonPrimitive(f))
+    }
+    collaboration?.let { put("collaboration", it.wire) }
+    submission?.let { put("submission", it.wire) }
+    scope?.let { put("scope", it.wire) }
+    policy?.let { put("policy", it) }
+    courseCert?.let { put("course_cert", it.toJsonObject()) }
+    put("sig", sig)
+}

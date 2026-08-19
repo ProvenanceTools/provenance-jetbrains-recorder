@@ -529,6 +529,62 @@ class ConformanceTest {
         }
 
         /**
+         * `session.start` 2.0 carries the FULL manifest into the bundle (program spec §5),
+         * so the serializer must lose nothing a verifier needs. Round-tripping the pinned
+         * vector and re-checking BOTH the canonical signed bytes and the whole chain is the
+         * assertion that matters: if transport dropped or reordered a signed field, the
+         * analyzer would report a genuine bundle as forged.
+         */
+        @Test
+        fun `the full manifest survives a round trip through session start transport`() {
+            val block = v["valid_2_0"]!!.jsonObject
+            val original = assertInstanceOf(
+                ManifestParse.Ok::class.java,
+                parseManifestValue(block["manifest"]!!.jsonObject),
+            ).manifest
+
+            val reparsed = assertInstanceOf(
+                ManifestParse.Ok::class.java,
+                parseManifestValue(original.toJsonObject()),
+            ).manifest
+
+            assertEquals(original, reparsed)
+            assertEquals(
+                block["canonical_json"]!!.jsonPrimitive.content,
+                String(buildSignedPayload(reparsed), Charsets.UTF_8),
+            )
+            assertInstanceOf(
+                ManifestChain.Ok::class.java,
+                verifyManifestChain(reparsed, v["root_pubkey_hex"]!!.jsonPrimitive.content),
+            )
+        }
+
+        /** A 1.x manifest round-trips too, and gains no 2.0 keys on the way. */
+        @Test
+        fun `a legacy manifest survives the same round trip`() {
+            val block = v["legacy_no_format_version"]!!.jsonObject
+            val original = assertInstanceOf(
+                ManifestParse.Ok::class.java,
+                parseManifest(block["manifest_json"]!!.jsonPrimitive.content),
+            ).manifest
+
+            val emitted = original.toJsonObject()
+            for (key in listOf("course_id", "collaboration", "submission", "scope", "policy", "course_cert")) {
+                assertFalse(key in emitted, "a 1.x manifest must not gain $key")
+            }
+            val reparsed = assertInstanceOf(
+                ManifestParse.Ok::class.java,
+                parseManifestValue(emitted),
+            ).manifest
+            assertEquals(original, reparsed)
+            assertEquals(
+                block["canonical_json"]!!.jsonPrimitive.content,
+                String(buildSignedPayload(reparsed), Charsets.UTF_8),
+            )
+            assertTrue(verifyManifest(reparsed, block["course_pubkey_hex"]!!.jsonPrimitive.content))
+        }
+
+        /**
          * The downgrade case again, stated as the property rather than as a vector
          * lookup: the stapled policy really would disable capture, and the manifest
          * really is signed by the course key — so nothing but step 0 rejects it.

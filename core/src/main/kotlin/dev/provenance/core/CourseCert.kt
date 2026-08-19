@@ -318,3 +318,19 @@ private fun JsonObject.certNonEmptyString(key: String): String? {
     if (!p.isString) return null
     return p.content.ifEmpty { null }
 }
+
+/**
+ * Serialize a certificate back to its on-wire JSON shape.
+ *
+ * Needed because `session.start` 2.0 carries the FULL manifest — cert included —
+ * into the bundle (program spec §5), so the analyzer can walk root → course →
+ * manifest → session entirely offline. Emits all five fields, `root_sig` included:
+ * unlike [buildCourseCertSignedPayload] this is transport, not the signed payload.
+ */
+fun CourseCert.toJsonObject(): JsonObject = buildJsonObject {
+    put("course_id", courseId)
+    put("course_pubkey", coursePubkey)
+    put("valid_from", validFrom)
+    put("valid_until", validUntil)
+    put("root_sig", rootSig)
+}

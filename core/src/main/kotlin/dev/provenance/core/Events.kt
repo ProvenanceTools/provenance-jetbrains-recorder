@@ -30,6 +30,34 @@ private fun Range.toJsonObject(): JsonObject = buildJsonObject {
     put("end", end.toJsonObject())
 }
 
+/**
+ * Editor/host metadata. Replaces the VS Code-shaped `vscode` block in
+ * `session.start` 2.0 (program spec §5).
+ *
+ * provjet and provnvim previously had to pretend into a field named `vscode`,
+ * filling it with editor-generic values because renaming a signed field is a
+ * monorepo-owned format change. `host` un-warps that: this recorder can finally
+ * say `jetbrains` in a field that means what it says.
+ *
+ * `vscode` is still emitted alongside it through the reader-before-writer
+ * migration (program spec §9) so 1.x readers keep working; a later change drops it.
+ */
+data class HostInfo(
+    /** `"vscode"`, `"jetbrains"`, or `"neovim"`. */
+    val editor: String,
+    val editorVersion: String,
+    /** Editor build/commit identifier. `""` is permitted. */
+    val editorBuild: String,
+    val platform: String,
+)
+
+fun HostInfo.toJsonObject(): JsonObject = buildJsonObject {
+    put("editor", editor)
+    put("editor_version", editorVersion)
+    put("editor_build", editorBuild)
+    put("platform", platform)
+}
+
 data class SessionStartPayload(
     val formatVersion: String,
     val sessionId: String,
@@ -44,6 +72,16 @@ data class SessionStartPayload(
     val recorderVersion: String,
     val recorderExtensionId: String,
     val sessionPubkey: String,
+    /**
+     * The FULL manifest: signed payload + `sig` + `course_cert` (program spec §5).
+     * Emitted for 1.x manifests too — it is additive, and a 1.x manifest's parsed
+     * form carries no 2.0-only fields, so nothing unsigned can ride along.
+     *
+     * Nullable at the type level so every pre-2.0 construction site stays valid.
+     */
+    val manifest: Manifest? = null,
+    /** Editor/host metadata (program spec §5). Nullable for the same reason. */
+    val host: HostInfo? = null,
 )
 
 fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
@@ -76,6 +114,16 @@ fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
         },
     )
     put("session_pubkey", sessionPubkey)
+    // Omitted when null, never emitted as JSON null — mirrors JSON.stringify dropping
+    // `undefined` in log-core, so a pre-2.0 payload serializes byte-identically.
+    // Key order here is irrelevant to integrity: chainEntry canonicalizes (JCS) before
+    // hashing, and JCS sorts keys.
+    manifest?.let { put("manifest", it.toJsonObject()) }
+    host?.let { put("host", it.toJsonObject()) }
+    // NOTE: `identity` is deliberately NOT emitted. Enrollment tokens and the student
+    // per-course key are sub-project S2 and do not exist yet. Emitting a placeholder
+    // would put an unsigned, unverifiable identity claim into a signed chain, which is
+    // worse than emitting nothing.
 }
 
 data class SessionHeartbeatPayload(val focused: Boolean, val activeFile: String?, val idleSinceMs: Long)
