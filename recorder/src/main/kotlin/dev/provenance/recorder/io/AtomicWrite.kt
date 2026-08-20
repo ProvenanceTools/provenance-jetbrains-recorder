@@ -139,6 +139,30 @@ internal fun atomicWriteFile(
     mover: BestEffortMove,
     opener: ChannelOpener = REAL_CHANNEL_OPENER,
 ) {
+    val tmpPath = stageTemp(targetPath, contents, sync, opener)
+    try {
+        mover.move(tmpPath, targetPath)
+    } catch (original: Throwable) {
+        unlinkQuietly(tmpPath)
+        throw original
+    }
+}
+
+fun atomicWriteFile(targetPath: Path, contents: String) =
+    atomicWriteFile(targetPath, contents.toByteArray(StandardCharsets.UTF_8))
+
+/**
+ * Write + fsync one temp file next to [targetPath] and return its path, WITHOUT renaming.
+ * Shared by the single-file and multi-file writers so both use one tmp-naming scheme and
+ * one cleanup discipline. On failure the temp it created is unlinked and the original
+ * error rethrown unmasked.
+ */
+private fun stageTemp(
+    targetPath: Path,
+    contents: ByteArray,
+    sync: BestEffortSync,
+    opener: ChannelOpener,
+): Path {
     val randomHex = Random.nextBytes(8).joinToString("") { "%02x".format(it) }
     val tmpPath = targetPath.resolveSibling("${targetPath.fileName}.$randomHex.tmp")
     try {
@@ -146,23 +170,81 @@ internal fun atomicWriteFile(
             channel.write(ByteBuffer.wrap(contents))
             sync.force(channel)
         }
-        mover.move(tmpPath, targetPath)
     } catch (original: Throwable) {
-        // Throwable, not Exception. This handler swallows nothing — it unlinks the tmp
-        // file and rethrows — so catching broadly here cannot hide a failure, unlike the
-        // narrow capability catches in the seams above. An Exception-shaped handler let
-        // an Error (IJent answers unimplemented operations with kotlin.NotImplementedError,
-        // and Files.newByteChannel / Files.deleteIfExists are both plausible sources) skip
-        // the cleanup entirely: the crash that motivated this fix left an orphaned .tmp in
-        // the student's .provenance/ directory.
-        try {
-            Files.deleteIfExists(tmpPath)
-        } catch (_: Throwable) {
-            // best-effort cleanup; never mask the original error
-        }
+        unlinkQuietly(tmpPath)
         throw original
+    }
+    return tmpPath
+}
+
+/**
+ * Throwable, not Exception. These handlers swallow nothing — they unlink a temp file and
+ * rethrow — so catching broadly cannot hide a failure, unlike the narrow capability catches
+ * in the seams above. An Exception-shaped handler let an Error (IJent answers unimplemented
+ * operations with kotlin.NotImplementedError, and Files.newByteChannel / Files.deleteIfExists
+ * are both plausible sources) skip the cleanup entirely: the crash that motivated this fix
+ * left an orphaned .tmp in the student's .provenance/ directory.
+ */
+private fun unlinkQuietly(path: Path) {
+    try {
+        Files.deleteIfExists(path)
+    } catch (_: Throwable) {
+        // best-effort cleanup; never mask the original error
     }
 }
 
-fun atomicWriteFile(targetPath: Path, contents: String) =
-    atomicWriteFile(targetPath, contents.toByteArray(StandardCharsets.UTF_8))
+/**
+ * Atomically write a SET of files that must AGREE with one another.
+ *
+ * There is no multi-file rename anywhere, so this cannot be a true transaction. What it does
+ * is STAGE every file (write + fsync) before renaming any of them, so the only work left
+ * between the renames is the renames themselves. That shrinks the window in which an observer
+ * can see a mixed old/new set from "one whole file write plus an fsync" down to a single
+ * filesystem operation.
+ *
+ * That window matters for the rolling seal: `manifest-<id>.json` and `manifest-<id>.sig` are
+ * a signature over a payload, so a reader that catches a NEW json beside an OLD sig sees a
+ * seal that does not verify. The window cannot be closed entirely (see RollingSeal.kt), only
+ * minimised — and it is REPORTED rather than silently survived: a `git commit` landing inside
+ * it produces a signature failure naming that session, which is the correct outcome for
+ * evidence we cannot vouch for.
+ *
+ * Renames go through the same [BestEffortMove] as [atomicWriteFile], so a filesystem that
+ * cannot do an atomic move (WSL via IJent) degrades to a plain move rather than failing the
+ * write: every temp is already fully written, so a non-atomic rename still cannot expose a
+ * partially written target — it only widens the window in which a target is briefly absent.
+ *
+ * On any failure — staging or renaming — every temp file this call created and did not yet
+ * rename is best-effort unlinked and the original error rethrown unmasked. Files already
+ * renamed are NOT rolled back: they are complete, fsynced files, and un-renaming them could
+ * only replace good bytes with older ones.
+ */
+fun atomicWriteFilePair(files: List<Pair<Path, String>>) =
+    atomicWriteFilePair(files, DEFAULT_SYNC, DEFAULT_MOVER)
+
+internal fun atomicWriteFilePair(
+    files: List<Pair<Path, String>>,
+    sync: BestEffortSync,
+    mover: BestEffortMove,
+    opener: ChannelOpener = REAL_CHANNEL_OPENER,
+) {
+    /** tmp → target, in the order they must be committed. */
+    val staged = ArrayList<Pair<Path, Path>>(files.size)
+    var committed = 0
+    try {
+        // Phase 1 — stage. Every byte is on disk and fsynced before any rename runs.
+        for ((targetPath, contents) in files) {
+            staged.add(
+                stageTemp(targetPath, contents.toByteArray(StandardCharsets.UTF_8), sync, opener) to targetPath,
+            )
+        }
+        // Phase 2 — commit. Back-to-back renames, no intervening I/O.
+        for ((tmpPath, targetPath) in staged) {
+            mover.move(tmpPath, targetPath)
+            committed++
+        }
+    } catch (original: Throwable) {
+        for ((tmpPath, _) in staged.drop(committed)) unlinkQuietly(tmpPath)
+        throw original
+    }
+}
