@@ -203,6 +203,12 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         clock: Clock = SystemClock(),
         scheduler: FlushScheduler = RecordingSessionController.DEFAULT_SCHEDULER,
         vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
+        /**
+         * S3 rolling seal: how the session resolves its own `extension_hash`. Threaded through
+         * the same [extensionHashOverride] the seal command uses, so a test that can make the
+         * classic seal work can make the rolling seal work too, with one override.
+         */
+        computeExtensionHash: () -> String = extensionHashOverride ?: { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
     ): ActiveSession {
         val root = activated.workspaceRoot.normalize()
         check(sessions[root] == null) { "a recording session is already active for root $root" }
@@ -220,6 +226,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             clock = clock,
             scheduler = scheduler,
             recovery = recovery,
+            computeExtensionHash = computeExtensionHash,
         )
 
         // Shared explanation tagger, one PER SESSION: git wiring marks THIS session's tagger on

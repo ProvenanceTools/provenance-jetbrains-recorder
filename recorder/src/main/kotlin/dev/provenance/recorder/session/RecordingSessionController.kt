@@ -12,6 +12,7 @@ import dev.provenance.core.CapturePolicy
 import dev.provenance.core.Clock
 import dev.provenance.core.FocusChangePayload
 import dev.provenance.core.Manifest
+import dev.provenance.core.ManifestSubmission
 import dev.provenance.core.RecorderDegradedPayload
 import dev.provenance.core.SessionEndPayload
 import dev.provenance.core.SessionResumedPayload
@@ -21,6 +22,7 @@ import dev.provenance.core.isEventKindCaptured
 import dev.provenance.core.resolveCapturePolicy
 import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
+import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.failure.DegradedModeNotifier
 import dev.provenance.recorder.failure.DiskFullHandler
 import dev.provenance.recorder.identity.CourseKeyCache
@@ -30,7 +32,9 @@ import dev.provenance.recorder.identity.SecretStore
 import dev.provenance.recorder.identity.buildSessionIdentity
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.io.MetaWriter
+import dev.provenance.recorder.io.RollingSealResult
 import dev.provenance.recorder.io.SessionWriter
+import dev.provenance.recorder.io.writeRollingSeal
 import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.ActiveFileTracker
@@ -123,6 +127,15 @@ class RecordingSessionController(
      * this plan; cancelled from endSession()/dispose alongside the rest of session teardown.
      */
     checkpointScopeFactory: () -> CoroutineScope = { CoroutineScope(SupervisorJob() + Dispatchers.IO) },
+    /**
+     * S3 rolling seal: the recorder's own `extension_hash`, resolved lazily and memoized for
+     * the session's lifetime. [computeInstalledExtensionHash] walks the whole installed plugin
+     * tree, so recomputing it per checkpoint would be the pathological version of this feature.
+     * Injectable for the same reason [RecorderSessionManager.extensionHashOverride] exists: a
+     * unit test has no installed plugin descriptor to resolve. A failure here is caught and
+     * degrades to a skipped seal — never a failed session.
+     */
+    computeExtensionHash: () -> String = { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
 ) : RecordableSessionSink {
     /** [RecordableSessionSink]: the root the routers relativize recorded paths against. */
     override val workspaceRoot: Path = activated.workspaceRoot
@@ -168,6 +181,12 @@ class RecordingSessionController(
     private val checkpointCadence: CheckpointCadence
     private val checkpointScheduler: CheckpointScheduler
     private val checkpointScope: CoroutineScope
+
+    /**
+     * S3 rolling seal. Null when the course has SIGNED a statement that it submits bundles;
+     * see the gate in `init` for why that asymmetry is the safe one.
+     */
+    private val rollingSeal: RollingSealMaintainer?
     private var ended = false
 
     init {
@@ -240,6 +259,43 @@ class RecordingSessionController(
             enc,
         )
 
+        // Step 5a: the S3 ROLLING SEAL. A git-submitted assignment has no seal step, so the
+        // recorder rewrites this session's own `.provenance/manifest-<session_id>.json` +
+        // `.sig` on every checkpoint — whatever gets committed is then always a valid seal of
+        // that moment. See io/RollingSeal.kt.
+        //
+        // GATED on the course's signed submission mode, and gated to FAIL OPEN.
+        //
+        // `submission` is part of the 2.0 signed payload, so it is trustworthy: at 1.x,
+        // manifest parsing returns before it is read and the object it produces has no
+        // `submission` at all, which means BUNDLE can only ever come from a manifest the
+        // course actually signed. Nothing unsigned can turn the seal off.
+        //
+        // The asymmetry is deliberate. Rolling where it is not needed costs two extra files in
+        // `.provenance/`, and the classic manifest still wins as the bundle's manifest, so
+        // nothing about a bundle-submitted course's analysis changes. NOT rolling where it IS
+        // needed costs an unsealed-session defect on every session, which fails check 1 — a
+        // false accusation against a student whose course simply has not migrated to a 2.0
+        // manifest yet. Between "a couple of redundant files" and "an integrity finding against
+        // innocent work", only one is acceptable, so the seal is suppressed only when the
+        // course has signed a statement that it submits bundles.
+        rollingSeal = if (activated.manifest.submission == ManifestSubmission.BUNDLE) {
+            null
+        } else {
+            RollingSealMaintainer(
+                provenanceDir = activated.provenanceDir,
+                sessionId = sessionId,
+                prevSessionId = prevSessionId,
+                slogPath = slogPath,
+                workspaceRoot = activated.workspaceRoot,
+                assignmentId = activated.manifest.assignmentId,
+                semester = activated.manifest.semester,
+                filesUnderReview = activated.manifest.filesUnderReview,
+                sessionPrivkey = keypair.privateKey,
+                computeExtensionHash = computeExtensionHash,
+            )
+        }
+
         // Step 5b: checkpoint cadence + ordered async sign+persist (every checkpointInterval
         // entries). drain()ed from endSession() so the last in-flight checkpoint isn't lost.
         checkpointCadence = CheckpointCadence(checkpointInterval)
@@ -247,7 +303,20 @@ class RecordingSessionController(
         checkpointScheduler = CheckpointScheduler(
             scope = checkpointScope,
             privateKey32 = keypair.privateKey,
-            appendCheckpoint = { cp -> meta.appendCheckpoint(cp) },
+            // ROLLING SEAL WRITE POINT 2 of 3: after each checkpoint lands in the `.meta`.
+            //
+            // Inside the checkpoint's append step, so it runs under CheckpointScheduler's own
+            // mutex — one roll per checkpoint, in checkpoint order, never two at once. AFTER
+            // appendCheckpoint so `meta_sha256` covers the checkpoint just written, and in a
+            // `finally` so a checkpoint that failed to persist still gets the best seal
+            // available. roll() never throws, so it cannot mask or displace the append's error.
+            appendCheckpoint = { cp ->
+                try {
+                    meta.appendCheckpoint(cp)
+                } finally {
+                    rollingSeal?.roll()
+                }
+            },
             onError = { e -> LOG.warn("checkpoint sign/write error", e) },
         )
 
@@ -264,6 +333,21 @@ class RecordingSessionController(
         // recorder.recovered_from_corruption as the very next entry (seq 1).
         host.emit("session.start", ctx.toJsonObject())
         recoveryFollowupPayload(recovery)?.let { host.emit("recorder.recovered_from_corruption", it.toJsonObject()) }
+
+        // ROLLING SEAL WRITE POINT 1 of 3: immediately, before the first checkpoint is
+        // anywhere near due.
+        //
+        // Checkpoints land every `checkpointInterval` entries, so a session that records only
+        // session.start would never reach one — and in a git-submitted repo that session's
+        // `.slog` would be committed with no seal covering it at all. Sealing here means a
+        // session is sealed from its first instant and every later rewrite is an update, never
+        // the first write.
+        //
+        // Synchronous on purpose, alongside the keypair generation, privkey encryption and
+        // `.meta` write this constructor already does: a fire-and-forget seal could outlive the
+        // construction that spawned it and land in a `.provenance/` the caller (or a test's
+        // teardown) has already removed.
+        rollingSeal?.roll()
 
         // Step 8: heartbeat + doc wiring, tied to parentDisposable.
         val focused = AtomicBoolean(true)
@@ -414,6 +498,26 @@ class RecordingSessionController(
             runBlocking { checkpointScheduler.drain() }
             writer.dispose()
             meta.dispose()
+
+            // ROLLING SEAL WRITE POINT 3 of 3: the last of the file-touching steps, so it
+            // covers the fully flushed `.slog` (session.end included) and the drained `.meta`.
+            //
+            // `final = true` is claimable HERE AND ONLY HERE, and only because of the four
+            // steps above: session.end is emitted, the last checkpoint has been drained into
+            // the `.meta`, and both writers are closed. Nothing can append to either file after
+            // this point, so the digests about to be signed are WHOLE-FILE commitments rather
+            // than prefixes, and a reader is entitled to fail an append against them.
+            //
+            // The claim is made only on a path that actually reached here. Every way a session
+            // can die without a clean teardown — the IDE crashing, a power cut, a full disk, a
+            // read-only checkout, `.provenance/` removed by a `git checkout` — simply leaves
+            // the last non-final seal in place, which a reader treats as a prefix commitment
+            // with a reported unattested tail. That is a blameless coverage gap, not a tamper
+            // finding, and it is why finality is claimed explicitly here rather than inferred
+            // by a reader from a trailing `session.end` entry: `session.end` lives in the log,
+            // and the log's completeness is the very thing in question.
+            rollingSeal?.roll(isFinal = true)
+
             checkpointScope.cancel()
         }
     }
@@ -438,5 +542,89 @@ class RecordingSessionController(
             AppExecutorUtil.getAppScheduledExecutorService()
                 .scheduleWithFixedDelay(task, periodMs, periodMs, TimeUnit.MILLISECONDS)
         }
+    }
+}
+
+/**
+ * Owns one session's S3 rolling seal: the memoized `extension_hash`, the mutual exclusion
+ * between the three write points, and the "a seal failure is never fatal" rule.
+ *
+ * ## Why the lock
+ *
+ * The three rolls run on three different threads — the session-start roll on whatever thread
+ * constructed the controller, each checkpoint roll on the checkpoint coroutine's dispatcher,
+ * the teardown roll on whoever called `endSession` (often the EDT, via the Disposer). Two
+ * concurrent rewrites would interleave their `.json` and `.sig` renames and could leave a
+ * mismatched pair on disk — the one thing the paired atomic write exists to prevent. This is
+ * a lock over the SEAL only; it is nowhere near the hash chain, whose own critical section
+ * lives in [SessionHost.emit] and is untouched by any of this.
+ *
+ * ## Why nothing here throws
+ *
+ * Recording matters more than sealing. `writeRollingSeal` already returns its failures as
+ * [RollingSealResult.WriteError]; the extra try/catch covers the one step outside it, the
+ * `extension_hash` computation, which walks the installed plugin tree and can fail with an
+ * Error (an unresolvable plugin descriptor, or IJent's `NotImplementedError` on the WSL
+ * filesystem) as readily as an Exception. Either way the session records on with whichever
+ * seal it last managed to write.
+ *
+ * Deliberately NOT routed into [dev.provenance.recorder.failure.DiskFullHandler]: that
+ * switches the session to a critical-events-only ring buffer, and throwing away the student's
+ * event stream because a receipt could not be rewritten would trade the recording for the
+ * receipt.
+ */
+private class RollingSealMaintainer(
+    private val provenanceDir: Path,
+    private val sessionId: String,
+    private val prevSessionId: String?,
+    private val slogPath: Path,
+    private val workspaceRoot: Path,
+    private val assignmentId: String,
+    private val semester: String,
+    private val filesUnderReview: List<String>,
+    private val sessionPrivkey: ByteArray,
+    private val computeExtensionHash: () -> String,
+) {
+    private val lock = Any()
+
+    /** Memoized under [lock]; the walk is far too expensive to repeat per checkpoint. */
+    private var extensionHash: String? = null
+
+    /**
+     * Rewrite this session's seal to reflect the state right now. Never throws.
+     *
+     * @param isFinal ONLY the teardown roll may pass true — see the call site in
+     *   [RecordingSessionController.endSession]. Passing it from a checkpoint would assert
+     *   that a log which is about to keep growing is finished, and a reader would then read
+     *   the student's own next keystroke as an append past a final seal.
+     */
+    fun roll(isFinal: Boolean = false) = synchronized(lock) {
+        val result = try {
+            val hash = extensionHash ?: computeExtensionHash().also { extensionHash = it }
+            writeRollingSeal(
+                provenanceDir = provenanceDir,
+                sessionId = sessionId,
+                prevSessionId = prevSessionId,
+                slogPath = slogPath,
+                workspaceRoot = workspaceRoot,
+                assignmentId = assignmentId,
+                semester = semester,
+                filesUnderReview = filesUnderReview,
+                sessionPrivkey = sessionPrivkey,
+                extensionHash = hash,
+                isFinal = isFinal,
+            )
+        } catch (e: Throwable) {
+            if (e is VirtualMachineError) throw e
+            RollingSealResult.WriteError("extension hash: ${e.message ?: e.toString()}")
+        }
+        if (result is RollingSealResult.WriteError) {
+            LOG.warn("provenance: rolling seal write error: ${result.message}")
+        }
+        Unit
+    }
+
+    private companion object {
+        private val LOG = Logger.getInstance(RollingSealMaintainer::class.java)
     }
 }
