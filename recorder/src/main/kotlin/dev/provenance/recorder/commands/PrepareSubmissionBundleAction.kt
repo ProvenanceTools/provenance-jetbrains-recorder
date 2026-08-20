@@ -85,13 +85,35 @@ class PrepareSubmissionBundleAction : AnAction() {
 
     private fun notify(project: Project, result: SealResult) {
         val (message, type) = when (result) {
-            is SealResult.Ok ->
-                if (result.chainBroken || result.unreadableSession) {
-                    "Provenance bundle saved to ${result.bundlePath}. Integrity issues were detected " +
-                        "in the recording and will be reviewed by course staff." to NotificationType.WARNING
+            is SealResult.Ok -> {
+                val saved = "Provenance bundle saved to ${result.bundlePath}."
+                // Two INDEPENDENT clauses, deliberately not folded together. "Integrity issues
+                // ... will be reviewed by course staff" is close to an accusation; a dropped
+                // artifact is not one. The orphan guard leaves out incomplete leftovers so the
+                // archive can be opened at all, and every shape it drops belongs to a student
+                // who did nothing wrong (a crash before the first flush, a quarantined log).
+                // Saying so is required — a silent exclusion must never read as "nothing was
+                // wrong" — but saying it in the language of a finding would be worse than
+                // silence.
+                val dropped = if (result.anythingDropped) {
+                    " Incomplete recording leftovers were left out so the bundle stays readable (" +
+                        result.droppedDescriptions().joinToString("; ") +
+                        "). They are still on disk in .provenance/; mention this to course staff if asked."
                 } else {
-                    "Provenance bundle saved to ${result.bundlePath}." to NotificationType.INFORMATION
+                    ""
                 }
+                val integrity = if (result.chainBroken || result.unreadableSession) {
+                    " Integrity issues were detected in the recording and will be reviewed by course staff."
+                } else {
+                    ""
+                }
+                val type = if (integrity.isNotEmpty() || dropped.isNotEmpty()) {
+                    NotificationType.WARNING
+                } else {
+                    NotificationType.INFORMATION
+                }
+                "$saved$integrity$dropped" to type
+            }
             is SealResult.NoSessions -> "No session data to seal." to NotificationType.WARNING
             is SealResult.WriteError -> "Bundle write error: ${result.message}" to NotificationType.ERROR
         }

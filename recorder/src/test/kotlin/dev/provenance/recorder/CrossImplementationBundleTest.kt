@@ -28,6 +28,9 @@ import dev.provenance.core.validateChain
 import dev.provenance.core.verifyManifestChain
 import dev.provenance.core.ManifestChain
 import dev.provenance.recorder.commands.SealResult
+import dev.provenance.recorder.commands.logicalSessionIdOf
+import dev.provenance.recorder.commands.selectPackableSessions
+import dev.provenance.recorder.commands.selectZipEntries
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.session.ActivatedWorkspace
 import dev.provenance.recorder.session.RecorderSessionManager
@@ -361,12 +364,21 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
     }
 
     /**
-     * Zip a recorded repository the way a git submission arrives: every `.provenance/` file at
-     * the archive root, plus the submitted sources at their workspace-relative paths.
+     * Zip a recorded repository the way a git submission arrives: every packable `.provenance/`
+     * file at the archive root, plus the submitted sources at their workspace-relative paths.
      *
      * Test-only glue, and only the packaging — every byte inside came from the real recorder.
-     * The `.tmp` / `.corrupt-` exclusions mirror `sealBundle`'s, because both describe the
-     * same thing: files that are not part of the submission.
+     *
+     * WHICH FILES ARE PACKABLE IS NOT DECIDED HERE. This used to carry its own copy of
+     * `sealBundle`'s `.tmp` / `.corrupt-` filter, with a comment asserting the two matched.
+     * They matched right up until the seal grew an orphan guard, at which point a duplicated
+     * filter would have meant the gate stopped judging what ships. So both callers now go
+     * through the same [selectPackableSessions] / [selectZipEntries] — parity by construction
+     * rather than by comment.
+     *
+     * The git shape needs the guard at least as badly as the classic one: it has no
+     * `manifest.json` to fall back on, so every rolling seal in it is load-bearing and a stale
+     * one fails check 1 for the whole archive.
      */
     private fun zipRepo(
         provenanceDir: Path,
@@ -375,12 +387,22 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         outputPath: Path,
     ) {
         Files.createDirectories(outputPath.parent)
+        val names = Files.list(provenanceDir).use { s ->
+            s.filter { Files.isRegularFile(it) }.map { it.fileName.toString() }.sorted().toList()
+        }
+        val packable = selectPackableSessions(names) { n ->
+            runCatching { Files.size(provenanceDir.resolve(n)) }.getOrDefault(-1L)
+        }
+        // The LOGICAL ids of the packed logs — `session.start.data.session_id`, never the
+        // filename uuid. Same rule and same function the seal keys its guard on.
+        val packedSessionIds = packable.slogNames.mapNotNull { n ->
+            val text = String(Files.readAllBytes(provenanceDir.resolve(n)), Charsets.UTF_8)
+            (parseEntries(text) as? ParseResult.Ok)?.let { logicalSessionIdOf(it.entries) }
+        }.toSet()
+        val selection = selectZipEntries(names, packable.names, packedSessionIds)
+
         ZipOutputStream(Files.newOutputStream(outputPath)).use { zip ->
-            val names = Files.list(provenanceDir).use { s ->
-                s.filter { Files.isRegularFile(it) }.map { it.fileName.toString() }.sorted().toList()
-            }
-            for (name in names) {
-                if (name.endsWith(".tmp") || name.contains(".corrupt-")) continue
+            for (name in selection.names) {
                 zip.putNextEntry(ZipEntry(name))
                 zip.write(Files.readAllBytes(provenanceDir.resolve(name)))
                 zip.closeEntry()

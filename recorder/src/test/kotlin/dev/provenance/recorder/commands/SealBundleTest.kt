@@ -220,7 +220,206 @@ class SealBundleTest {
         )
     }
 
+    // --- the orphan guard: never seal a bundle the analyzer cannot open ---------------------
+    //
+    // Every case below is a `.provenance/` the recorder can genuinely leave behind, and every
+    // one of them makes `analysis-core` reject THE WHOLE BUNDLE — not the one bad file. One
+    // stray artifact costs a student every session they recorded, which is why the guard drops
+    // rather than tidies, and reports rather than aborts.
+    //
+    // Ids here are hex on purpose. `parseRollingManifestFilename` only accepts `[0-9a-f-]`, so
+    // `manifest-sess-1.json` is not a rolling manifest at all and every assertion about one
+    // would pass vacuously.
+
+    /** Write a rolling seal pair for [sessionId]. Only the NAMES matter to the guard. */
+    private fun writeRollingSeal(provDir: Path, sessionId: String) {
+        Files.writeString(provDir.resolve("manifest-$sessionId.json"), """{"format_version":"1.2"}""")
+        Files.writeString(provDir.resolve("manifest-$sessionId.sig"), "00".repeat(64))
+    }
+
+    private fun sealOk(prov: Path, ws: Path, filesUnderReview: List<String> = emptyList()): SealResult.Ok {
+        val result = sealBundle(prov, ws, "hw03", "fa26", filesUnderReview, priv, { "e".repeat(64) })
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        return result as SealResult.Ok
+    }
+
+    @Test
+    fun `a zero-byte slog is dropped from the zip AND from the signed manifest`() {
+        // `SessionWriter.open` creates the `.slog` eagerly and BufferPolicy will not flush one
+        // small entry, so a session killed between session.start and the first flush leaves a
+        // well-paired but CONTENTLESS log. The loader reports first_event_not_session_start
+        // (actualKind "none") and rejects the bundle. Zero bytes means the session recorded
+        // literally nothing, so dropping it discards no evidence — keeping it discards all of it.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        writeSession(prov, "session-2.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = "sess-2", empty = true)
+
+        val ok = sealOk(prov, ws)
+        assertTrue("the drop must be reported", ok.emptySession)
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue(entries.containsKey("session-1.slog"))
+        assertFalse("the empty log must not be packed", entries.containsKey("session-2.slog"))
+        assertFalse("nor its meta, which would then be orphaned", entries.containsKey("session-2.slog.meta"))
+        // The manifest and the zip must AGREE. A manifest naming a session whose file is absent
+        // is just another way to make the bundle unopenable — and it is SIGNED.
+        val manifestJson = String(entries["manifest.json"]!!, Charsets.UTF_8)
+        assertFalse("the dropped session must not be in the signed manifest", manifestJson.contains("sess-2"))
+        assertFalse("and it must not appear as a null-id entry either", manifestJson.contains("\"session_id\":null"))
+    }
+
+    @Test
+    fun `a slog meta whose slog was quarantined is dropped`() {
+        // ChainRecovery renames a damaged `.slog` to `.corrupt-<ts>`, which the zip step already
+        // excluded, and leaves the `.slog.meta` under its original name. The salvage path itself
+        // produced an `orphaned_meta` bundle.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        writeSession(prov, "session-2.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = "sess-2")
+        Files.move(prov.resolve("session-2.slog"), prov.resolve("session-2.slog.corrupt-2026-07-14T00-00-00Z"))
+
+        val ok = sealOk(prov, ws)
+        assertTrue("the drop must be reported", ok.orphanedMeta)
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue("the healthy session still seals", entries.containsKey("session-1.slog"))
+        assertFalse("the stranded meta must not be packed", entries.containsKey("session-2.slog.meta"))
+        assertTrue("the quarantined log stays excluded as before", entries.keys.none { it.contains(".corrupt-") })
+    }
+
+    @Test
+    fun `a slog with no meta is dropped from the zip and the manifest`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        writeSession(prov, "session-2.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = "sess-2", writeMeta = false)
+
+        val ok = sealOk(prov, ws)
+        assertTrue("the drop must be reported", ok.orphanedSlog)
+        val entries = readZipEntries(ok.bundlePath)
+        assertFalse(entries.containsKey("session-2.slog"))
+        assertFalse(String(entries["manifest.json"]!!, Charsets.UTF_8).contains("sess-2"))
+    }
+
+    @Test
+    fun `a rolling seal for a session not in the bundle is dropped, both halves`() {
+        // The rolling seal is a THIRD per-session artifact, written eagerly at write point 1 —
+        // before the `.slog` has been flushed even once — so it outlives every reason step 1 has
+        // for dropping a session. `reconcileRollingSealsWithSessions` calls it `no_session_log`
+        // and fails check 1 for the WHOLE bundle.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        writeRollingSeal(prov, GHOST_ID)
+
+        val ok = sealOk(prov, ws)
+        assertTrue("the drop must be reported", ok.orphanedRollingSeal)
+        val entries = readZipEntries(ok.bundlePath)
+        // Both halves go together: a `.sig` without its `.json` vouches for nothing, and a
+        // `.json` without its `.sig` is an unsigned claim (`missing_sig`).
+        assertFalse(entries.containsKey("manifest-$GHOST_ID.json"))
+        assertFalse(entries.containsKey("manifest-$GHOST_ID.sig"))
+        // Never DELETED, only left out: the on-disk `.provenance/` is what a git submission is
+        // read from, and in a shared repo it may be a partner's evidence.
+        assertTrue("the seal must survive on disk", Files.exists(prov.resolve("manifest-$GHOST_ID.json")))
+        assertTrue(Files.exists(prov.resolve("manifest-$GHOST_ID.sig")))
+    }
+
+    @Test
+    fun `a rolling seal for a session that IS in the bundle is kept`() {
+        // The guard against over-correcting. Dropping every rolling seal would also "fix" the
+        // orphan, and would silently strip a partner's live evidence out of a shared repo.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        writeRollingSeal(prov, LIVE_ID)
+
+        val ok = sealOk(prov, ws)
+        assertFalse("nothing was orphaned", ok.orphanedRollingSeal)
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue(entries.containsKey("manifest-$LIVE_ID.json"))
+        assertTrue(entries.containsKey("manifest-$LIVE_ID.sig"))
+        // And the CLASSIC seal is never a rolling one: it must always be packed.
+        assertTrue(entries.containsKey("manifest.json"))
+        assertTrue(entries.containsKey("manifest.sig"))
+    }
+
+    @Test
+    fun `the rolling-seal guard keys on the logical session id, not the slog filename uuid`() {
+        // THE TWO-UUID RULE. A rolling manifest is named after `session.start.data.session_id`,
+        // and that is the id `reconcileRollingSealsWithSessions` matches against — NOT the uuid
+        // in the `.slog` filename. The two are spelled the same in production, so a fixture has
+        // to force them apart for the distinction to be testable at all. Key the guard on the
+        // filename and this inverts completely: the real seal is dropped and the stale one kept.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(
+            prov,
+            "session-$FILE_UUID.slog",
+            "ab".repeat(64),
+            Ed25519.bytesToHex(pub),
+            sessionId = LOGICAL_ID,
+        )
+        writeRollingSeal(prov, LOGICAL_ID)
+        writeRollingSeal(prov, FILE_UUID)
+
+        val ok = sealOk(prov, ws)
+        assertTrue(ok.orphanedRollingSeal)
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue("the seal named after the LOGICAL id is this session's", entries.containsKey("manifest-$LOGICAL_ID.json"))
+        assertFalse("the seal named after the FILENAME uuid seals nothing", entries.containsKey("manifest-$FILE_UUID.json"))
+    }
+
+    @Test
+    fun `a clean provenance dir drops nothing and reports nothing`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        writeRollingSeal(prov, LIVE_ID)
+
+        val ok = sealOk(prov, ws)
+        assertFalse("a clean directory must never claim something was dropped", ok.anythingDropped)
+        assertTrue(ok.droppedDescriptions().isEmpty())
+    }
+
+    @Test
+    fun `a dir of nothing but orphaned rolling seals still seals the one real session`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        for (id in listOf(GHOST_ID, FILE_UUID, LOGICAL_ID)) writeRollingSeal(prov, id)
+
+        val ok = sealOk(prov, ws)
+        assertTrue(ok.orphanedRollingSeal)
+        val entries = readZipEntries(ok.bundlePath)
+        assertEquals(
+            "only the classic seal and the one real session survive",
+            listOf("manifest.json", "manifest.sig", "session-$LIVE_ID.slog", "session-$LIVE_ID.slog.meta"),
+            entries.keys.toList(),
+        )
+    }
+
+    @Test
+    fun `a workspace whose only session never flushed reports NoSessions, not a broken bundle`() {
+        // Nothing recordable happened, so there is nothing to seal. The alternative — sealing an
+        // archive whose single session cannot be opened — is the defect this guard exists for.
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), empty = true)
+        writeRollingSeal(prov, GHOST_ID)
+
+        assertTrue(sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) }) is SealResult.NoSessions)
+    }
+
     private companion object {
+        /** Hex ids — see the section comment on why that is load-bearing, not cosmetic. */
+        const val LIVE_ID = "3c53e673-1111-4222-8333-444455556666"
+        const val GHOST_ID = "ecfea1fa-9999-4aaa-8bbb-ccccddddeeee"
+
+        /** A session whose LOGICAL id and `.slog` FILENAME uuid deliberately differ. */
+        const val LOGICAL_ID = "aaaaaaaa-1111-4222-8333-444455556666"
+        const val FILE_UUID = "bbbbbbbb-1111-4222-8333-444455556666"
+
         /** Captured from the pre-guard seal path. See the test above for why these are literals. */
         const val GOLDEN_MANIFEST_JSON = "{\"assignment_id\":\"hw03\",\"extension_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"format_version\":\"1.1\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"c21e1c7f9f71840977f1d28b08846dc5896d2c0f3deb3971cb94fdb1ced210c8\",\"prev_session_id\":null,\"session_id\":\"sess-1\",\"slog_sha256\":\"67c34143272dc0d2cac5ae9c88fc6fc1d1152bce2c443e7b107727bd2601081d\"}],\"submission_files\":[]}"
         const val GOLDEN_MANIFEST_SIG = "69121fa30c787bd10e95dfb0864b9fb5d2b1e36c9c867c2793ad0248611501b5029fb9f5537b82c45ec134c2e5bd5fad36a812131f9ee4f9a5c5ca3604096c06"

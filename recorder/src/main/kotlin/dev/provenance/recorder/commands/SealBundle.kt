@@ -22,6 +22,10 @@ import java.util.zip.ZipOutputStream
  * Direct port of seal.ts, including the "never abort on a broken/unparseable chain,
  * accumulate warnings instead" policy. Uses the JDK's java.util.zip (no jszip).
  * Never modifies manifest.json / manifest.sig after writing — they are signed.
+ *
+ * This module owns the invariant "what goes in the zip must be openable"; the decision half
+ * lives in `BundleOrphanGuard.kt`, which both this command and the cross-implementation
+ * gate's git-submission packer go through so the gate cannot drift from what ships.
  */
 sealed interface SealResult {
     data class Ok(
@@ -29,7 +33,28 @@ sealed interface SealResult {
         val manifestSha256: String,
         val chainBroken: Boolean,
         val unreadableSession: Boolean,
-    ) : SealResult
+        /**
+         * Artifacts the ORPHAN GUARD (`BundleOrphanGuard.kt`) had to leave out so the archive
+         * stays openable. Defaulted so every existing construction and call site is unaffected;
+         * [anythingDropped] is what the seal UI reads.
+         */
+        val orphanedSlog: Boolean = false,
+        val orphanedMeta: Boolean = false,
+        val emptySession: Boolean = false,
+        val orphanedRollingSeal: Boolean = false,
+    ) : SealResult {
+        /** True when the bundle is missing something that was on disk. Never silent. */
+        val anythingDropped: Boolean
+            get() = orphanedSlog || orphanedMeta || emptySession || orphanedRollingSeal
+
+        /** Human-readable list of what was left out, for the seal notification. */
+        fun droppedDescriptions(): List<String> = buildList {
+            if (emptySession) add("a session that recorded nothing before it ended")
+            if (orphanedSlog) add("a session log with no metadata file beside it")
+            if (orphanedMeta) add("a session metadata file with no log beside it")
+            if (orphanedRollingSeal) add("a signed receipt for a session that is not in the bundle")
+        }
+    }
 
     data object NoSessions : SealResult
 
@@ -79,15 +104,14 @@ fun sealBundle(
     /** Test seam for the manifest signing step; production uses the real [signBundleManifest]. */
     signManifest: (BundleManifest, ByteArray) -> SignedBundleManifest = ::signBundleManifest,
 ): SealResult {
-    // Step 1: list .slog files (excluding .slog.meta).
+    // Step 1: list .provenance/ and decide which sessions this bundle can carry.
+    //
+    // The whole directory, not just the `.slog`s: the ORPHAN GUARD pairs each log with its
+    // `.slog.meta` by name, and an unpaired or contentless half is one the analyzer rejects
+    // the ENTIRE bundle over. See BundleOrphanGuard.kt.
     if (!Files.isDirectory(provenanceDir)) return SealResult.NoSessions
-    val slogFiles = try {
-        Files.list(provenanceDir).use { stream ->
-            stream.filter { it.fileName.toString().endsWith(".slog") && !it.fileName.toString().endsWith(".slog.meta") }
-                .map { it.fileName.toString() }
-                .sorted()
-                .toList()
-        }
+    val dirEntryNames = try {
+        Files.list(provenanceDir).use { stream -> stream.map { it.fileName.toString() }.sorted().toList() }
     } catch (e: Throwable) {
         // WriteError, deliberately NOT NoSessions. The isDirectory check above is the checked,
         // non-racy "this workspace has no recording" verdict; reaching here means the directory
@@ -97,12 +121,24 @@ fun sealBundle(
         rethrowIfFatal(e)
         return SealResult.WriteError("Failed to list session files in $provenanceDir: ${e.message}")
     }
+    val packable = selectPackableSessions(dirEntryNames) { name ->
+        // Negative means "could not determine", which the guard treats as NOT empty. A stat
+        // that fails must never be the reason a student's session is left out; if the file is
+        // genuinely unreadable, step 2's read fails loudly with a WriteError instead.
+        runCatching { Files.size(provenanceDir.resolve(name)) }.getOrDefault(-1L)
+    }
+    val slogFiles = packable.slogNames
     if (slogFiles.isEmpty()) return SealResult.NoSessions
 
     // Step 2: parse + validate each .slog. Warnings accumulate; never abort.
     var chainBroken = false
     var unreadableSession = false
     val sessions = ArrayList<SessionEntry>(slogFiles.size)
+
+    // LOGICAL ids of the sessions this bundle will actually carry, for the rolling-seal half
+    // of the guard in step 6. TWO-UUID RULE: `session.start.data.session_id`, never the `.slog`
+    // filename's uuid — see logicalSessionIdOf.
+    val packedSessionIds = HashSet<String>(slogFiles.size)
 
     for (filename in slogFiles) {
         val slogPath = provenanceDir.resolve(filename)
@@ -137,14 +173,9 @@ fun sealBundle(
             }
             is ParseResult.Ok -> {
                 if (validateChain(parsed.entries) != ChainCheck.Valid) chainBroken = true
-                val first = parsed.entries.firstOrNull()
-                var sessionId: String? = null
-                var prevSessionId: String? = null
-                if (first != null && first.kind == "session.start") {
-                    sessionId = strOrNull(first.data["session_id"])
-                    prevSessionId = strOrNull(first.data["prev_session_id"])
-                }
-                if (sessionId == null) unreadableSession = true
+                val sessionId = logicalSessionIdOf(parsed.entries)
+                val prevSessionId = prevSessionIdOf(parsed.entries)
+                if (sessionId == null) unreadableSession = true else packedSessionIds.add(sessionId)
                 sessions.add(SessionEntry(sessionId, prevSessionId, slogSha, metaSha))
             }
         }
@@ -209,17 +240,20 @@ fun sealBundle(
     }
     val manifestSha256 = Sha256.hex(signed.canonicalJson.toByteArray(Charsets.UTF_8))
 
-    // Step 6: zip everything in provenanceDir (skip .tmp / .corrupt-*) + present reviewed files.
+    // Step 6: zip what the ORPHAN GUARD says the analyzer can open, + present reviewed files.
     val ts = filenameTimestamp(now())
     val bundlePath = outputDir.resolve("$assignmentId-bundle-$ts.zip")
+    var orphanedRollingSeal = false
     try {
         Files.createDirectories(outputDir)
         ZipOutputStream(Files.newOutputStream(bundlePath)).use { zip ->
             val dirFiles = Files.list(provenanceDir).use { s ->
                 s.filter { Files.isRegularFile(it) }.map { it.fileName.toString() }.sorted().toList()
             }
-            for (name in dirFiles) {
-                if (name.endsWith(".tmp") || name.contains(".corrupt-")) continue
+            // Re-listed AFTER the manifest write, so manifest.json / manifest.sig are in it.
+            val selection = selectZipEntries(dirFiles, packable.names, packedSessionIds)
+            orphanedRollingSeal = selection.orphanedRollingSeal
+            for (name in selection.names) {
                 val bytes = try {
                     Files.readAllBytes(provenanceDir.resolve(name))
                 } catch (_: Exception) {
@@ -246,11 +280,14 @@ fun sealBundle(
         return SealResult.WriteError("Failed to write bundle ZIP: ${e.message}")
     }
 
-    return SealResult.Ok(bundlePath, manifestSha256, chainBroken, unreadableSession)
-}
-
-private fun strOrNull(elem: kotlinx.serialization.json.JsonElement?): String? {
-    val prim = elem as? kotlinx.serialization.json.JsonPrimitive ?: return null
-    if (!prim.isString) return null
-    return prim.content
+    return SealResult.Ok(
+        bundlePath = bundlePath,
+        manifestSha256 = manifestSha256,
+        chainBroken = chainBroken,
+        unreadableSession = unreadableSession,
+        orphanedSlog = packable.orphanedSlog,
+        orphanedMeta = packable.orphanedMeta,
+        emptySession = packable.emptySession,
+        orphanedRollingSeal = orphanedRollingSeal,
+    )
 }
