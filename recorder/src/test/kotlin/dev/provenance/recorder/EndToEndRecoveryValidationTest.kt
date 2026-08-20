@@ -44,10 +44,13 @@ import java.util.concurrent.ScheduledFuture
  * the corrupt file (quarantine) and appends new entries to a brand-new session file — it
  * never rewrites or reorders anything, which is what makes both of those hold.
  *
- * This test produces the sealed bundle and asserts the Kotlin-side chain check; the
- * companion Node-side analysis-core validation (loadBundle + runValidation) is run
- * separately against the printed bundle path — see docs/plans/2026-07-14-doc-events-seal.md
- * Task 13 for the exact invocation this mirrors.
+ * This test produces the sealed bundle and asserts the Kotlin-side chain check.
+ *
+ * The companion Node-side analysis-core validation (loadBundle + runValidation) is NO LONGER
+ * a manual step against the printed path: it is automated by `scripts/e2e/run_e2e.sh`, over
+ * [CrossImplementationBundleTest]'s archives. Run that for the cross-implementation verdict.
+ * This test's job is the recovery property — that a session continued after a real
+ * quarantine still chains and still seals.
  */
 class EndToEndRecoveryValidationTest : BasePlatformTestCase() {
     private class NoopScheduler : FlushScheduler {
