@@ -3,6 +3,7 @@ package dev.provenance.recorder.identity
 import dev.provenance.core.CertWindowReason
 import dev.provenance.core.CertWindowStatus
 import dev.provenance.core.Ed25519
+import dev.provenance.core.ENROLLMENT_FORMAT_VERSION
 import dev.provenance.core.IdentityChain
 import dev.provenance.core.SessionPubkeyBinding
 import dev.provenance.core.deriveCourseKeypair
@@ -43,12 +44,20 @@ class SessionIdentityBuilderTest {
         val outcome = build(EnrollmentFixtures.enrolledStore())
         val emitted = outcome as IdentityOutcome.Emitted
 
-        assertEquals(EnrollmentFixtures.COURSE_ID, emitted.verified.courseId)
-        assertEquals(EnrollmentFixtures.STUDENT_REF, emitted.verified.studentRef)
-        assertEquals(EnrollmentFixtures.studentPubkeyHex(), emitted.verified.studentPubkey)
-        assertEquals(EnrollmentFixtures.enrollmentPubkeyHex, emitted.verified.enrollmentPubkey)
-        assertTrue(emitted.verified.certWindow.inWindow)
-        assertTrue(emitted.verified.tokenWindow.inWindow)
+        // PREMISE CHANGED with the 2.1 port: `verified` is now the shared
+        // IdentityChain.Ok interface, because the builder can emit either family.
+        // Narrowing to CourseOk is the assertion that this store produced a 2.0 walk —
+        // strictly stronger than what this test used to check, which could not tell the
+        // two apart because only one existed.
+        val verified = emitted.verified as IdentityChain.CourseOk
+        assertEquals(ENROLLMENT_FORMAT_VERSION, verified.identityVersion)
+        assertEquals("course", verified.scope)
+        assertEquals(EnrollmentFixtures.COURSE_ID, verified.courseId)
+        assertEquals(EnrollmentFixtures.STUDENT_REF, verified.studentRef)
+        assertEquals(EnrollmentFixtures.studentPubkeyHex(), verified.studentPubkey)
+        assertEquals(EnrollmentFixtures.enrollmentPubkeyHex, verified.enrollmentPubkey)
+        assertTrue(verified.certWindow.inWindow)
+        assertTrue(verified.tokenWindow.inWindow)
     }
 
     /**

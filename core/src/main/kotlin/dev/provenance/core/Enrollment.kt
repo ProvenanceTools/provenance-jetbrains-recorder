@@ -123,7 +123,7 @@ const val SESSION_PUBKEY_BINDING_PURPOSE: String = "provenance-session-pubkey-bi
  */
 data class EnrollmentCert(
     /** Must be [ENROLLMENT_FORMAT_VERSION]. Inside the signed payload. */
-    val formatVersion: String,
+    override val formatVersion: String,
     /** Must equal the enclosing `course_cert.course_id` and the token's `course_id`. */
     val courseId: String,
     /** Hex ed25519 public key of the server-held enrollment signing key, 64 chars. */
@@ -141,7 +141,7 @@ data class EnrollmentCert(
     val validUntil: String,
     /** Hex ed25519 signature by the COURSE key, 128 chars (64 bytes). */
     val courseSig: String,
-)
+) : IdentityCert
 
 /**
  * An enrollment-signed statement that a student public key belongs to a roster entry
@@ -153,7 +153,7 @@ data class EnrollmentCert(
  */
 data class EnrollmentToken(
     /** Must be [ENROLLMENT_FORMAT_VERSION]. Inside the signed payload. */
-    val formatVersion: String,
+    override val formatVersion: String,
     /** Opaque roster reference. Never a student ID number, name, or email. */
     val studentRef: String,
     val courseId: String,
@@ -165,24 +165,49 @@ data class EnrollmentToken(
     val expiresAt: String,
     /** Hex ed25519 signature by the ENROLLMENT key, 128 chars (64 bytes). */
     val enrollmentSig: String,
-)
+) : IdentityCredential
 
 /**
- * The identity block carried in `session.start` 2.0 (program spec §5).
+ * The identity block carried in `session.start` (program spec §5).
  *
- * `enrollmentCert` travels here, beside the token rather than inside it, for the
- * same reason `course_cert` travels inside the manifest rather than inside the
- * course-signed payload: the issuer does not sign its own authorization, and one
- * bundled blob cannot be separated from the thing it authorizes.
+ * TWO SHAPES SHARE THESE TWO WIRE SLOTS, distinguished by the signed `formatVersion`
+ * inside [enrollmentCert]:
+ *
+ *  - **`"2.0"` — legacy, COURSE-scoped.** [enrollmentCert] is an [EnrollmentCert]
+ *    (course-signed) and [enrollment] is an [EnrollmentToken]. Every archived bundle
+ *    in the field carries this, and it is supported FOREVER: adjudicating a case
+ *    years later is the entire justification for this system.
+ *  - **`"2.1"` — current, INSTITUTION-scoped.** [enrollmentCert] is an
+ *    [InstitutionCert] (ROOT-signed) and [enrollment] is a [StudentCredential]. See
+ *    `Institution.kt` for why identity stopped being course-scoped.
+ *
+ * **The wire slot names are historical and deliberately unchanged.** `enrollment`
+ * means "the credential"; `enrollment_cert` means "the authorization for whoever
+ * signed it". Renaming them for 2.1 would have forced the version discriminator to be
+ * found by looking at WHICH FIELDS EXIST — and this project has already been burned
+ * at exactly that spot. One stable slot carrying a signed version is the shape that
+ * cannot repeat that bug.
+ *
+ * In both versions the cert travels here, BESIDE the credential rather than inside
+ * it, for the same reason `course_cert` travels inside the manifest rather than
+ * inside the course-signed payload: an issuer does not sign its own authorization,
+ * and one bundled blob cannot be separated from the thing it authorizes.
  */
 data class SessionIdentity(
-    val enrollment: EnrollmentToken,
-    /** The course-signed authorization for whichever key signed [enrollment]. */
-    val enrollmentCert: EnrollmentCert,
+    /** The credential: a 2.0 [EnrollmentToken] or a 2.1 [StudentCredential]. */
+    val enrollment: IdentityCredential,
     /**
-     * The student per-course key's signature over the session's ephemeral
-     * `session_pubkey`. This is the link that binds an ephemeral session key to a
-     * named contributor. See [buildSessionPubkeyBindingPayload].
+     * The authorization for whichever key signed [enrollment], and the artifact whose
+     * SIGNED `formatVersion` selects the walk: a 2.0 [EnrollmentCert] (course-signed)
+     * or a 2.1 [InstitutionCert] (root-signed).
+     */
+    val enrollmentCert: IdentityCert,
+    /**
+     * The student key's signature over the session's ephemeral `session_pubkey`. This
+     * is the link that binds an ephemeral session key to a named contributor. See
+     * [buildSessionPubkeyBindingPayload] (2.0) and [buildStudentSessionBindingPayload]
+     * (2.1) — the two payloads carry different `purpose` tags, so a countersignature
+     * can never be replayed across versions.
      */
     val sessionPubkeySig: String,
 )
@@ -201,32 +226,85 @@ sealed interface EnrollmentParse<out T> {
 }
 
 /**
- * Outcome of [verifyIdentityChain]. Out-of-window results are deliberately NOT
- * failures — they are non-fatal and are reported on [Ok] instead.
+ * Outcome of [verifyIdentityChain], for EITHER identity version. Out-of-window
+ * results are deliberately NOT failures — they are non-fatal and are reported on
+ * [Ok] instead.
  */
 sealed interface IdentityChain {
-    data class Ok(
+    /**
+     * A successfully walked chain, discriminated by the identity version that was
+     * walked.
+     *
+     * [studentRef], [studentPubkey], [certWindow] and [tokenWindow] are declared HERE
+     * rather than on each branch, under the same names log-core uses, so a caller
+     * that only needs "who is this, and were their credentials in date" reads them
+     * without narrowing. The window names in particular are kept identical across
+     * versions on purpose: the three ports iterate the conformance vectors
+     * generically, and a renamed field there is a port-level break for no benefit.
+     */
+    sealed interface Ok : IdentityChain {
+        /** `"2.0"` or `"2.1"` — the version whose rules were applied. */
+        val identityVersion: String
+
+        /** `"course"` for 2.0, `"institution"` for 2.1. */
+        val scope: String
+
+        /** The roster reference this session is attributed to. Opaque. */
+        val studentRef: String
+
+        /** The student public key that countersigned `session_pubkey`. */
+        val studentPubkey: String
+
+        /**
+         * Non-fatal. Was the issuing cert in window when it issued the credential?
+         * Judged against the credential's own issue time, never wall-clock now.
+         */
+        val certWindow: CertWindowStatus
+
+        /**
+         * Non-fatal. Was the credential in window when this session ran? Judged
+         * against the supplied session start time, never wall-clock now.
+         */
+        val tokenWindow: CertWindowStatus
+    }
+
+    /** Legacy COURSE-scoped identity, 2.0. Kept forever for archived bundles. */
+    data class CourseOk(
         /** The course all three links agree on. */
         val courseId: String,
-        /** The roster reference this session is attributed to. Opaque. */
-        val studentRef: String,
+        /** Opaque, PER-COURSE. */
+        override val studentRef: String,
         /** The student per-course public key that countersigned `session_pubkey`. */
-        val studentPubkey: String,
+        override val studentPubkey: String,
         /** The enrollment public key the course vouched for. */
         val enrollmentPubkey: String,
         val cert: EnrollmentCert,
         val token: EnrollmentToken,
-        /**
-         * Non-fatal. Was the enrollment cert in window when it minted this token?
-         * Judged against `token.issuedAt`, never wall-clock now.
-         */
-        val certWindow: CertWindowStatus,
-        /**
-         * Non-fatal. Was the token in window when this session ran? Judged against
-         * the supplied session start time, never wall-clock now.
-         */
-        val tokenWindow: CertWindowStatus,
-    ) : IdentityChain
+        override val certWindow: CertWindowStatus,
+        override val tokenWindow: CertWindowStatus,
+    ) : Ok {
+        override val identityVersion: String get() = ENROLLMENT_FORMAT_VERSION
+        override val scope: String get() = "course"
+    }
+
+    /** Current INSTITUTION-scoped identity, 2.1. See `Institution.kt`. */
+    data class InstitutionOk(
+        /** The institution the credential, its cert, and the anchor all agree on. */
+        val institutionId: String,
+        /** Opaque and GLOBAL — one per student, across every course. */
+        override val studentRef: String,
+        /** The student's single long-lived public key. */
+        override val studentPubkey: String,
+        /** The institution public key the ROOT vouched for. */
+        val institutionPubkey: String,
+        val cert: InstitutionCert,
+        val credential: StudentCredential,
+        override val certWindow: CertWindowStatus,
+        override val tokenWindow: CertWindowStatus,
+    ) : Ok {
+        override val identityVersion: String get() = INSTITUTION_IDENTITY_FORMAT_VERSION
+        override val scope: String get() = "institution"
+    }
 
     /** Every way the chain walk can fail. [kind] is the wire name log-core uses. */
     sealed interface Err : IdentityChain {
@@ -234,44 +312,68 @@ sealed interface IdentityChain {
     }
 
     /**
-     * Step 0: an artifact declares a version whose rules this code does not
-     * implement. Gated before any signature work, so a future format cannot be
-     * walked under today's assumptions about which fields are signed.
+     * Step 0: the identity block declares a version whose rules this code does not
+     * implement. Gated before any signature work, so a future 3.0 cannot be walked
+     * under today's assumptions about which fields are signed.
+     *
+     * Read off the CERT slot, which carries the discriminator in both versions.
      */
-    data class NotEnrollment20(
-        /** `"cert"` or `"token"`. */
-        val artifact: String,
-        val formatVersion: String,
-    ) : Err {
-        override val kind: String get() = "not_enrollment_2_0"
+    data class UnsupportedIdentityVersion(val formatVersion: String) : Err {
+        override val kind: String get() = "unsupported_identity_version"
     }
 
     /**
-     * Step 0b: the enrollment cert does not satisfy the 2.0 shape. Reported before
+     * Step 0: the cert and the credential declare DIFFERENT versions. Refused rather
+     * than resolved: allowing a mix would let a legacy course-signed cert be paired
+     * with an institution credential, and each artifact would then be read under
+     * rules the other never agreed to.
+     */
+    data class IdentityVersionMismatch(
+        val certVersion: String,
+        val credentialVersion: String,
+    ) : Err {
+        override val kind: String get() = "identity_version_mismatch"
+    }
+
+    /**
+     * Step 0: the caller did not supply the trust anchor this version's walk needs —
+     * a `course_cert` for 2.0, an `institution_cert` for 2.1. A programmer error at
+     * the call site, reported as a value because which anchor is needed is only known
+     * after reading the bundle.
+     */
+    data class MissingTrustAnchor(
+        /** `"course_cert"` or `"institution_cert"`. */
+        val required: String,
+    ) : Err {
+        override val kind: String get() = "missing_trust_anchor"
+    }
+
+    /**
+     * Step 0b: the cert does not satisfy its version's shape. Reported before
      * signature work because JCS OMITS keys whose value is absent — an artifact
-     * missing a required field would otherwise sign and verify cleanly while
-     * carrying nothing at that field.
+     * missing a required field would otherwise sign and verify cleanly while carrying
+     * nothing at that field.
      */
     data class InvalidCertShape(val reason: String) : Err {
         override val kind: String get() = "invalid_cert_shape"
     }
 
-    /** Step 0b, same reasoning, for the token. */
+    /** Step 0b, same reasoning, for the credential. */
     data class InvalidTokenShape(val reason: String) : Err {
         override val kind: String get() = "invalid_token_shape"
     }
 
-    /** Step 1: `enrollment_cert` does not verify against `course_cert.course_pubkey`. */
+    /** 2.0 step 1: `enrollment_cert` does not verify against `course_cert.course_pubkey`. */
     data object InvalidCourseSignature : Err {
         override val kind: String get() = "invalid_course_signature"
     }
 
-    /** Step 2: the token does not verify against `enrollment_cert.enrollment_pubkey`. */
+    /** 2.0 step 2: the token does not verify against `enrollment_cert.enrollment_pubkey`. */
     data object InvalidEnrollmentSignature : Err {
         override val kind: String get() = "invalid_enrollment_signature"
     }
 
-    /** Step 3: the three links do not all name the same course. */
+    /** 2.0 step 3: the three links do not all name the same course. */
     data class CourseIdMismatch(
         val tokenCourseId: String,
         val certCourseId: String,
@@ -280,12 +382,35 @@ sealed interface IdentityChain {
         override val kind: String get() = "course_id_mismatch"
     }
 
-    /** Step 4: the supplied session public key is not a 64-char hex string. */
+    /** 2.1 step 1: the credential does not verify against the ANCHOR's `institution_pubkey`. */
+    data object InvalidInstitutionSignature : Err {
+        override val kind: String get() = "invalid_institution_signature"
+    }
+
+    /**
+     * 2.1 step 2, the MANDATORY anchor check — the institution-scoped replacement for
+     * [CourseIdMismatch]. The credential, the cert travelling with it, and the
+     * root-verified anchor must all name the same institution, and the travelling
+     * cert must name the anchor's key. Without it, an attacker holding a genuinely
+     * root-certified institution key for one institution can mint a credential naming
+     * ANOTHER, and every signature verifies.
+     */
+    data class InstitutionMismatch(
+        val credentialInstitutionId: String,
+        val certInstitutionId: String,
+        val anchorInstitutionId: String,
+        /** True when the travelling cert names a different key than the anchor. */
+        val pubkeyMismatch: Boolean,
+    ) : Err {
+        override val kind: String get() = "institution_mismatch"
+    }
+
+    /** Both versions: the supplied session public key is not a 64-char hex string. */
     data object InvalidSessionPubkey : Err {
         override val kind: String get() = "invalid_session_pubkey"
     }
 
-    /** Step 4: `session_pubkey_sig` does not verify against `token.student_pubkey`. */
+    /** Both versions: `session_pubkey_sig` does not verify against the student pubkey. */
     data object InvalidSessionPubkeySignature : Err {
         override val kind: String get() = "invalid_session_pubkey_signature"
     }
@@ -294,85 +419,6 @@ sealed interface IdentityChain {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-private val ENROLL_HEX_128_RE = Regex("^[0-9a-f]{128}$")
-private val ENROLL_HEX_64_RE = Regex("^[0-9a-f]{64}$")
-
-/**
- * A required non-empty string field.
- *
- * A missing key and a JSON-null-valued key are treated identically — JCS erases the
- * difference, so nothing downstream can rely on it.
- */
-private fun JsonObject.requireString(field: String): String? {
-    val p = this[field] as? JsonPrimitive ?: return null
-    if (!p.isString) return null
-    return p.content.ifEmpty { null }
-}
-
-/**
- * Validate an ordered pair of ISO 8601 bounds.
- *
- * Both bounds MUST parse. Short validity windows are the only offline mitigation
- * this scheme has for the absence of revocation, so a bound that silently never
- * binds would undercut the sole control there is. These artifacts are new, so unlike
- * `manifest.issued_at` there is no archived-data compatibility cost to enforcing it.
- *
- * Returns the two raw strings, or an error reason.
- */
-private fun JsonObject.requireOrderedBounds(
-    lowerField: String,
-    upperField: String,
-): EnrollmentParse<Pair<String, String>> {
-    val values = mutableListOf<String>()
-    val instants = mutableListOf<Long>()
-    for (field in listOf(lowerField, upperField)) {
-        val raw = requireString(field)
-            ?: return EnrollmentParse.Err("invalid_shape: $field must be a non-empty string")
-        val ms = parseIsoInstantMs(raw)
-            ?: return EnrollmentParse.Err("invalid_shape: $field must be an ISO 8601 date or timestamp")
-        values += raw
-        instants += ms
-    }
-    if (instants[0] > instants[1]) {
-        return EnrollmentParse.Err("invalid_shape: $upperField must not be earlier than $lowerField")
-    }
-    return EnrollmentParse.Ok(values[0] to values[1])
-}
-
-/**
- * Shared window arithmetic: is [at] inside `[lower, upper]`?
- *
- * [lower] is inclusive from its first instant; a date-only [upper] is inclusive
- * through the END of that day, via [resolveValidUntilExclusiveMs]. Identical
- * semantics to [checkCertWindow], so a port implements the rule once.
- */
-private fun checkWindow(lower: String, upper: String, at: String): CertWindowStatus {
-    val from = parseIsoInstantMs(lower)
-    val untilExclusive = resolveValidUntilExclusiveMs(upper)
-    val instant = parseIsoInstantMs(at)
-
-    if (from == null || untilExclusive == null || instant == null) {
-        return CertWindowStatus.OutOfWindow(CertWindowReason.UNPARSEABLE_TIMESTAMP)
-    }
-    if (instant < from) return CertWindowStatus.OutOfWindow(CertWindowReason.BEFORE_VALID_FROM)
-    if (instant >= untilExclusive) return CertWindowStatus.OutOfWindow(CertWindowReason.AFTER_VALID_UNTIL)
-    return CertWindowStatus.InWindow
-}
-
-/**
- * Shared ed25519 verification. Every malformed input is a verification FAILURE
- * rather than an exception: these are values arriving from a student-editable file,
- * so a bad hex string is an expected condition.
- */
-private fun verifyDetached(payload: ByteArray, sigHex: String, pubkeyHex: String): Boolean {
-    if (!ENROLL_HEX_128_RE.matches(sigHex) || !ENROLL_HEX_64_RE.matches(pubkeyHex)) return false
-    return try {
-        Ed25519.verify(Ed25519.hexToBytes(sigHex), payload, Ed25519.hexToBytes(pubkeyHex))
-    } catch (_: Exception) {
-        false
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Signed payloads — the exact bytes three ports must reproduce
@@ -480,11 +526,11 @@ fun parseEnrollmentCert(value: JsonElement?): EnrollmentParse<EnrollmentCert> {
     }
 
     val enrollmentPubkey = obj.requireString("enrollment_pubkey")
-    if (enrollmentPubkey == null || !ENROLL_HEX_64_RE.matches(enrollmentPubkey)) {
+    if (enrollmentPubkey == null || !IDENTITY_HEX_64_RE.matches(enrollmentPubkey)) {
         return EnrollmentParse.Err("invalid_shape: enrollment_pubkey must be a 64-char hex string")
     }
     val courseSig = obj.requireString("course_sig")
-    if (courseSig == null || !ENROLL_HEX_128_RE.matches(courseSig)) {
+    if (courseSig == null || !IDENTITY_HEX_128_RE.matches(courseSig)) {
         return EnrollmentParse.Err("invalid_shape: course_sig must be a 128-char hex string")
     }
 
@@ -521,11 +567,11 @@ fun parseEnrollmentToken(value: JsonElement?): EnrollmentParse<EnrollmentToken> 
     }
 
     val studentPubkey = obj.requireString("student_pubkey")
-    if (studentPubkey == null || !ENROLL_HEX_64_RE.matches(studentPubkey)) {
+    if (studentPubkey == null || !IDENTITY_HEX_64_RE.matches(studentPubkey)) {
         return EnrollmentParse.Err("invalid_shape: student_pubkey must be a 64-char hex string")
     }
     val enrollmentSig = obj.requireString("enrollment_sig")
-    if (enrollmentSig == null || !ENROLL_HEX_128_RE.matches(enrollmentSig)) {
+    if (enrollmentSig == null || !IDENTITY_HEX_128_RE.matches(enrollmentSig)) {
         return EnrollmentParse.Err("invalid_shape: enrollment_sig must be a 128-char hex string")
     }
 
@@ -622,69 +668,136 @@ fun checkEnrollmentCertWindow(cert: EnrollmentCert, at: String): CertWindowStatu
 // ---------------------------------------------------------------------------
 
 /**
- * Walk the identity chain: course_cert → enrollment_cert → token → session_pubkey_sig.
+ * Walk the identity chain, routing on the SIGNED identity version.
  *
- * **The steps run in this order and the order is load-bearing**, mirroring
- * [verifyManifestChain]:
+ * Two families share the two wire slots in [SessionIdentity]:
  *
- *  0. Both artifacts declare `format_version == "2.0"`. Gated before any signature
- *     work — see [IdentityChain.NotEnrollment20].
- *  0b. Both artifacts satisfy the 2.0 shape. Also before signature work: JCS omits
- *     absent keys, so an artifact missing a required field signs and verifies
- *     cleanly while carrying nothing there.
- *  1. `enrollment_cert` minus `course_sig` verifies against `courseCert.coursePubkey`.
- *  2. The token minus `enrollment_sig` verifies against `cert.enrollmentPubkey`.
- *  3. `token.courseId == cert.courseId == courseCert.courseId`.
- *  4. `sessionPubkeySig` verifies against `token.studentPubkey` over the binding
- *     payload for this exact session pubkey.
- *  5. Both validity windows — NON-FATAL, returned on the success value.
+ *  - **2.0, COURSE-scoped:** `course_cert → enrollment_cert → token → session_pubkey_sig`.
+ *  - **2.1, INSTITUTION-scoped:** `root → institution_cert → student_credential →
+ *    session_pubkey_sig`. One delegation, not two.
  *
- * Step 3 is not a formality, and it is why all THREE ids are compared rather than
- * two. Without it, 61B's course key can certify an enrollment key "for 61C", that
- * key can mint a 61C token, and steps 1 and 2 both pass: every signature is genuine.
- * Only comparing ids across every link catches a cross-course forgery, and the
- * requirement is that it be impossible, not merely unlikely.
+ * ## Step 0, the version gate — the same rule for both
  *
- * ## The `courseCert` MUST already be verified
+ *  0. The DISCRIMINATOR is the `format_version` inside the CERT slot. It is signed in
+ *     both families and sits at the same wire key in both, so it can be read without
+ *     first knowing which shape is present. **Never route on which fields exist**:
+ *     presence is attacker-controlled and ambiguous, and this project already shipped
+ *     that exact bug once, making a whole legacy path unreachable. A version that is
+ *     neither 2.0 nor 2.1 is [IdentityChain.UnsupportedIdentityVersion], gated before
+ *     any signature work so a future 3.0 is never walked under today's assumptions.
+ *  0a. The credential's declared version must MATCH the cert's. A mixed pair is
+ *     [IdentityChain.IdentityVersionMismatch] — refused rather than resolved, because
+ *     otherwise each artifact is read under rules the other never agreed to.
  *
- * This function takes the course certificate as a trust anchor and does NOT re-verify
- * it against the root key — exactly as [verifyCourseCert] takes the root public key
- * as a parameter rather than knowing one. The caller is responsible for having
- * obtained it from a successful [verifyManifestChain]. Passing an unverified cert
- * makes every result below meaningless, because an attacker who supplies the cert
- * supplies `course_pubkey` too and can then satisfy the entire chain with keys of
- * their own.
+ * ## The 2.0 walk (unchanged, and kept FOREVER)
+ *
+ *  0b. Both artifacts satisfy the 2.0 shape. Before signature work: JCS omits absent
+ *      keys, so an artifact missing a required field signs and verifies cleanly while
+ *      carrying nothing there.
+ *  1.  `enrollment_cert` minus `course_sig` verifies against `courseCert.coursePubkey`.
+ *  2.  The token minus `enrollment_sig` verifies against `cert.enrollmentPubkey`.
+ *  3.  `token.courseId == cert.courseId == courseCert.courseId`. Not a formality:
+ *      without it 61B's course key can certify an enrollment key "for 61C", that key
+ *      can mint a 61C token, and steps 1 and 2 both pass because every signature is
+ *      genuine. Only comparing ids across every link catches a cross-course forgery.
+ *  4.  `sessionPubkeySig` verifies against `token.studentPubkey` over the v1 binding.
+ *  5.  Both validity windows — NON-FATAL, returned on the success value.
+ *
+ * ## The 2.1 walk
+ *
+ *  0b. Both artifacts satisfy the 2.1 shape. Same reasoning.
+ *  1.  The credential minus `institution_sig` verifies against the **ANCHOR's**
+ *      `institutionPubkey` — never the travelling cert's copy, so a swapped cert can
+ *      never introduce a key of the attacker's choosing even if step 2 were somehow
+ *      bypassed.
+ *  2.  **The institution anchor check — the replacement for step 3 above, and
+ *      mandatory for the same reason.** `credential.institutionId`, the travelling
+ *      cert's `institutionId`, and the anchor's must all agree, AND the travelling
+ *      cert must name the anchor's `institutionPubkey`. Root legitimately certifies
+ *      many institutions; without this, a holder of a genuinely root-certified key
+ *      for one institution can mint a credential naming ANOTHER and ship it with
+ *      their own genuine cert, and every signature verifies. One signer's credential
+ *      must never be replayable under another signer's authority.
+ *  3.  `sessionPubkeySig` verifies against `credential.studentPubkey` over the **v2**
+ *      binding payload (a distinct `purpose` tag, so 2.0 and 2.1 countersignatures can
+ *      never be swapped).
+ *  4.  Both validity windows — NON-FATAL, returned on the success value.
+ *
+ * ## The trust anchor MUST already be verified
+ *
+ * This function takes its anchor as a parameter and does NOT re-verify it against the
+ * root key — exactly as [verifyCourseCert] and [verifyInstitutionCert] take the root
+ * public key as a parameter rather than knowing one. The caller obtains a
+ * `course_cert` from a successful [verifyManifestChain], or root-verifies the
+ * `institution_cert` with [verifyInstitutionCert] before passing it. Passing an
+ * unverified anchor makes every result meaningless, because an attacker who supplies
+ * the anchor supplies its public key too.
  *
  * @param identity         The `session.start` identity block.
  * @param sessionPubkey    The session's ephemeral public key, 64-char hex.
- * @param courseCert       An ALREADY ROOT-VERIFIED course certificate.
- * @param sessionStartedAt ISO 8601 session start; the token's window is judged
+ * @param courseCert       An ALREADY ROOT-VERIFIED course certificate. Required for a
+ *                         2.0 chain, ignored by 2.1. Nullable rather than defaulted so
+ *                         its POSITION is preserved for the 2.0 call sites that pass
+ *                         it positionally — a defaulted parameter would have to move
+ *                         after `sessionStartedAt` and silently break them.
+ * @param sessionStartedAt ISO 8601 session start; the credential's window is judged
  *                         against this, never wall-clock now.
+ * @param institutionCert  An ALREADY ROOT-VERIFIED institution certificate. Required
+ *                         for a 2.1 chain, ignored by 2.0.
  */
 fun verifyIdentityChain(
     identity: SessionIdentity,
     sessionPubkey: String,
-    courseCert: CourseCert,
+    courseCert: CourseCert?,
+    sessionStartedAt: String,
+    institutionCert: InstitutionCert? = null,
+): IdentityChain {
+    // Step 0 — the version gate, before anything is trusted, parsed, or verified.
+    // Reading the declared version off an unvalidated artifact is safe precisely
+    // because nothing else has happened yet.
+    val certVersion = identity.enrollmentCert.formatVersion
+    if (certVersion != ENROLLMENT_FORMAT_VERSION &&
+        certVersion != INSTITUTION_IDENTITY_FORMAT_VERSION
+    ) {
+        return IdentityChain.UnsupportedIdentityVersion(certVersion)
+    }
+
+    // Step 0a — no mixing. A legacy course-signed cert paired with an institution
+    // credential would leave each artifact read under rules the other never agreed to.
+    val credentialVersion = identity.enrollment.formatVersion
+    if (credentialVersion != certVersion) {
+        return IdentityChain.IdentityVersionMismatch(certVersion, credentialVersion)
+    }
+
+    return if (certVersion == INSTITUTION_IDENTITY_FORMAT_VERSION) {
+        walkInstitutionChain(identity, sessionPubkey, institutionCert, sessionStartedAt)
+    } else {
+        walkCourseChain(identity, sessionPubkey, courseCert, sessionStartedAt)
+    }
+}
+
+/**
+ * The LEGACY 2.0 course-scoped walk. Unchanged behaviour, kept forever so an archived
+ * bundle still verifies during an adjudication years from now.
+ */
+private fun walkCourseChain(
+    identity: SessionIdentity,
+    sessionPubkey: String,
+    courseCert: CourseCert?,
     sessionStartedAt: String,
 ): IdentityChain {
-    // Step 0 — version gate, before anything is trusted or verified. Reading the
-    // declared version off an unvalidated artifact is safe precisely because nothing
-    // else has happened yet.
-    if (identity.enrollmentCert.formatVersion != ENROLLMENT_FORMAT_VERSION) {
-        return IdentityChain.NotEnrollment20("cert", identity.enrollmentCert.formatVersion)
-    }
-    if (identity.enrollment.formatVersion != ENROLLMENT_FORMAT_VERSION) {
-        return IdentityChain.NotEnrollment20("token", identity.enrollment.formatVersion)
-    }
+    if (courseCert == null) return IdentityChain.MissingTrustAnchor("course_cert")
 
     // Step 0b — shape before signatures, for both artifacts. Re-validated from their
     // serialized form so a hand-built artifact gets the same treatment as a parsed
     // one; see verifyManifestChain for the same argument.
-    val cert = when (val c = parseEnrollmentCert(identity.enrollmentCert.toJsonObject())) {
+    val cert = when (val c = parseEnrollmentCert(identityCertJson(identity.enrollmentCert))) {
         is EnrollmentParse.Err -> return IdentityChain.InvalidCertShape(c.reason)
         is EnrollmentParse.Ok -> c.value
     }
-    val token = when (val t = parseEnrollmentToken(identity.enrollment.toJsonObject())) {
+    val token = when (
+        val t = parseEnrollmentToken(identityCredentialJson(identity.enrollment))
+    ) {
         is EnrollmentParse.Err -> return IdentityChain.InvalidTokenShape(t.reason)
         is EnrollmentParse.Ok -> t.value
     }
@@ -705,7 +818,7 @@ fun verifyIdentityChain(
     }
 
     // Step 4 — the student key adopted THIS session key.
-    if (!ENROLL_HEX_64_RE.matches(sessionPubkey)) {
+    if (!IDENTITY_HEX_64_RE.matches(sessionPubkey)) {
         return IdentityChain.InvalidSessionPubkey
     }
     val binding = SessionPubkeyBinding(
@@ -718,7 +831,7 @@ fun verifyIdentityChain(
     }
 
     // Step 5 — non-fatal windows, each against its own relevant issue time.
-    return IdentityChain.Ok(
+    return IdentityChain.CourseOk(
         courseId = token.courseId,
         studentRef = token.studentRef,
         studentPubkey = token.studentPubkey,
@@ -727,6 +840,82 @@ fun verifyIdentityChain(
         token = token,
         certWindow = checkEnrollmentCertWindow(cert, token.issuedAt),
         tokenWindow = checkTokenWindow(token, sessionStartedAt),
+    )
+}
+
+/** The CURRENT 2.1 institution-scoped walk. See `Institution.kt`. */
+private fun walkInstitutionChain(
+    identity: SessionIdentity,
+    sessionPubkey: String,
+    anchor: InstitutionCert?,
+    sessionStartedAt: String,
+): IdentityChain {
+    if (anchor == null) return IdentityChain.MissingTrustAnchor("institution_cert")
+
+    // Step 0b — shape before signatures, for both artifacts.
+    val cert = when (val c = parseInstitutionCert(identityCertJson(identity.enrollmentCert))) {
+        is EnrollmentParse.Err -> return IdentityChain.InvalidCertShape(c.reason)
+        is EnrollmentParse.Ok -> c.value
+    }
+    val credential = when (
+        val t = parseStudentCredential(identityCredentialJson(identity.enrollment))
+    ) {
+        is EnrollmentParse.Err -> return IdentityChain.InvalidTokenShape(t.reason)
+        is EnrollmentParse.Ok -> t.value
+    }
+
+    // Step 1 — the credential verifies against the key the ROOT vouched for.
+    //
+    // Deliberately the ANCHOR's institutionPubkey, never the travelling cert's. Step 2
+    // forces the two to be equal anyway, but reading the key from the
+    // already-root-verified value means a swapped travelling cert can never introduce
+    // a key of the attacker's choosing, whatever happens downstream.
+    if (!verifyStudentCredential(credential, anchor.institutionPubkey)) {
+        return IdentityChain.InvalidInstitutionSignature
+    }
+
+    // Step 2 — THE INSTITUTION ANCHOR CHECK. The replacement for 2.0's course_id
+    // triple comparison, and mandatory for exactly the same reason: root certifies
+    // many institutions, so a genuine signature by a genuinely certified key proves
+    // only WHO signed, never WHOM they were entitled to speak for. Comparing the id at
+    // every link is what makes replaying one signer's credential under another's
+    // authority impossible rather than merely unlikely.
+    val pubkeyMismatch = cert.institutionPubkey != anchor.institutionPubkey
+    if (credential.institutionId != cert.institutionId ||
+        cert.institutionId != anchor.institutionId ||
+        pubkeyMismatch
+    ) {
+        return IdentityChain.InstitutionMismatch(
+            credentialInstitutionId = credential.institutionId,
+            certInstitutionId = cert.institutionId,
+            anchorInstitutionId = anchor.institutionId,
+            pubkeyMismatch = pubkeyMismatch,
+        )
+    }
+
+    // Step 3 — the student key adopted THIS session key.
+    if (!IDENTITY_HEX_64_RE.matches(sessionPubkey)) {
+        return IdentityChain.InvalidSessionPubkey
+    }
+    val binding = StudentSessionBinding(
+        institutionId = credential.institutionId,
+        studentRef = credential.studentRef,
+        sessionPubkey = sessionPubkey,
+    )
+    if (!verifyStudentSessionBinding(binding, identity.sessionPubkeySig, credential.studentPubkey)) {
+        return IdentityChain.InvalidSessionPubkeySignature
+    }
+
+    // Step 4 — non-fatal windows, each against its own relevant issue time.
+    return IdentityChain.InstitutionOk(
+        institutionId = credential.institutionId,
+        studentRef = credential.studentRef,
+        studentPubkey = credential.studentPubkey,
+        institutionPubkey = anchor.institutionPubkey,
+        cert = cert,
+        credential = credential,
+        certWindow = checkInstitutionCertWindow(cert, credential.issuedAt),
+        tokenWindow = checkCredentialWindow(credential, sessionStartedAt),
     )
 }
 
@@ -760,14 +949,15 @@ fun EnrollmentToken.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
- * Serialize the identity block for `session.start` 2.0 (program spec §5).
+ * Serialize the identity block for `session.start` (program spec §5), at EITHER
+ * version.
  *
- * NOT wired into `session.start` yet: emission waits on the server's enrollment
- * endpoint, so a later task adds it. Defined here so the transport shape lives beside
- * the artifacts it carries.
+ * The two slots are serialized through [identityCertJson] / [identityCredentialJson],
+ * which dispatch on the sealed artifact type. The wire key names are the same in both
+ * versions — see [SessionIdentity] for why they were deliberately not renamed for 2.1.
  */
 fun SessionIdentity.toJsonObject(): JsonObject = buildJsonObject {
-    put("enrollment", enrollment.toJsonObject())
-    put("enrollment_cert", enrollmentCert.toJsonObject())
+    put("enrollment", identityCredentialJson(enrollment))
+    put("enrollment_cert", identityCertJson(enrollmentCert))
     put("session_pubkey_sig", sessionPubkeySig)
 }

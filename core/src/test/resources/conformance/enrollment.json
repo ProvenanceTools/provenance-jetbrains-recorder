@@ -130,8 +130,7 @@
       "expected": {
         "ok": false,
         "error": {
-          "kind": "not_enrollment_2_0",
-          "artifact": "cert",
+          "kind": "unsupported_identity_version",
           "format_version": "1.0"
         }
       }
@@ -173,9 +172,9 @@
       "expected": {
         "ok": false,
         "error": {
-          "kind": "not_enrollment_2_0",
-          "artifact": "token",
-          "format_version": "3.0"
+          "kind": "identity_version_mismatch",
+          "cert_version": "2.0",
+          "credential_version": "3.0"
         }
       }
     },

@@ -180,3 +180,80 @@ fun deriveCourseKeypair(masterSecret: ByteArray, courseId: String): StudentCours
         privateKey = privateKey,
     )
 }
+
+// ---------------------------------------------------------------------------
+// The CURRENT derivation: ONE global student key
+// ---------------------------------------------------------------------------
+
+/**
+ * HKDF `info` for the CURRENT global student key. FIXED — no `course_id`, no
+ * `institution_id`, no user-derived component of any kind.
+ *
+ * A student has ONE key, forever, across every course. Identity stopped being
+ * course-scoped because a per-course key requires a per-course credential, which
+ * requires a roster match, which only exists after the student's first submission —
+ * while their very first session needs an identity before they do any work at all.
+ * See `Institution.kt` for the full account.
+ *
+ * A pleasant side effect: with nothing user-derived in `info`, the encoding hazard
+ * that [STUDENT_KEY_HKDF_INFO_PREFIX] has to live with is simply GONE here. Under v1 a
+ * non-ASCII `course_id` encoded as `US_ASCII` rather than UTF-8 silently produced a
+ * DIFFERENT key with no error — **it bit this repo once**, and the v1 conformance
+ * vectors keep a `berkeley-café` case precisely to catch a recurrence. This constant
+ * is pure ASCII and constant, so there is nothing left to get wrong.
+ *
+ * **There is no trailing colon**: nothing is concatenated onto it.
+ */
+const val STUDENT_KEY_HKDF_INFO: String = "provenance-student-key-v2"
+
+/**
+ * Derive the raw 32-byte ed25519 seed for a student's single GLOBAL key.
+ *
+ * Same master secret, same salt, same output length, same "the 32 bytes ARE the
+ * ed25519 seed" rule as [deriveCourseKeySeed]. The ONLY difference is the `info`,
+ * which is [STUDENT_KEY_HKDF_INFO] — fixed, ASCII, and carrying no user-derived
+ * component. A student therefore has one key across every course, bound to a global
+ * `student_ref` by a single credential obtained once.
+ *
+ * Because the two `info` strings differ, the v1 per-course keys and this key are
+ * unrelated: a student's existing course keys are unaffected, and archived bundles
+ * keep verifying against the public keys their tokens name.
+ *
+ * Pure and synchronous. THROWS on a malformed input, because that is a programmer
+ * error at a call site that controls the argument — an unexpected condition, not an
+ * expected one.
+ *
+ * @param masterSecret Exactly [STUDENT_MASTER_SECRET_BYTES] raw bytes.
+ */
+fun deriveStudentKeySeed(masterSecret: ByteArray): ByteArray {
+    require(masterSecret.size == STUDENT_MASTER_SECRET_BYTES) {
+        "deriveStudentKeySeed: masterSecret must be exactly $STUDENT_MASTER_SECRET_BYTES bytes, " +
+            "got ${masterSecret.size}"
+    }
+
+    // UTF-8, never US_ASCII. The constant is pure ASCII so the two agree today, but
+    // the v1 sibling derived a silently different key from a `US_ASCII` encoding and
+    // nothing in this file should model that mistake as acceptable.
+    val info = STUDENT_KEY_HKDF_INFO.toByteArray(Charsets.UTF_8)
+    val hkdf = HKDFBytesGenerator(SHA256Digest())
+    hkdf.init(HKDFParameters(masterSecret, studentKeyHkdfSalt(), info))
+    val out = ByteArray(STUDENT_KEY_SEED_BYTES)
+    hkdf.generateBytes(out, 0, STUDENT_KEY_SEED_BYTES)
+    return out
+}
+
+/**
+ * Derive a student's single global ed25519 keypair from their master secret.
+ *
+ * The private key is the [deriveStudentKeySeed] output verbatim; the public key is the
+ * ordinary ed25519 public key for that seed. This is the key that countersigns
+ * `session_pubkey` at 2.1 (see `Institution.kt`) and whose public half the institution
+ * binds to a global `student_ref` inside a student credential.
+ */
+fun deriveStudentKeypair(masterSecret: ByteArray): StudentCourseKeypair {
+    val privateKey = deriveStudentKeySeed(masterSecret)
+    return StudentCourseKeypair(
+        publicKeyHex = Ed25519.bytesToHex(Ed25519.publicKeyOf(privateKey)),
+        privateKey = privateKey,
+    )
+}
