@@ -189,7 +189,9 @@ class CourseKeyCacheTest {
      */
     @Test
     fun `a throwing derivation returns null instead of propagating`() {
-        val cache = CourseKeyCache { _, _ -> throw IllegalStateException("no ed25519 provider") }
+        val cache = CourseKeyCache(
+            derive = { _, _ -> throw IllegalStateException("no ed25519 provider") },
+        )
         assertNull(cache.get(masterA, course))
         assertEquals(0, cache.size)
     }

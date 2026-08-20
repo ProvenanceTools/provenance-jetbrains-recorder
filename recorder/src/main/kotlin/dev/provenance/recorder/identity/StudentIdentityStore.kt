@@ -1,14 +1,19 @@
 package dev.provenance.recorder.identity
 
 import dev.provenance.core.ENROLLMENT_FORMAT_VERSION
+import dev.provenance.core.INSTITUTION_IDENTITY_FORMAT_VERSION
 import dev.provenance.core.EnrollmentCert
 import dev.provenance.core.EnrollmentParse
 import dev.provenance.core.EnrollmentToken
+import dev.provenance.core.InstitutionCert
 import dev.provenance.core.STUDENT_MASTER_SECRET_BYTES
 import dev.provenance.core.Ed25519
+import dev.provenance.core.StudentCredential
 import dev.provenance.core.generateStudentMasterSecret
 import dev.provenance.core.parseEnrollmentCert
 import dev.provenance.core.parseEnrollmentToken
+import dev.provenance.core.parseInstitutionCert
+import dev.provenance.core.parseStudentCredential
 import dev.provenance.core.toJsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -51,8 +56,17 @@ import kotlinx.serialization.json.put
 /** The store key holding the hex-encoded 32-byte master secret. */
 const val MASTER_SECRET_KEY: String = "provenance.studentMasterSecret"
 
-/** Prefix for the per-course enrollment blobs. */
+/** Prefix for the per-course enrollment blobs. Identity 2.0 only. */
 const val ENROLLMENT_KEY_PREFIX: String = "provenance.enrollment."
+
+/**
+ * The store key holding the ONE identity-2.1 student credential.
+ *
+ * Singular and course-free, unlike [ENROLLMENT_KEY_PREFIX]: a 2.1 credential names no
+ * course, because a student now has one global key bound to one global `student_ref`,
+ * obtained once. That is the whole point of the 2.1 change — see `Institution.kt`.
+ */
+const val CREDENTIAL_KEY: String = "provenance.studentCredential"
 
 /**
  * The store key for one course's enrollment.
@@ -93,13 +107,62 @@ sealed interface IdentityStoreError {
     data class InvalidCertShape(val reason: String) : IdentityStoreError
 
     data class CourseIdMismatch(val tokenCourseId: String, val certCourseId: String) : IdentityStoreError
+
+    /** 2.1 shape failure on the credential slot. The twin of [InvalidTokenShape]. */
+    data class InvalidCredentialShape(val reason: String) : IdentityStoreError
+
+    /**
+     * 2.1: the credential and the cert travelling with it name different institutions.
+     * The analogue of [CourseIdMismatch].
+     *
+     * Note what this does NOT do: it cannot detect the cross-institution forgery
+     * `verifyIdentityChain` guards against, because that check needs the root-verified
+     * anchor and import time has none. It catches a student who mixed two pastes.
+     */
+    data class InstitutionIdMismatch(
+        val credentialInstitutionId: String,
+        val certInstitutionId: String,
+    ) : IdentityStoreError
+
+    /**
+     * The importer's own version refusal: the pasted blob declares an identity version
+     * that is neither 2.0 nor 2.1, so there is no family to route it to.
+     */
+    data class UnsupportedIdentityVersion(val formatVersion: String) : IdentityStoreError
 }
 
-/** The `{ enrollment, enrollment_cert }` pair a student pastes in and we persist. */
+/** The 2.0 `{ enrollment, enrollment_cert }` pair a student pastes in and we persist. */
 data class StoredEnrollment(
     val enrollment: EnrollmentToken,
     val enrollmentCert: EnrollmentCert,
 )
+
+/**
+ * The 2.1 `{ enrollment, enrollment_cert }` pair.
+ *
+ * The field names deliberately match [StoredEnrollment] and the two `SessionIdentity`
+ * wire slots. These two fields are literally two-thirds of a `SessionIdentity`, so
+ * [buildSessionIdentity] drops the stored pair straight in and adds only
+ * `sessionPubkeySig`. There is no rename step between the paste and the signed log
+ * entry, and therefore no rename step to get wrong.
+ */
+data class StoredCredential(
+    val enrollment: StudentCredential,
+    val enrollmentCert: InstitutionCert,
+)
+
+/** What an identity import turned out to be, once routed on the signed version. */
+sealed interface IdentityImportOk {
+    /** Legacy course-scoped. Still importable forever; only MINTING was retired. */
+    data class Legacy20(val courseId: String) : IdentityImportOk
+
+    data class Current21(
+        val institutionId: String,
+        val studentRef: String,
+        /** So a caller can check this machine derives it, without re-reading the store. */
+        val studentPubkey: String,
+    ) : IdentityImportOk
+}
 
 private val HEX_MASTER_RE = Regex("^[0-9a-f]{${STUDENT_MASTER_SECRET_BYTES * 2}}$")
 
@@ -286,5 +349,177 @@ fun clearEnrollment(secrets: SecretStore, courseId: String) {
         secrets.delete(enrollmentKeyForCourse(courseId))
     } catch (_: Throwable) {
         // Best effort — there is nothing useful to do if the keyring is unavailable.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Student credentials — identity 2.1, INSTITUTION-scoped
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a pasted 2.1 `{ enrollment, enrollment_cert }` blob and persist it.
+ *
+ * Step for step the twin of [saveEnrollment], in the same order and for the same
+ * reasons, with the 2.1 artifacts and the 2.1 cross-field check:
+ *
+ *  1. JSON, and a JSON *object*.
+ *  2. Version gate on BOTH slots, cert first — before any shape work, so a future 3.0
+ *     artifact is refused as a version problem and never read under 2.1 rules. This
+ *     mirrors `verifyIdentityChain` step 0.
+ *  3. Shape, cert first, via `core`'s own parsers.
+ *  4. `institution_id` agreement between the credential and the cert travelling with
+ *     it — the 2.1 analogue of the 2.0 `course_id` comparison.
+ *
+ * **SIGNATURES ARE NOT CHECKED HERE**, exactly as at 2.0. The 2.1 trust anchor is the
+ * recorder's embedded ROOT public key, and the real walk happens at session start in
+ * [buildSessionIdentity], against the session actually being recorded. Validating here
+ * only rejects an obvious paste error while the student is standing there to fix it.
+ */
+fun saveStudentCredential(
+    secrets: SecretStore,
+    rawJson: String,
+): StoreResult<IdentityImportOk.Current21> {
+    val parsed = try {
+        Json.parseToJsonElement(rawJson)
+    } catch (e: Exception) {
+        return StoreResult.Err(IdentityStoreError.InvalidJson(describe(e)))
+    }
+    val obj = parsed as? JsonObject
+        ?: return StoreResult.Err(IdentityStoreError.InvalidJson("expected a JSON object"))
+
+    // Version gate BEFORE shape, mirroring verifyIdentityChain step 0.
+    for ((field, artifact) in listOf("enrollment_cert" to "cert", "enrollment" to "credential")) {
+        val declared = ((obj[field] as? JsonObject)?.get("format_version") as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+        if (declared != INSTITUTION_IDENTITY_FORMAT_VERSION) {
+            return StoreResult.Err(
+                IdentityStoreError.UnsupportedFormatVersion(artifact, declared ?: ""),
+            )
+        }
+    }
+
+    val cert = when (val c = parseInstitutionCert(obj["enrollment_cert"])) {
+        is EnrollmentParse.Err -> return StoreResult.Err(IdentityStoreError.InvalidCertShape(c.reason))
+        is EnrollmentParse.Ok -> c.value
+    }
+    val credential = when (val t = parseStudentCredential(obj["enrollment"])) {
+        is EnrollmentParse.Err ->
+            return StoreResult.Err(IdentityStoreError.InvalidCredentialShape(t.reason))
+
+        is EnrollmentParse.Ok -> t.value
+    }
+
+    // Caught here as well as in the chain walk: storing a pair that can never verify
+    // would leave the student believing they are enrolled while every session silently
+    // omitted an identity.
+    if (credential.institutionId != cert.institutionId) {
+        return StoreResult.Err(
+            IdentityStoreError.InstitutionIdMismatch(credential.institutionId, cert.institutionId),
+        )
+    }
+
+    val blob = buildJsonObject {
+        put("enrollment", credential.toJsonObject())
+        put("enrollment_cert", cert.toJsonObject())
+    }.toString()
+
+    return try {
+        secrets.store(CREDENTIAL_KEY, blob)
+        StoreResult.Ok(
+            IdentityImportOk.Current21(
+                institutionId = credential.institutionId,
+                studentRef = credential.studentRef,
+                studentPubkey = credential.studentPubkey,
+            ),
+        )
+    } catch (e: Throwable) {
+        StoreResult.Err(IdentityStoreError.SecretStoreUnavailable(describe(e)))
+    }
+}
+
+/**
+ * Read the stored 2.1 credential.
+ *
+ * Returns null for EVERY failure, for the same reason as [loadEnrollment]: this is on
+ * the session-start path, where the only correct response to "cannot produce an
+ * identity" is to record without one.
+ */
+fun loadStudentCredential(secrets: SecretStore): StoredCredential? {
+    val raw = try {
+        secrets.get(CREDENTIAL_KEY)
+    } catch (_: Throwable) {
+        return null
+    }
+    if (raw.isNullOrEmpty()) return null
+
+    val obj = try {
+        Json.parseToJsonElement(raw) as? JsonObject
+    } catch (_: Exception) {
+        null
+    } ?: return null
+
+    val cert = parseInstitutionCert(obj["enrollment_cert"]) as? EnrollmentParse.Ok ?: return null
+    val credential = parseStudentCredential(obj["enrollment"]) as? EnrollmentParse.Ok ?: return null
+    return StoredCredential(enrollment = credential.value, enrollmentCert = cert.value)
+}
+
+/** Forget the 2.1 credential. NEVER touches the master secret. */
+fun clearStudentCredential(secrets: SecretStore) {
+    try {
+        secrets.delete(CREDENTIAL_KEY)
+    } catch (_: Throwable) {
+        // Best effort — nothing useful to do if the keyring is unavailable.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The one importer — routes on the SIGNED version
+// ---------------------------------------------------------------------------
+
+/**
+ * Import whatever identity artifact a student pasted, 2.0 or 2.1.
+ *
+ * ## Routing on the signed version, never on which fields exist
+ *
+ * Both versions use the same two wire slots, so "which keys are present" says nothing
+ * about which version this is. The discriminator is the `format_version` INSIDE
+ * `enrollment_cert` — signed in both families, at the same wire key in both — which is
+ * exactly what `verifyIdentityChain` step 0 reads, and for exactly the reason spelled
+ * out there. Presence is attacker-controlled and ambiguous; a signed version is neither.
+ *
+ * Reading the declared version off an unvalidated object is safe precisely because
+ * nothing has been trusted yet — the routed-to function re-reads and re-validates it
+ * before anything is stored.
+ *
+ * ## Both versions remain importable, forever
+ *
+ * A student who still holds a 2.0 token can still import it, and a recorder that already
+ * stored one keeps using it. 2.0 MINTING is retired; 2.0 handling is not, and archived
+ * material is the entire justification for the system.
+ */
+fun saveIdentityArtifact(secrets: SecretStore, rawJson: String): StoreResult<IdentityImportOk> {
+    val parsed = try {
+        Json.parseToJsonElement(rawJson)
+    } catch (e: Exception) {
+        return StoreResult.Err(IdentityStoreError.InvalidJson(describe(e)))
+    }
+    val obj = parsed as? JsonObject
+        ?: return StoreResult.Err(IdentityStoreError.InvalidJson("expected a JSON object"))
+
+    val declared = ((obj["enrollment_cert"] as? JsonObject)?.get("format_version") as? JsonPrimitive)
+        ?.takeIf { it.isString }?.content ?: ""
+
+    return when (declared) {
+        INSTITUTION_IDENTITY_FORMAT_VERSION -> when (val r = saveStudentCredential(secrets, rawJson)) {
+            is StoreResult.Ok -> StoreResult.Ok(r.value)
+            is StoreResult.Err -> r
+        }
+
+        ENROLLMENT_FORMAT_VERSION -> when (val r = saveEnrollment(secrets, rawJson)) {
+            is StoreResult.Ok -> StoreResult.Ok(IdentityImportOk.Legacy20(r.value))
+            is StoreResult.Err -> r
+        }
+
+        else -> StoreResult.Err(IdentityStoreError.UnsupportedIdentityVersion(declared))
     }
 }

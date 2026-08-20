@@ -22,6 +22,7 @@ import dev.provenance.core.isEventKindCaptured
 import dev.provenance.core.resolveCapturePolicy
 import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
+import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.failure.DegradedModeNotifier
 import dev.provenance.recorder.failure.DiskFullHandler
@@ -215,6 +216,10 @@ class RecordingSessionController(
             sessionStartedAt = clock.wall(),
             secrets = secrets,
             keyCache = keyCache,
+            // The 2.1 trust anchor. The stored institution_cert is root-verified against
+            // this before it is used as an anchor — whoever supplies a cert supplies its
+            // institution_pubkey too, so an unverified anchor proves nothing.
+            rootPubkeyHex = ROOT_PUBLIC_KEY_HEX,
         )
         if (identityOutcome is IdentityOutcome.Skipped) {
             LOG.debug("provenance: session.start identity omitted: ${identityOutcome.reason}")

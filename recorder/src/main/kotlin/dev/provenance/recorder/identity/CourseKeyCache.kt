@@ -5,6 +5,7 @@ import com.intellij.openapi.components.Service
 import dev.provenance.core.Sha256
 import dev.provenance.core.StudentCourseKeypair
 import dev.provenance.core.deriveCourseKeypair
+import dev.provenance.core.deriveStudentKeypair
 
 /**
  * Per-course student key cache (program spec §5a, §S2).
@@ -51,10 +52,25 @@ class CourseKeyCache @JvmOverloads constructor(
      * `@JvmOverloads` generates is what the platform's service container instantiates.
      */
     private val derive: (ByteArray, String) -> StudentCourseKeypair = ::deriveCourseKeypair,
+    /**
+     * Derivation seam for the identity-2.1 GLOBAL student key. Same contract as
+     * [derive], minus the course: at 2.1 a student has ONE key across every course.
+     */
+    private val deriveGlobal: (ByteArray) -> StudentCourseKeypair = ::deriveStudentKeypair,
 ) : Disposable {
 
     /** `"<master fingerprint>:<course_id>"` -> keypair. Guarded by [lock]. */
     private val entries = HashMap<String, StudentCourseKeypair>()
+
+    /**
+     * `"<master fingerprint>"` -> the GLOBAL 2.1 keypair. Guarded by [lock].
+     *
+     * A SEPARATE map rather than a reserved key in [entries]: the two derivations use
+     * different HKDF `info` strings and must never be interchangeable, and any scheme
+     * that encodes "global" as a course id in the same keyspace is one unlucky course
+     * name away from handing a student the wrong private key. Two maps cannot collide.
+     */
+    private val globalEntries = HashMap<String, StudentCourseKeypair>()
 
     /**
      * One lock over both [entries] and [disposed]. Session start runs off the EDT and more
@@ -106,13 +122,49 @@ class CourseKeyCache @JvmOverloads constructor(
      * Drop every derived key. Idempotent. After this the cache still answers [get]
      * correctly; it just retains nothing.
      */
+    /**
+     * Derive (or return the cached) GLOBAL identity-2.1 keypair. Never throws.
+     *
+     * Structurally identical to [get] and for the same reasons — the only differences
+     * are that there is no course to key on and that the derivation is
+     * [deriveStudentKeypair], whose HKDF `info` is fixed.
+     *
+     * @param masterSecret the student's raw master secret bytes
+     * @return the keypair, or null if the input is unusable or derivation failed
+     */
+    fun getGlobal(masterSecret: ByteArray): StudentCourseKeypair? {
+        val key = try {
+            Sha256.hex(masterSecret)
+        } catch (_: Throwable) {
+            return null
+        }
+
+        synchronized(lock) {
+            if (!disposed) globalEntries[key]?.let { return it }
+        }
+
+        // Outside the lock, exactly as in [get]: pure and side-effect free, so a
+        // concurrent miss derives twice and stores the same value.
+        val derived = try {
+            deriveGlobal(masterSecret)
+        } catch (_: Throwable) {
+            return null
+        }
+
+        synchronized(lock) {
+            if (!disposed) globalEntries[key] = derived
+        }
+        return derived
+    }
+
     override fun dispose() {
         synchronized(lock) {
             disposed = true
             entries.clear()
+            globalEntries.clear()
         }
     }
 
-    /** Retained entry count. Test/inspection seam only. */
-    val size: Int get() = synchronized(lock) { entries.size }
+    /** Retained entry count, both derivations. Test/inspection seam only. */
+    val size: Int get() = synchronized(lock) { entries.size + globalEntries.size }
 }

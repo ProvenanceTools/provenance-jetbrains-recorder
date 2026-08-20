@@ -296,7 +296,9 @@ class SessionIdentityBuilderTest {
      */
     @Test
     fun `a key cache that cannot derive skips instead of throwing`() {
-        val broken = CourseKeyCache { _, _ -> throw IllegalStateException("no ed25519 provider") }
+        val broken = CourseKeyCache(
+            derive = { _, _ -> throw IllegalStateException("no ed25519 provider") },
+        )
         val outcome = buildSessionIdentity(
             EnrollmentFixtures.manifest(),
             sessionPubkey,

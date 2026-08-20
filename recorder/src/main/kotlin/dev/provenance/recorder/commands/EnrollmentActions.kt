@@ -8,14 +8,16 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import dev.provenance.core.deriveCourseKeypair
+import dev.provenance.core.deriveStudentKeypair
 import dev.provenance.recorder.identity.CourseKeyCache
+import dev.provenance.recorder.identity.IdentityImportOk
 import dev.provenance.recorder.identity.IdentityStoreError
 import dev.provenance.recorder.identity.PasswordSafeSecretStore
 import dev.provenance.recorder.identity.SecretStore
 import dev.provenance.recorder.identity.StoreResult
 import dev.provenance.recorder.identity.exportMasterSecret
 import dev.provenance.recorder.identity.loadOrCreateMasterSecret
-import dev.provenance.recorder.identity.saveEnrollment
+import dev.provenance.recorder.identity.saveIdentityArtifact
 import dev.provenance.recorder.session.RecorderSessionManager
 
 /**
@@ -26,12 +28,23 @@ import dev.provenance.recorder.session.RecorderSessionManager
  * Recorder PRD NG2 forbids network calls from the recorder, and this path honours it
  * completely. The flow is entirely out of band:
  *
- *  1. **Show My Enrollment Key** prints the student's per-course public key.
- *  2. The student sends it to course staff however the course prefers, and receives an
- *     `{ enrollment, enrollment_cert }` JSON blob back.
- *  3. **Import Enrollment Token** pastes that blob in.
+ *  1. **Show My Enrollment Key** prints the student's public key.
+ *  2. The student sends it to their institution's enrolment page (identity 2.1) or to
+ *     course staff (legacy 2.0), and receives an `{ enrollment, enrollment_cert }` JSON
+ *     blob back.
+ *  3. **Import Enrollment Token** pastes that blob in — either version; the importer
+ *     routes on the SIGNED `format_version` in the cert slot.
  *
  * Nothing here opens a socket, so the whole identity path works offline.
+ *
+ * ## Identity 2.1 needs no course
+ *
+ * Under 2.0 this command had to ask which course the key was for, because the key itself
+ * was per-course. Under 2.1 a student has ONE key across every course, so the global key
+ * is shown unconditionally and with no prompt — the friction that removal eliminates is
+ * exactly what made the 2.0 design deadlock (a student could not enrol before their first
+ * submission). Any active 2.0 course still gets its legacy per-course key listed
+ * underneath, so a student mid-migration can still be issued a 2.0 token.
  *
  * ## Export / Import Student Identity Secret
  *
@@ -85,28 +98,8 @@ class ShowEnrollmentKeyAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val courses = activeCourseIds(project)
-        val courseId = when {
-            courses.isEmpty() -> Messages.showInputDialog(
-                project,
-                "Course id (from your assignment's manifest):",
-                "Provenance: Show My Enrollment Key",
-                null,
-            )?.trim()
-
-            courses.size == 1 -> courses.first()
-            else -> Messages.showEditableChooseDialog(
-                "Which course?",
-                "Provenance: Show My Enrollment Key",
-                null,
-                courses.toTypedArray(),
-                courses.first(),
-                null,
-            )?.trim()
-        }
-        if (courseId.isNullOrEmpty()) return
-
         val secrets = storeOf()
+
         when (val master = loadOrCreateMasterSecret(secrets)) {
             is StoreResult.Err -> notify(
                 project,
@@ -116,15 +109,24 @@ class ShowEnrollmentKeyAction : AnAction() {
             )
 
             is StoreResult.Ok -> {
-                val keypair = keyCacheOf()?.get(master.value, courseId)
-                    ?: deriveCourseKeypair(master.value, courseId)
-                // showCopyableInfoMessage, not a plain info dialog: the student must be able
-                // to select and copy this to send to course staff.
+                val cache = keyCacheOf()
+                val global = cache?.getGlobal(master.value) ?: deriveStudentKeypair(master.value)
+
+                // Legacy per-course keys, listed only for courses actually being recorded.
+                // Never prompted for: a student who has no 2.0 token to obtain must not be
+                // asked to name a course they do not need.
+                val legacy = activeCourseIds(project).joinToString("") { courseId ->
+                    val kp = cache?.get(master.value, courseId)
+                        ?: deriveCourseKeypair(master.value, courseId)
+                    "\n\nLegacy (identity 2.0) key for $courseId:\n${kp.publicKeyHex}"
+                }
+
                 Messages.showInfoMessage(
                     project,
-                    "Your enrollment key for $courseId:\n\n${keypair.publicKeyHex}\n\n" +
-                        "Send this to your course staff. They will send back an enrollment " +
-                        "token, which you import with \"Provenance: Import Enrollment Token\".",
+                    "Your Provenance enrollment key:\n\n${global.publicKeyHex}\n\n" +
+                        "Send this to your institution's Provenance enrolment page. You " +
+                        "will get back a credential, which you import with \"Provenance: " +
+                        "Import Enrollment Token\"." + legacy,
                     "Provenance: Enrollment Key",
                 )
             }
@@ -147,13 +149,20 @@ class ImportEnrollmentTokenAction : AnAction() {
             null,
         ) ?: return
 
-        when (val result = saveEnrollment(storeOf(), pasted)) {
+        when (val result = saveIdentityArtifact(storeOf(), pasted)) {
             is StoreResult.Ok -> notify(
                 project,
                 NotificationType.INFORMATION,
                 "Provenance: enrolled",
-                "You are now enrolled in ${result.value}. New recording sessions will " +
-                    "include your identity.",
+                when (val ok = result.value) {
+                    is IdentityImportOk.Current21 ->
+                        "Your identity for ${ok.institutionId} is stored. New recording " +
+                            "sessions in every course will include it."
+
+                    is IdentityImportOk.Legacy20 ->
+                        "You are now enrolled in ${ok.courseId}. New recording sessions " +
+                            "will include your identity."
+                },
             )
 
             is StoreResult.Err -> notify(
@@ -266,6 +275,18 @@ private fun describeImportError(e: IdentityStoreError): String = when (e) {
     is IdentityStoreError.CourseIdMismatch ->
         "The token is for ${e.tokenCourseId} but its certificate is for ${e.certCourseId}. " +
             "Ask your course staff to re-issue it."
+
+    is IdentityStoreError.InvalidCredentialShape ->
+        "The credential is malformed (${e.reason})."
+
+    is IdentityStoreError.InstitutionIdMismatch ->
+        "The credential is for ${e.credentialInstitutionId} but its certificate is for " +
+            "${e.certInstitutionId}. That looks like two separate pastes mixed together — " +
+            "copy the whole blob again."
+
+    is IdentityStoreError.UnsupportedIdentityVersion ->
+        "That blob declares identity version \"${e.formatVersion}\", which this version of " +
+            "the recorder does not understand. Update the plugin."
 
     is IdentityStoreError.SecretStoreUnavailable ->
         "The system credential store is unavailable (${e.reason})."
