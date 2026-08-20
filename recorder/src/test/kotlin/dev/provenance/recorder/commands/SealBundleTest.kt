@@ -37,7 +37,34 @@ class SealBundleTest {
         pub = kp.second
     }
 
-    private fun writeSession(provDir: Path, filename: String, manifestSig: String, pubHex: String, corrupt: Boolean = false) {
+    /**
+     * Write one session's pair of files: `<filename>` and `<filename>.meta`.
+     *
+     * BOTH halves, always (unless a test explicitly asks otherwise), because that is what the
+     * recorder actually leaves on disk — `MetaWriter.create` writes the `.meta` eagerly at
+     * session start, before a single event is flushed. A fixture with a bare `.slog` describes
+     * a `.provenance/` no session can produce, and the analyzer rejects the whole bundle for it
+     * (`orphaned_slog`).
+     *
+     * TWO-UUID RULE. [sessionId] is the LOGICAL id — the one inside `session.start.data` — and
+     * [filename] carries the file's own uuid. Production spells them the same, but they are two
+     * different things and only the logical one is what a rolling manifest is named after, so
+     * they are two parameters here and a test may deliberately make them differ.
+     *
+     * Ids used with a rolling manifest must be hex (`[0-9a-f-]`): that is the character class
+     * `parseRollingManifestFilename` accepts, so `manifest-sess-1.json` is not a rolling
+     * manifest at all and every assertion about one would pass vacuously.
+     */
+    private fun writeSession(
+        provDir: Path,
+        filename: String,
+        manifestSig: String,
+        pubHex: String,
+        corrupt: Boolean = false,
+        sessionId: String = "sess-1",
+        writeMeta: Boolean = true,
+        empty: Boolean = false,
+    ) {
         var seq = 0L
         var prev = GENESIS_PREV_HASH
         fun emit(kind: String, data: Map<String, String>): HashedEnvelope {
@@ -46,11 +73,20 @@ class SealBundleTest {
             seq += 1; prev = e.hash
             return e
         }
-        val e0 = emit("session.start", mapOf("session_id" to "sess-1", "manifest_sig" to manifestSig, "session_pubkey" to pubHex))
+        val e0 = emit("session.start", mapOf("session_id" to sessionId, "manifest_sig" to manifestSig, "session_pubkey" to pubHex))
         val e1 = emit("doc.open", mapOf("path" to "hw.py"))
         val text = StringBuilder(serializeEntry(e0)).append(serializeEntry(e1))
         if (corrupt) text.append("this is not json\n")
-        Files.write(provDir.resolve(filename), text.toString().toByteArray(Charsets.UTF_8))
+        Files.write(
+            provDir.resolve(filename),
+            if (empty) ByteArray(0) else text.toString().toByteArray(Charsets.UTF_8),
+        )
+        if (writeMeta) {
+            Files.writeString(
+                provDir.resolve("$filename.meta"),
+                """{"format_version":"1.0","session_id":"$sessionId","session_pubkey":"$pubHex","checkpoints":[]}""",
+            )
+        }
     }
 
     private fun readZipEntries(zip: Path): Map<String, ByteArray> {
@@ -132,6 +168,62 @@ class SealBundleTest {
 
     private fun assertArrayEqualsHelper(a: ByteArray, b: ByteArray) {
         assertEquals(a.toList(), b.toList())
+    }
+
+    // --- the classic seal path is frozen ----------------------------------------------------
+
+    /**
+     * THE BYTE-FOR-BYTE PIN on the classic seal, for a normal, fully-flushed session.
+     *
+     * Every input is fixed — the session private key, the `.slog` and `.meta` bytes, the
+     * extension hash, the timestamp — so the signed manifest is a pure function with exactly
+     * one right answer, and ed25519 signing is deterministic. The three literals below were
+     * captured from the seal path BEFORE the orphan guard existed. If the guard ever perturbs
+     * the ordinary path — one extra `sessions` entry, a reordered zip, a different canonical
+     * form — this goes red on the exact bytes rather than on a behavioural approximation of
+     * them.
+     *
+     * Deliberately NOT a property assertion ("the manifest verifies", "the zip has a
+     * manifest.json"): those hold for a manifest that changed. Only the literal bytes prove
+     * that nothing moved.
+     */
+    @Test
+    fun `a normal session seals to exactly the bytes it sealed to before the orphan guard`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        val fixedPriv = Ed25519.hexToBytes("e1cd3820d5d4867defcd98e4436a80d92e99db284451b7595e75a66a4e8c7b75")
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(Ed25519.publicKeyOf(fixedPriv)))
+
+        val result = sealBundle(
+            prov, ws, "hw03", "fa26", emptyList(), fixedPriv, { "e".repeat(64) },
+            outputDir = ws, now = { Instant.parse("2026-07-14T12:00:00Z") },
+        )
+        assertTrue("seal failed: $result", result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        val entries = readZipEntries(ok.bundlePath)
+
+        assertEquals(
+            "the signed manifest bytes must not move",
+            GOLDEN_MANIFEST_JSON,
+            String(entries["manifest.json"]!!, Charsets.UTF_8),
+        )
+        assertEquals(
+            "the signature over those bytes must not move",
+            GOLDEN_MANIFEST_SIG,
+            String(entries["manifest.sig"]!!, Charsets.UTF_8),
+        )
+        assertEquals(Sha256.hex(GOLDEN_MANIFEST_JSON.toByteArray(Charsets.UTF_8)), ok.manifestSha256)
+        assertEquals(
+            "the archive's contents and their order must not move",
+            listOf("manifest.json", "manifest.sig", "session-1.slog", "session-1.slog.meta"),
+            entries.keys.toList(),
+        )
+    }
+
+    private companion object {
+        /** Captured from the pre-guard seal path. See the test above for why these are literals. */
+        const val GOLDEN_MANIFEST_JSON = "{\"assignment_id\":\"hw03\",\"extension_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"format_version\":\"1.1\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"c21e1c7f9f71840977f1d28b08846dc5896d2c0f3deb3971cb94fdb1ced210c8\",\"prev_session_id\":null,\"session_id\":\"sess-1\",\"slog_sha256\":\"67c34143272dc0d2cac5ae9c88fc6fc1d1152bce2c443e7b107727bd2601081d\"}],\"submission_files\":[]}"
+        const val GOLDEN_MANIFEST_SIG = "69121fa30c787bd10e95dfb0864b9fb5d2b1e36c9c867c2793ad0248611501b5029fb9f5537b82c45ec134c2e5bd5fad36a812131f9ee4f9a5c5ca3604096c06"
     }
 
     // --- an Error must not cost the student their submission --------------------
@@ -238,6 +330,10 @@ class SealBundleTest {
         val ws = tmp.root.toPath()
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        // Replace the real `.meta` with a directory at the same NAME. The name still pairs, so
+        // the session is packable and the read is reached — which is the point: exists() says
+        // yes and the read then fails, exactly the TOCTOU shape being pinned.
+        Files.delete(prov.resolve("session-1.slog.meta"))
         Files.createDirectory(prov.resolve("session-1.slog.meta"))
 
         val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
