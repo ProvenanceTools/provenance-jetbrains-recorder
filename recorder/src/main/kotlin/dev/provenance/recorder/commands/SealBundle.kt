@@ -57,7 +57,7 @@ private fun sha256OfFile(path: Path): String =
  * narrow `catch (_: Exception)` sites (a reviewed file read, and the zip-loop read) stay
  * narrow on purpose — see the comments there.
  */
-private fun rethrowIfFatal(t: Throwable) {
+internal fun rethrowIfFatal(t: Throwable) {
     if (t is VirtualMachineError) throw t
 }
 
