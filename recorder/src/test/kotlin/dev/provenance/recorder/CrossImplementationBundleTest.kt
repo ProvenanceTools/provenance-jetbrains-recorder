@@ -1,11 +1,13 @@
 package dev.provenance.recorder
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
@@ -35,6 +37,7 @@ import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.session.ActivatedWorkspace
 import dev.provenance.recorder.session.RecorderSessionManager
 import dev.provenance.recorder.session.RecorderSessionManager.ActiveSession
+import dev.provenance.recorder.session.RecordingSessionController
 import dev.provenance.recorder.startup.RecoveryDecision
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -63,6 +66,14 @@ import java.util.zip.ZipOutputStream
  *
  * `scripts/e2e/run_e2e.sh` then hands both to the REAL monorepo `analysis-core`
  * (`loadBundle` + `runValidation`) and requires all eight PRD §5.4 checks to pass.
+ *
+ * ## Two sessions, one of them torn down before its first flush
+ *
+ * Both archives are produced from a `.provenance/` carrying TWO real sessions: a normal one,
+ * and one killed between `session.start` and the first flush. That second shape is the one
+ * this gate could not express, and not expressing it is what let an unopenable bundle ship.
+ * See [startSessionTornDownBeforeItsFirstFlush] for what it leaves on disk and why each of the
+ * four properties that hid it is kept intact for the normal session.
  *
  * ## Why a real on-disk workspace, and not `configureByText`
  *
@@ -256,6 +267,84 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
     }
 
     // -----------------------------------------------------------------------
+    // The shape this gate could not previously express
+    // -----------------------------------------------------------------------
+
+    /**
+     * A SECOND, REAL session against the same `.provenance/`, torn down before its first flush.
+     *
+     * This is the shape that let an unopenable bundle ship. Four independent properties of this
+     * gate hid it, and all four are legitimate for the rest of what it tests: a fresh temp
+     * workspace per method (only ever ONE session), an explicit `controller.flush()`,
+     * `recovery = RecoveryDecision.CleanStart` passed directly (so quarantine never runs), and a
+     * clean `endSession`. Nothing here weakens those — the normal session still has every one of
+     * them. This just adds the session that does not.
+     *
+     * Everything about it is real: the real controller, the real `SessionWriter`, the real
+     * `MetaWriter`, the real rolling-seal writer. `SessionWriter.open` creates the `.slog`
+     * eagerly with CREATE|APPEND and `BufferPolicy` will not flush one small entry, so after
+     * `session.start` the log exists and is EMPTY. That is the window rolling seal write point 1
+     * fires in, and the window a crash, a power cut or a force-quit lands in.
+     *
+     * Deliberately not registered with [RecorderSessionManager]: it is a second session in one
+     * directory, which is what the seal has to survive, and going through the manager would also
+     * make `sealActiveSession` ambiguous. It gets its own Disposable so the test can end it at a
+     * chosen moment rather than at teardown.
+     */
+    private class UnflushedSession(val controller: RecordingSessionController, val disposable: Disposable)
+
+    private fun startSessionTornDownBeforeItsFirstFlush(submission: ManifestSubmission): UnflushedSession {
+        val disposable = Disposer.newDisposable(testRootDisposable, "provjet-e2e-unflushed-session")
+        val controller = RecordingSessionController(
+            activated = ActivatedWorkspace(manifest(submission), wsRoot.resolve(".provenance"), wsRoot),
+            project = project,
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            parentDisposable = disposable,
+            clock = FixedClock(0, Instant.parse("2026-09-08T00:00:00Z")),
+            scheduler = NoopScheduler(),
+            computeExtensionHash = { EXTENSION_HASH },
+        )
+        // NO flush(), NO endSession(). The whole point.
+        assertEquals(
+            "the fixture must actually be pre-first-flush: a zero-byte .slog on disk",
+            0L,
+            Files.size(controller.slogPath),
+        )
+        return UnflushedSession(controller, disposable)
+    }
+
+    /**
+     * THE LOADER'S OWN INVARIANT, asserted directly rather than as a filename list: every rolling
+     * seal in the archive names a session whose log is in the archive too.
+     *
+     * Read out of the packed bytes — logical ids from each `.slog`'s `session.start`, seal ids
+     * from the `manifest-<id>` filenames — because that is exactly the comparison
+     * `reconcileRollingSealsWithSessions` makes before failing check 1 for the whole bundle.
+     */
+    private fun assertEveryRollingSealNamesAPackedSession(zipPath: Path) {
+        val contents = zipEntryContents(zipPath)
+        val packedIds = contents.entries
+            .filter { it.key.endsWith(".slog") }
+            .mapNotNull { (_, bytes) ->
+                (parseEntries(String(bytes, Charsets.UTF_8)) as? ParseResult.Ok)?.let { logicalSessionIdOf(it.entries) }
+            }
+            .toSet()
+        val sealIds = contents.keys.mapNotNull { name ->
+            Regex("^manifest-([0-9a-f-]+)\\.(json|sig)$").matchEntire(name)?.groupValues?.get(1)
+        }.toSet()
+        for (id in sealIds) {
+            assertTrue(
+                "manifest-$id.* is in the archive but session $id's log is not — analysis-core " +
+                    "reports no_session_log and fails check 1 for the WHOLE bundle. Packed: $packedIds",
+                packedIds.contains(id),
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Shape 1: the classic sealed bundle
     // -----------------------------------------------------------------------
 
@@ -264,14 +353,21 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         val session = record(ManifestSubmission.BUNDLE)
         assertRecordedWell(session)
 
+        // A second session in the same directory, killed before its first flush. Its zero-byte
+        // `.slog` used to be PACKED, and written into the SIGNED manifest as a null-id entry —
+        // which makes the whole archive unopenable (first_event_not_session_start, "none").
+        val unflushed = startSessionTornDownBeforeItsFirstFlush(ManifestSubmission.BUNDLE)
+
         val result = manager.sealActiveSession(
             now = { Instant.parse("2026-09-08T12:00:00Z") },
             computeExtensionHash = { EXTENSION_HASH },
         )
+        Disposer.dispose(unflushed.disposable)
         assertTrue("seal failed: $result", result is SealResult.Ok)
         val ok = result as SealResult.Ok
         assertFalse("the sealed chain must be intact", ok.chainBroken)
         assertFalse("the sealed session must be readable", ok.unreadableSession)
+        assertTrue("the dropped session must be reported, never silently omitted", ok.emptySession)
 
         // Copied to a stable name out of the temp workspace (deleted in tearDown); the shell
         // gate looks the archive up by path rather than parsing this test's output.
@@ -290,6 +386,24 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
             "no rolling manifest may appear in the classic shape: $names",
             names.none { it.startsWith("manifest-") },
         )
+        // The unopenable half stays out — log and meta together, since either one alone is an
+        // orphan the loader rejects the whole bundle over.
+        val ghost = unflushed.controller.slogPath.fileName.toString()
+        assertFalse("a zero-byte log must not be packed: $names", names.contains(ghost))
+        assertFalse("nor its meta, which would then be orphaned", names.contains("$ghost.meta"))
+        // ...and it is not in the SIGNED manifest either. Those two must agree.
+        val manifestJson = String(zipEntryContents(gatePath)["manifest.json"]!!, Charsets.UTF_8)
+        assertFalse(
+            "the dropped session must not be named in the signed manifest",
+            manifestJson.contains(unflushed.controller.sessionId),
+        )
+        assertFalse(
+            "nor appear as a null-id session entry",
+            manifestJson.contains("\"session_id\":null"),
+        )
+        // Never deleted, only left out: a git-submitted `.provenance/` is read straight off disk.
+        assertTrue("the log must survive on disk", Files.exists(unflushed.controller.slogPath))
+        assertEveryRollingSealNamesAPackedSession(gatePath)
         println("PROVJET_E2E_CLASSIC_BUNDLE=" + gatePath.toAbsolutePath())
     }
 
@@ -302,6 +416,23 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         assertRecordedWell(session)
 
         val provDir = wsRoot.resolve(".provenance")
+
+        // The full defect, in the shape that ships: a second session in the same directory,
+        // killed before its first flush. It leaves THREE artifacts behind — a zero-byte `.slog`,
+        // its `.slog.meta`, and the rolling seal write point 1 signed over the empty log.
+        val unflushed = startSessionTornDownBeforeItsFirstFlush(ManifestSubmission.GIT)
+        val ghostSeal = rollingManifestFilenames(unflushed.controller.sessionId)
+
+        // WRITE POINT 1 MUST HAVE FIRED FOR IT ANYWAY. This is the assertion that stands between
+        // this defect and the tempting "fix" of making the session-start roll conditional on a
+        // non-empty log: a zero-event session MUST still be sealed on disk, or a git-submitted
+        // repo — which has no seal step at all — reports `unsealed_session` against a student who
+        // did nothing wrong. Removing write point 1 fails the gate on exactly this line.
+        assertTrue(
+            "a zero-event session must still be sealed on disk by write point 1",
+            Files.exists(provDir.resolve(ghostSeal.json)) && Files.exists(provDir.resolve(ghostSeal.sig)),
+        )
+
         // Teardown is what writes the FINAL seal: both writers are closed first, so the
         // digests it signs are whole-file commitments rather than a prefix.
         session.controller.endSession("submit")
@@ -314,9 +445,19 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
 
         val gatePath = freshOutDir("rolling").resolve(ROLLING_BUNDLE)
         zipRepo(provDir, wsRoot, listOf(REVIEWED_FILE), gatePath)
+        Disposer.dispose(unflushed.disposable)
         writeRootPubkey()
 
         val names = zipEntryNames(gatePath)
+        // The git shape has NO classic manifest to fall back on, so every seal in it is
+        // load-bearing and a stale one fails check 1 for the whole archive.
+        val ghostLog = unflushed.controller.slogPath.fileName.toString()
+        assertFalse("a zero-byte log must not be packed: $names", names.contains(ghostLog))
+        assertFalse("nor its meta, which would then be orphaned", names.contains("$ghostLog.meta"))
+        assertFalse("nor the seal that names it: $names", names.contains(ghostSeal.json))
+        assertFalse(names.contains(ghostSeal.sig))
+        // Never deleted, only left out — the on-disk seal IS the git submission's evidence.
+        assertTrue("the seal must survive on disk", Files.exists(provDir.resolve(ghostSeal.json)))
         // No classic seal WHATSOEVER — that is what makes this the git-submitted shape and
         // forces the loader down the rolling path.
         assertFalse("a rolling archive carries no manifest.json", names.contains("manifest.json"))
@@ -324,6 +465,7 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         assertTrue(names.contains(expected.json))
         assertTrue(names.contains(expected.sig))
         assertTrue(names.contains(REVIEWED_FILE))
+        assertEveryRollingSealNamesAPackedSession(gatePath)
         println("PROVJET_E2E_ROLLING_BUNDLE=" + gatePath.toAbsolutePath())
     }
 
@@ -417,12 +559,14 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         }
     }
 
-    private fun zipEntryNames(zipPath: Path): Set<String> {
-        val out = mutableSetOf<String>()
+    private fun zipEntryNames(zipPath: Path): Set<String> = zipEntryContents(zipPath).keys
+
+    private fun zipEntryContents(zipPath: Path): Map<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
         ZipInputStream(Files.newInputStream(zipPath)).use { zin ->
             while (true) {
                 val e = zin.nextEntry ?: break
-                out.add(e.name)
+                out[e.name] = zin.readBytes()
                 zin.closeEntry()
             }
         }

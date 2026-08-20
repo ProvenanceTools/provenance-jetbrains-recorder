@@ -10,6 +10,16 @@
 # because it is the only one where a SECOND implementation of the format is
 # judged by the FIRST one's reader rather than by its own expectations.
 #
+# Each archive carries TWO sessions against one `.provenance/`: a normal one,
+# and one that starts and is torn down BEFORE ITS FIRST FLUSH. The second is the
+# shape this gate could not previously express, and not expressing it is what let
+# an unopenable bundle ship — a zero-byte `.slog`, its `.slog.meta`, and (in the
+# git shape) the rolling seal that write point 1 signs over the empty log, all
+# packed, any one of which makes `analysis-core` reject the WHOLE archive. The
+# producer asserts on disk, BEFORE packing, that write point 1 sealed that
+# session anyway: a zero-event session must still be sealed, or a git-submitted
+# repo reports `unsealed_session` against a student who did nothing wrong.
+#
 # Usage: scripts/e2e/run_e2e.sh
 # Env:   PROVENANCE_MONOREPO  (default: ../provenance, beside this repo)
 #        NODE                 (default: node)
