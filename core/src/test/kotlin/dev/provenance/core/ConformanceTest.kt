@@ -1256,6 +1256,181 @@ class ConformanceTest {
         }
     }
 
+    /**
+     * `rolling-manifest.json` — the S3 ROLLING SEAL's write side.
+     *
+     * Every case here is built THROUGH the production write path
+     * ([buildRollingSessionManifest] + [signBundleManifest] + [rollingManifestFilenames]) and
+     * compared against the golden bytes. Nothing decodes the fixture's manifest object and
+     * re-emits it: that would test kotlinx-serialization's round trip, not the recorder, and
+     * would stay green through exactly the mutations this suite exists to catch.
+     *
+     * The canonical bytes ARE the signed message and three recorder implementations pin them,
+     * so a red test here means this recorder's seal is wrong — never that a vector should move.
+     */
+    @Nested
+    inner class RollingManifestVectors {
+        private val v by lazy { vector("rolling-manifest.json") }
+
+        /** The session key the fixture signs with: log-core's `seed(6)`. */
+        private val sessionPriv = ByteArray(32) { 6 }
+
+        private val sessionId get() = v["session_id"]!!.jsonPrimitive.content
+
+        /**
+         * The writer's INPUTS, read off the fixture — per-file path/status/sha, not shape.
+         * Guarded on count so a truncated fixture cannot quietly shrink the payload under test.
+         */
+        private fun submissionFileInputs(): List<SubmissionFileEntry> {
+            val files = v["manifest"]!!.jsonObject["submission_files"]!!.jsonArray
+            assertEquals(2, files.size, "fixture must carry both a present and a missing file")
+            return files.map { e ->
+                val o = e.jsonObject
+                SubmissionFileEntry(
+                    path = o["path"]!!.jsonPrimitive.content,
+                    status = o["status"]!!.jsonPrimitive.content,
+                    sha256 = (o["sha256"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+                )
+            }
+        }
+
+        /** Build one case through the production builder, from the fixture's field values. */
+        private fun buildFromVector(isFinal: Boolean): BundleManifest {
+            val session = v["manifest"]!!.jsonObject["sessions"]!!.jsonArray.single().jsonObject
+            val m = v["manifest"]!!.jsonObject
+            return buildRollingSessionManifest(
+                sessionId = session["session_id"]!!.jsonPrimitive.content,
+                prevSessionId = (session["prev_session_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+                slogSha256 = session["slog_sha256"]!!.jsonPrimitive.content,
+                metaSha256 = session["meta_sha256"]!!.jsonPrimitive.content,
+                assignmentId = m["assignment_id"]!!.jsonPrimitive.content,
+                semester = m["semester"]!!.jsonPrimitive.content,
+                extensionHash = m["extension_hash"]!!.jsonPrimitive.content,
+                submissionFiles = submissionFileInputs(),
+                isFinal = isFinal,
+            )
+        }
+
+        @Test
+        fun `the fixture's session key is the one this suite signs with`() {
+            assertEquals(
+                v["session_pubkey_hex"]!!.jsonPrimitive.content,
+                Ed25519.bytesToHex(Ed25519.publicKeyOf(sessionPriv)),
+            )
+        }
+
+        @Test
+        fun `rolling manifest is emitted at format_version 1_2`() {
+            assertEquals(v["format_version"]!!.jsonPrimitive.content, ROLLING_MANIFEST_FORMAT_VERSION)
+            assertEquals(ROLLING_MANIFEST_FORMAT_VERSION, buildFromVector(isFinal = false).formatVersion)
+        }
+
+        @Test
+        fun `filenames match log-core and round-trip through the parser`() {
+            val expected = v["filenames"]!!.jsonObject
+            val names = rollingManifestFilenames(sessionId)
+            assertEquals(expected["json"]!!.jsonPrimitive.content, names.json)
+            assertEquals(expected["sig"]!!.jsonPrimitive.content, names.sig)
+            assertEquals(
+                RollingManifestFile(sessionId, RollingManifestPart.JSON),
+                parseRollingManifestFilename(names.json),
+            )
+            assertEquals(
+                RollingManifestFile(sessionId, RollingManifestPart.SIG),
+                parseRollingManifestFilename(names.sig),
+            )
+        }
+
+        /**
+         * `manifest.json` / `manifest.sig` are the CLASSIC seal. If either could be read as a
+         * rolling seal, the two shapes would collide in one directory — so the parser must
+         * refuse them, and by symmetry the writer can never be asked to produce them.
+         */
+        @Test
+        fun `names that are not rolling seals are refused`() {
+            val names = v["not_rolling_filenames"]!!.jsonArray
+            assertEquals(5, names.size, "fixture must carry all five non-rolling names")
+            for (n in names) {
+                val name = n.jsonPrimitive.content
+                assertNull(parseRollingManifestFilename(name), "must not parse as a rolling seal: $name")
+            }
+        }
+
+        @Test
+        fun `canonical json and signature match log-core`() {
+            val signed = signBundleManifest(buildFromVector(isFinal = false), sessionPriv)
+            assertEquals(v["canonical_json"]!!.jsonPrimitive.content, signed.canonicalJson)
+            assertEquals(v["signature_hex"]!!.jsonPrimitive.content, signed.signatureHex)
+        }
+
+        /**
+         * The `final` marker, both ways round.
+         *
+         * `non_final` is the shape EVERY roll but the last one takes: the key is ABSENT, not
+         * `false`. Writing `"final":false` would change the canonical bytes of every seal a
+         * student's repo has ever carried and break byte-compatibility with the other two
+         * recorders, so the absence is asserted explicitly rather than left implied.
+         */
+        @Test
+        fun `final marker vectors match log-core`() {
+            val marker = v["final_marker"]!!.jsonObject
+            val cases = listOf("non_final", "final")
+            for (name in cases) {
+                val case = marker[name]!!.jsonObject
+                val isFinal = case["is_final"]!!.jsonPrimitive.boolean
+                assertEquals(name == "final", isFinal, "fixture case $name")
+                val signed = signBundleManifest(buildFromVector(isFinal), sessionPriv)
+                assertEquals(case["canonical_json"]!!.jsonPrimitive.content, signed.canonicalJson, name)
+                assertEquals(case["signature_hex"]!!.jsonPrimitive.content, signed.signatureHex, name)
+                if (isFinal) {
+                    assertTrue(signed.canonicalJson.contains("\"final\":true"), "final seal must say so")
+                } else {
+                    assertFalse(signed.canonicalJson.contains("final"), "a non-final seal must OMIT the key")
+                }
+            }
+            // Guard against a truncated fixture silently emptying the loop above.
+            assertEquals(cases.size, cases.count { marker[it] != null })
+        }
+
+        /**
+         * The DOWNGRADE attempt: strip `final`, keep the final seal's signature. `final` is
+         * inside the signed payload, so the canonical bytes change and the signature cannot
+         * verify — which is what stops a student demoting a whole-file commitment back to a
+         * prefix one without the session's private key.
+         */
+        @Test
+        fun `stripping final invalidates the final signature`() {
+            val d = v["final_marker"]!!.jsonObject["downgrade_rejects"]!!.jsonObject
+            assertFalse(d["verifies"]!!.jsonPrimitive.boolean)
+            // Reproduce the downgrade through the writer: the non-final bytes, the final sig.
+            val nonFinal = signBundleManifest(buildFromVector(isFinal = false), sessionPriv)
+            val finalSig = v["final_marker"]!!.jsonObject["final"]!!.jsonObject["signature_hex"]!!.jsonPrimitive.content
+            assertEquals(d["canonical_json"]!!.jsonPrimitive.content, nonFinal.canonicalJson)
+            assertEquals(d["signature_hex"]!!.jsonPrimitive.content, finalSig)
+            assertFalse(
+                Ed25519.verify(
+                    Ed25519.hexToBytes(finalSig),
+                    nonFinal.canonicalJson.toByteArray(Charsets.UTF_8),
+                    Ed25519.publicKeyOf(sessionPriv),
+                ),
+            )
+        }
+
+        /**
+         * The one-session rule, enforced by CONSTRUCTION: the builder takes one session's
+         * four fields, not a list, so no caller can put two sessions (or zero) into a rolling
+         * manifest file. A rolling manifest that covered several sessions would need several
+         * private keys to be verifiable, and would reintroduce the shared-file merge conflict
+         * per-session filenames exist to remove.
+         */
+        @Test
+        fun `a rolling manifest covers exactly one non-null session`() {
+            val m = buildFromVector(isFinal = false)
+            assertEquals(1, m.sessions.size)
+            assertEquals(sessionId, m.sessions.single().sessionId)
+        }
+    }
+
     private fun assertWindow(expected: JsonObject, actual: CertWindowStatus, label: String) {
         assertEquals(expected["in_window"]!!.jsonPrimitive.boolean, actual.inWindow, label)
         val reason = expected["reason"]?.jsonPrimitive?.content

@@ -36,7 +36,10 @@ data class SessionEntry(
 )
 
 data class BundleManifest(
-    /** "1.0" = legacy (no submission_files); "1.1" carries final on-disk state. */
+    /**
+     * "1.0" = legacy (no submission_files); "1.1" carries final on-disk state;
+     * "1.2" = a ROLLING seal, one file per session (see RollingManifest.kt).
+     */
     val formatVersion: String,
     val assignmentId: String,
     val semester: String,
@@ -44,6 +47,15 @@ data class BundleManifest(
     val sessions: List<SessionEntry>,
     /** Present on 1.1; null on legacy 1.0. */
     val submissionFiles: List<SubmissionFileEntry>?,
+    /**
+     * The 1.2 rolling seal's `final` marker: "this is the LAST seal this session will
+     * ever get, so my digests commit to the WHOLE log, not to a prefix".
+     *
+     * Kotlin-side name is [isFinal]; the wire key is `final`. **Emitted only when true**
+     * — see [toJsonText]. Always false for the classic 1.0/1.1 seal, which is sealed
+     * once over a finished log and has no use for the distinction.
+     */
+    val isFinal: Boolean = false,
 )
 
 data class SignedBundleManifest(
@@ -93,6 +105,11 @@ fun BundleManifest.toJsonText(): String =
                 },
             )
         }
+        // OMITTED ENTIRELY unless final — never emitted as `false`. The canonical bytes
+        // ARE the signed message, and a non-final rolling manifest must stay byte-identical
+        // to what 1.2 emitted before this field existed; those bytes are pinned by the
+        // cross-language conformance vectors that three recorder implementations share.
+        if (isFinal) put("final", true)
     }.toString()
 
 /**
