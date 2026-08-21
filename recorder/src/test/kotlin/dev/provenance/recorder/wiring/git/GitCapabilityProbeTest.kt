@@ -150,17 +150,26 @@ class GitCapabilityProbeTest {
     }
 
     @Test
-    fun `decideGitCapture is not_owned when the only visible repository is the session root's parent`() {
+    fun `decideGitCapture is available when the only visible repository is the session root's parent`() {
         // A repository whose root sits ABOVE the assignment root is the "standard nested
-        // course layout" shape (one shared class repo, assignment as a subdirectory). This
-        // recorder's own git.event router (RecorderSessionManager.sessionOwning) does not
-        // route such a repository to any session either — decideGitCapture mirrors that
-        // router's actual behavior faithfully rather than a broader, aspirational one. See
-        // the file docstring: fixing that routing predicate is a separate, pre-existing
-        // question this task does not touch.
+        // course layout" shape (one shared class repo, assignment as a subdirectory) —
+        // decision-log bug 3's shape. RecorderSessionManager.sessionsOwningRepo now routes
+        // such a repository's git.event to this session (see its KDoc), so decideGitCapture
+        // must agree: reporting NOT_OWNED here while the router actually delivers the event
+        // would contradict the live wiring.
+        assertEquals(
+            GitCaptureCapability.AVAILABLE,
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws"))),
+        )
+    }
+
+    @Test
+    fun `decideGitCapture is not_owned when the only visible repository is an unrelated directory`() {
+        // Neither an ancestor nor a descendant of the session root — a sibling elsewhere in the
+        // tree, the case NOT_OWNED exists to defend.
         assertEquals(
             GitCaptureCapability.NOT_OWNED,
-            decideGitCapture(path("/ws/hw1"), listOf(path("/ws"))),
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws/hw2/vendor"))),
         )
     }
 

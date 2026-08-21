@@ -32,6 +32,7 @@ import dev.provenance.recorder.wiring.SelectionWiring
 import dev.provenance.recorder.wiring.SessionRouter
 import dev.provenance.recorder.wiring.isRecordablePath
 import dev.provenance.recorder.wiring.runOnEdtAndWait
+import dev.provenance.recorder.wiring.sameAncestryLine
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
 import org.jetbrains.annotations.TestOnly
@@ -114,7 +115,9 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
             // Separate seam so the tag lands at the state change, not after the async
             // commit-graph read the emit path now performs. See RecorderGitState.markGit.
-            markGit = { repoRoot -> repoRoot?.let(::sessionOwning)?.explanationTagger?.markGit() }
+            // Marks EVERY owning session (see sessionsOwningRepo) — a repository above the
+            // assignment root can own more than one concurrently-recording session at once.
+            markGit = { repoRoot -> repoRoot?.let(::sessionsOwningRepo)?.forEach { it.explanationTagger.markGit() } }
         }
         // Paste signal 2 (the EditorPaste action wrapper) is routed by path the same way, so
         // concurrent sessions don't clobber a shared slot: the nearest-enclosing session's own
@@ -156,6 +159,46 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         return nearestEntry { root, _ -> normalized.startsWith(root) }?.value
     }
 
+    /**
+     * Every currently-active session that owns a `git.event` from a repository rooted at
+     * [repoRoot] — decision-log bug 3's fix (`docs/superpowers/specs/2026-08-19-program-decision-
+     * log.md`), ported from the monorepo VS Code recorder's `isRepoOwnedByRoot`
+     * (`session-router.ts`). Unlike [sessionOwning] (a single-file containment lookup used for
+     * terminal cwd routing, where "nearest enclosing root" is the only sensible answer), a git
+     * repository root can be related to an assignment root in TWO directions:
+     *
+     *  - **repo AT-OR-BELOW a session root** (a submodule, or the ordinary non-nested case):
+     *    [sessionOwning]'s containment rule already gets this right — only the NEAREST such root
+     *    wins, so a repository nested inside a *nested* assignment root still routes to the
+     *    nearest root rather than to its parent.
+     *  - **repo ABOVE a session root** (one shared class repository, each assignment a
+     *    subdirectory beneath it — the standard multi-course layout `ManifestDiscovery` is built
+     *    to find). A plain containment check can never match this direction — the repo root does
+     *    not descend from any assignment root, so [sessionOwning] returns null and every
+     *    `git.event` for the session is silently dropped. This is EXACTLY decision-log bug 3's
+     *    shape. Here every concurrently-recording session whose root descends from [repoRoot]
+     *    owns it, not only the nearest: two sibling assignments in the same shared repo (say
+     *    `course/hw1/` and `course/hw2/`, both actively recording) both see the same commit as
+     *    their own — fail toward more evidence, per the monorepo fix; deduplicating across
+     *    sessions is the analyzer's job, not the recorder's.
+     *
+     * [dev.provenance.recorder.wiring.git.GitCapabilityProbe.decideGitCapture] mirrors this same
+     * two-direction relationship (via the shared [sameAncestryLine]) for the
+     * `session.start.git_capture` capability report, so the two never disagree about which
+     * direction counts as "owned" — it just cannot see sibling session roots to apply the
+     * nearest-wins refinement below, so it answers the coarser question of whether ANY visible
+     * repository lies on this session's ancestry line.
+     */
+    private fun sessionsOwningRepo(repoRoot: Path): List<ActiveSession> {
+        val normalized = runCatching { repoRoot.toRealPath() }.getOrDefault(repoRoot.normalize())
+        val nearestBelow = nearestEntry { root, _ -> normalized.startsWith(root) }?.key
+        return sessions.entries
+            .filter { (root, _) ->
+                sameAncestryLine(normalized, root) && (root == nearestBelow || root.startsWith(normalized))
+            }
+            .map { it.value }
+    }
+
     private fun routeTerminalOpen(cwd: Path?, payload: dev.provenance.core.TerminalOpenPayload) {
         val session = cwd?.let(::sessionOwning) ?: return
         session.controller.append("terminal.open", payload.toJsonObject())
@@ -167,9 +210,11 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
     }
 
     private fun routeGitEvent(repoRoot: Path?, payload: dev.provenance.core.GitEventPayload) {
-        val session = repoRoot?.let(::sessionOwning) ?: return
-        session.explanationTagger.markGit()
-        session.controller.append("git.event", payload.toJsonObject())
+        val owners = repoRoot?.let(::sessionsOwningRepo) ?: return
+        for (session in owners) {
+            session.explanationTagger.markGit()
+            session.controller.append("git.event", payload.toJsonObject())
+        }
     }
 
     /** Production entry point, called from activation once a discovered manifest verifies.

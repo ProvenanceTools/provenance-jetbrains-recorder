@@ -6,8 +6,11 @@ import java.nio.file.Path
 
 /**
  * Project-scoped emit seam for git.event. [repoRoot] is the Git4Idea repository's working-tree
- * root, used by the installed router to find the owning session by nearest-ancestor; null
- * routes to no owner (dropped).
+ * root, used by the installed router
+ * ([dev.provenance.recorder.session.RecorderSessionManager.sessionsOwningRepo]) to find every
+ * owning session — at-or-below [repoRoot] by nearest-ancestor, or every session ABOVE which
+ * [repoRoot] sits (the shared-class-repo layout, decision-log bug 3); null routes to no owner
+ * (dropped).
  */
 @Service(Service.Level.PROJECT)
 class RecorderGitState {

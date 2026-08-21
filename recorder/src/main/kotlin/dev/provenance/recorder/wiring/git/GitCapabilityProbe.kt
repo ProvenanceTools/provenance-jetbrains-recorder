@@ -4,6 +4,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import dev.provenance.core.GitCaptureCapability
+import dev.provenance.recorder.wiring.sameAncestryLine
 import java.nio.file.Path
 
 /**
@@ -83,16 +84,21 @@ import java.nio.file.Path
  * "git observation worked, and every repository visible to it was outside this session's
  * assignment scope."
  *
- * [decideGitCapture] mirrors [RecorderSessionManager]'s own ownership predicate
- * (`normalized.startsWith(root)`, repository root at-or-below the session root) exactly, so this
- * capability report never disagrees with what the live router actually does. It does not attempt
- * to fix or extend that predicate. Note for a future reader: a repository root sitting ABOVE the
- * assignment root (one shared class repo, the assignment as a subdirectory — the "standard
- * nested layout" the monorepo's VS Code recorder had a routing bug for, since fixed there) is
- * ALSO not owned under this predicate, exactly as [RecorderSessionManager]'s real router does
- * not route such a repository's `git.event`s to any session today. Whether that routing itself
- * should change is a separate, pre-existing question this task does not touch — this probe is
- * required only to describe accurately what the recorder actually does, not what it should do.
+ * [decideGitCapture] mirrors [RecorderSessionManager]'s own ownership predicate — via the shared
+ * [sameAncestryLine] — in BOTH directions a repository root can relate to the session root: at-
+ * or-below it (`repoRoot.startsWith(sessionRoot)`, the ordinary/submodule case), or ABOVE it
+ * (`sessionRoot.startsWith(repoRoot)`, one shared class repo with the assignment as a
+ * subdirectory — the "standard nested layout" the monorepo's VS Code recorder had a routing bug
+ * for: decision-log bug 3). [RecorderSessionManager.sessionsOwningRepo] now routes `git.event`s
+ * to every session in that second direction too (not just the nearest, since several sibling
+ * assignments under one shared repo can all be recording at once), so this probe answers
+ * AVAILABLE for it as well — reporting NOT_OWNED here while the router actually delivers the
+ * event would be exactly the capability-report-contradicts-the-wiring failure this report exists
+ * to prevent. What this probe still cannot do, because it has no visibility into sibling session
+ * roots (see [probeGitCapture]'s single `sessionRoot` argument): the router's nearest-ancestor
+ * disambiguation BETWEEN sibling sessions when a repository sits at-or-below more than one of
+ * them. That is a pre-existing, narrower gap (this session-local snapshot was always coarser than
+ * the live router in that one respect) and not one this change introduces or widens.
  */
 fun probeGitCapture(
     project: Project,
@@ -113,8 +119,10 @@ fun probeGitCapture(
  * The pure ownership decision, isolated from IntelliJ/Git4Idea entirely so it is testable with
  * plain [Path]s.
  *
- * Mirrors [dev.provenance.recorder.session.RecorderSessionManager]'s own `sessionOwning`
- * predicate: a repository is owned by this session iff its root is at-or-below [sessionRoot].
+ * Mirrors [dev.provenance.recorder.session.RecorderSessionManager]'s own
+ * `sessionsOwningRepo` predicate: a repository is owned by this session iff it sits on the same
+ * ancestry line as [sessionRoot] — at-or-below it (submodule / ordinary case) OR above it (the
+ * shared-class-repo layout, decision-log bug 3's fix) — via the shared [sameAncestryLine].
  * **Zero repositories is [GitCaptureCapability.AVAILABLE], not [GitCaptureCapability.NOT_OWNED]**
  * — an assignment with no git repository (yet) has nothing to route away from, and the live
  * `GitRepositoryChangeListener` subscription would pick one up if it appeared later. `NOT_OWNED`
@@ -125,7 +133,7 @@ internal fun decideGitCapture(sessionRoot: Path, repositoryRoots: List<Path>): G
     val normalizedSessionRoot = sessionRoot.normalize()
     val owned = repositoryRoots.any { repoRoot ->
         val normalizedRepoRoot = runCatching { repoRoot.toRealPath() }.getOrDefault(repoRoot.normalize())
-        normalizedRepoRoot.startsWith(normalizedSessionRoot)
+        sameAncestryLine(normalizedRepoRoot, normalizedSessionRoot)
     }
     return if (owned) GitCaptureCapability.AVAILABLE else GitCaptureCapability.NOT_OWNED
 }
