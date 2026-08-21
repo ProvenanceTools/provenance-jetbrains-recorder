@@ -750,6 +750,228 @@ class ConformanceTest {
     }
 
     /**
+     * `session-capabilities.json` — the three §5.6 `session.start` CAPABILITY REPORTS
+     * (`git_capture`, `witness_capture`, `file_scope`), read side.
+     *
+     * Every case's canonical bytes and chain hash are reproduced exactly as
+     * [GitEventVectors] and [PeerObservedVectors] do above, and every case's narrowing
+     * verdict — for all three fields, on every case, since the three are independent and a
+     * `git_capture`-only case still has an `absent` `witness_capture`/`file_scope` verdict
+     * worth checking — is reproduced by this port's own [readGitCapture] / [readWitnessCapture]
+     * / [readFileScope]. `absent`, `recorded` and `malformed` are asserted apart, never folded:
+     * a reader that only ever returns `absent`-or-`recorded` would still pass a suite that
+     * checked `kind` for equality without checking the COUNT of each kind, which is why each
+     * narrowing test below also asserts the number of `recorded` and `malformed` cases it saw.
+     */
+    @Nested
+    inner class SessionCapabilityVectors {
+        private val v by lazy { vector("session-capabilities.json") }
+
+        @Test
+        fun `every case reproduces log-core canonical json and chain hash`() {
+            val cases = v["cases"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val data = o["data"]!!.jsonObject
+
+                assertEquals(
+                    o["canonical_json"]!!.jsonPrimitive.content,
+                    Canonical.canonicalize(data.toString()),
+                    name,
+                )
+
+                val e = o["envelope"]!!.jsonObject
+                val chained = chainEntry(
+                    o["prev_hash"]!!.jsonPrimitive.content,
+                    Envelope(
+                        seq = e["seq"]!!.jsonPrimitive.long,
+                        t = e["t"]!!.jsonPrimitive.long,
+                        wall = e["wall"]!!.jsonPrimitive.content,
+                        kind = e["kind"]!!.jsonPrimitive.content,
+                        data = data,
+                    ),
+                )
+                assertEquals(o["hash"]!!.jsonPrimitive.content, chained.hash, name)
+            }
+
+            val names = cases.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet()
+            assertEquals(cases.size, names.size, "session-capabilities.json has a duplicate case name")
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "no_capability_reports",
+                        "git_capture_available",
+                        "git_capture_unavailable",
+                        "git_capture_not_owned",
+                        "git_capture_null_is_not_absent",
+                        "git_capture_unknown_value_rejected",
+                        "git_capture_uppercase_rejected",
+                        "git_capture_not_a_string_rejected",
+                        "witness_capture_available",
+                        "witness_capture_unavailable",
+                        "witness_capture_not_owned_rejected",
+                        "witness_capture_null_is_not_absent",
+                        "file_scope_complete",
+                        "file_scope_empty_is_a_real_answer",
+                        "file_scope_truncated",
+                        "file_scope_missing_complete_rejected",
+                        "file_scope_not_an_object_rejected",
+                        "file_scope_absolute_path_rejected",
+                        "file_scope_windows_path_rejected",
+                        "file_scope_remote_url_rejected",
+                        "file_scope_scp_remote_rejected",
+                        "file_scope_parent_escape_rejected",
+                        "file_scope_dotted_names_accepted",
+                        "file_scope_unknown_extra_key_accepted",
+                        "file_scope_null_is_not_absent",
+                        "all_three_reported",
+                    ),
+                ),
+                "session-capabilities.json lost a mandatory case",
+            )
+        }
+
+        /**
+         * `git_capture` narrows into three kinds ([GitCaptureRead.Absent],
+         * [GitCaptureRead.Recorded], [GitCaptureRead.Malformed]) exactly as log-core says,
+         * reproduced case by case — ACCEPT and REJECT both, per the class docstring.
+         */
+        @Test
+        fun `git_capture narrows exactly as log-core says`() {
+            var recorded = 0
+            var malformed = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val expected = o["git_capture"]!!.jsonObject
+                val read = readGitCapture(o["data"]!!.jsonObject)
+                assertEquals(expected["kind"]!!.jsonPrimitive.content, read.kind, name)
+                when (read) {
+                    is GitCaptureRead.Recorded -> {
+                        recorded++
+                        assertEquals(expected["capture"]!!.jsonPrimitive.content, read.capture.wire, name)
+                    }
+                    is GitCaptureRead.Malformed -> {
+                        malformed++
+                        assertEquals(expected["problem"]!!.jsonPrimitive.content, read.problem.wire, name)
+                    }
+                    is GitCaptureRead.Absent -> Unit
+                }
+            }
+            assertEquals(4, recorded, "session-capabilities.json lost a git_capture `recorded` case")
+            assertEquals(3, malformed, "session-capabilities.json lost a git_capture `malformed` case")
+        }
+
+        /** @see `git_capture narrows exactly as log-core says` */
+        @Test
+        fun `witness_capture narrows exactly as log-core says`() {
+            var recorded = 0
+            var malformed = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val expected = o["witness_capture"]!!.jsonObject
+                val read = readWitnessCapture(o["data"]!!.jsonObject)
+                assertEquals(expected["kind"]!!.jsonPrimitive.content, read.kind, name)
+                when (read) {
+                    is WitnessCaptureRead.Recorded -> {
+                        recorded++
+                        assertEquals(expected["capture"]!!.jsonPrimitive.content, read.capture.wire, name)
+                    }
+                    is WitnessCaptureRead.Malformed -> {
+                        malformed++
+                        assertEquals(expected["problem"]!!.jsonPrimitive.content, read.problem.wire, name)
+                    }
+                    is WitnessCaptureRead.Absent -> Unit
+                }
+            }
+            assertEquals(3, recorded, "session-capabilities.json lost a witness_capture `recorded` case")
+            // git_capture's third value (`not_owned`) fed to witness_capture, rejected as
+            // `unknown_value` — there is no witnessing analogue of `not_owned`.
+            assertEquals(1, malformed, "session-capabilities.json lost a witness_capture `malformed` case")
+        }
+
+        /** @see `git_capture narrows exactly as log-core says` */
+        @Test
+        fun `file_scope narrows exactly as log-core says, and a bad element rejects the WHOLE set`() {
+            var recorded = 0
+            var malformed = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val expected = o["file_scope"]!!.jsonObject
+                val read = readFileScope(o["data"]!!.jsonObject)
+                assertEquals(expected["kind"]!!.jsonPrimitive.content, read.kind, name)
+                when (read) {
+                    is FileScopeRead.Recorded -> {
+                        recorded++
+                        assertEquals(expected["complete"]!!.jsonPrimitive.boolean, read.complete, name)
+                        assertEquals(
+                            expected["watched"]!!.jsonArray.map { it.jsonPrimitive.content },
+                            read.watched,
+                            name,
+                        )
+                    }
+                    is FileScopeRead.Malformed -> {
+                        malformed++
+                        assertEquals(expected["problem"]!!.jsonPrimitive.content, read.problem.wire, name)
+                    }
+                    is FileScopeRead.Absent -> Unit
+                }
+            }
+            assertEquals(6, recorded, "session-capabilities.json lost a file_scope `recorded` case")
+            assertEquals(7, malformed, "session-capabilities.json lost a file_scope `malformed` case")
+        }
+
+        /**
+         * MANDATORY, and the writer half of the rule: an absent field and an explicit `null`
+         * both read as absence, and their bytes still DIFFER — exactly the D12 writer-omits-
+         * null-never proof in [GitEventVectors], reproduced here for all three fields at once.
+         */
+        @Test
+        fun `a writer omits every capability report rather than spelling it null`() {
+            val byName = v["cases"]!!.jsonArray.associateBy { it.jsonObject["name"]!!.jsonPrimitive.content }
+            val absent = byName["no_capability_reports"]!!.jsonObject
+            for (nulledName in listOf(
+                "git_capture_null_is_not_absent",
+                "witness_capture_null_is_not_absent",
+                "file_scope_null_is_not_absent",
+            )) {
+                val nulled = byName[nulledName]!!.jsonObject
+                assertNotEquals(
+                    absent["hash"]!!.jsonPrimitive.content,
+                    nulled["hash"]!!.jsonPrimitive.content,
+                    nulledName,
+                )
+                assertNotEquals(
+                    absent["canonical_json"]!!.jsonPrimitive.content,
+                    nulled["canonical_json"]!!.jsonPrimitive.content,
+                    nulledName,
+                )
+            }
+            // [SessionStartPayload.toJsonObject] cannot express a `null` capability report: its
+            // three fields are typed `?` and spread with `?.let { put(...) }`. Omission is
+            // therefore enforced structurally on this port's writer side, which is exercised
+            // directly (not through this fixture) in RecorderContextTest.
+        }
+
+        /** None of the three fields is ever a knob: closed enums, no policy gate, no finding. */
+        @Test
+        fun `the three are capability reports, not capture knobs, and are never a finding`() {
+            assertTrue(v["not_a_knob_note"]!!.jsonPrimitive.content.isNotEmpty())
+            assertEquals(GitCaptureCapability.WIRE_VALUES, v["git_capture_values"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(
+                WitnessCaptureCapability.WIRE_VALUES,
+                v["witness_capture_values"]!!.jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(GIT_CAPTURE_FIELD, v["fields"]!!.jsonObject["git_capture"]!!.jsonPrimitive.content)
+            assertEquals(WITNESS_CAPTURE_FIELD, v["fields"]!!.jsonObject["witness_capture"]!!.jsonPrimitive.content)
+            assertEquals(FILE_SCOPE_FIELD, v["fields"]!!.jsonObject["file_scope"]!!.jsonPrimitive.content)
+        }
+    }
+
+    /**
      * `peer-observed.json` — peer witnessing: the canonical bytes, the chain hashes, and the
      * narrowing verdict for each case.
      *

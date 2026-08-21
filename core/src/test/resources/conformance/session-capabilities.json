@@ -1,0 +1,1655 @@
+{
+  "note": "The three session.start capability reports (collaboration spec §5.6). Each field is OPTIONAL PERMANENTLY. A reader returns three answers — absent / recorded / malformed — and absence means \"this recorder does not report\", never \"the capability was missing\".",
+  "absence_note": "no_capability_reports is the pre-§5.6 payload and is the hash every 1.x session.start of this shape already has. Compare it against git_capture_available to see that a report changes the bytes, and against git_capture_null_is_not_absent to see that null and omission are different bytes despite reading the same.",
+  "not_a_knob_note": "These are CAPABILITY REPORTS, not capture knobs. A capability report says \"I could not\"; a knob says \"I was told not to\". Nothing here appears in policy.capture, nothing here is course-signed, and nothing here is ever a finding — no flag, no validation check, no severity, no score.",
+  "git_capture_note": "unavailable = the editor exposed no git integration, so no git.event could be produced at all. not_owned = git observation worked and no repository it could see was in this assignment's scope, so its events were dropped by the ownership gate. These are different situations a grader acts on differently and MUST NOT be collapsed. available = git observation was live.",
+  "witness_capture_note": "Two values, deliberately. There is no witnessing analogue of not_owned: a recorder witnesses the .provenance/ directory it is itself writing into, so there is no ownership question to route on.",
+  "file_scope_note": "The RESOLVED LIST, not the rule. A count cannot be asked whether it contains a file, and publishing an unresolved glob set would require three hand-written ports and one analyzer to agree on a matcher. Paths are assignment-root-relative, exactly as every other path in the log. complete:false means the list is a strict subset, and a path's absence from it is then UNKNOWN rather than NOT WATCHED.",
+  "file_scope_privacy_note": "S14(b) forbids repository paths and remote URLs. An absolute path (POSIX, Windows drive or UNC), any colon (which is every remote-URL spelling, including git’s scp-style user@host:path) and any \"..\" segment are rejected — and a single bad entry rejects the WHOLE set, because a silently narrowed list says \"not watched\" about a file that was.",
+  "writer_note": "OMIT a field you cannot answer. Never emit null: the two canonicalize differently and therefore chain to different hashes, exactly as `parents: []` and an absent `parents` do. Readers accept null as absence so a nonconforming log still parses; a writer that emits it is nonconforming.",
+  "git_capture_values": [
+    "available",
+    "unavailable",
+    "not_owned"
+  ],
+  "witness_capture_values": [
+    "available",
+    "unavailable"
+  ],
+  "fields": {
+    "git_capture": "git_capture",
+    "witness_capture": "witness_capture",
+    "file_scope": "file_scope"
+  },
+  "cases": [
+    {
+      "name": "no_capability_reports",
+      "note": "The pre-§5.6 payload, and every bundle in existence. All three read absent, and this hash is unchanged by the fields existing in the format.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "fe756729f7998267f2a6bd54a4f81a50d67ec25d3dd534f4c656448a41720f35",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_available",
+      "note": "Git observation was live. An absence of git.event in this session is a statement about git activity, not about capture.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "available"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":\"available\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "available"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "2c9b486e3ce9ced868ec7442b7a6e98f722c619ae611f02f77aa6177e9131f0e",
+      "git_capture": {
+        "kind": "recorded",
+        "capture": "available"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_unavailable",
+      "note": "No git integration on this machine. Nothing this session did could have produced a git.event.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "unavailable"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":\"unavailable\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "unavailable"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "83fa0f178b80c3e7f1af510e00ee8ec0d18bda4dcbb56e39511d27abbb0e075f",
+      "git_capture": {
+        "kind": "recorded",
+        "capture": "unavailable"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_not_owned",
+      "note": "Git worked; no repository it could see was in scope. NOT the same fact as unavailable, and a reader that reports one as the other describes a different situation than the one that occurred.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "not_owned"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":\"not_owned\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "not_owned"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "ca94476a7535176f999583dd97f84b9451503d65d400106ff57888d4e84365f0",
+      "git_capture": {
+        "kind": "recorded",
+        "capture": "not_owned"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_null_is_not_absent",
+      "note": "Reads as absence, and hashes differently from no_capability_reports. A writer must OMIT.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": null
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":null,\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": null
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "646b69c134ea2017b2cf1258c0f2e68af3950a0fb5dd1ece6372b0fa31460b0d",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_unknown_value_rejected",
+      "note": "Outside the closed enum. Malformed, counted, never a finding, and never presented as a capability.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "partial"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":\"partial\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "partial"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "fe6a13394bf9dee2a01ffa8f6b9e47cabc50ee75dd5dfe15eca1f38cd9dd1ca0",
+      "git_capture": {
+        "kind": "malformed",
+        "problem": "unknown_value"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_uppercase_rejected",
+      "note": "Case is not folded: folding would be exactly the normalization the reader refuses.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "Available"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":\"Available\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "Available"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "6b827b4f2812b12f7c1a50e5358a8a0eea759cb1ab10c6065436e555651cd809",
+      "git_capture": {
+        "kind": "malformed",
+        "problem": "unknown_value"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "git_capture_not_a_string_rejected",
+      "note": "A non-string value is malformed rather than coerced.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": true
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"git_capture\":true,\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": true
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "0bfa30a6fb16195102fbac3f9371e05bf074c1061663bacbd3cc344d6138cb9b",
+      "git_capture": {
+        "kind": "malformed",
+        "problem": "not_a_string"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "witness_capture_available",
+      "note": "A .provenance/ watcher was running. Had a partner log appeared, changed or vanished, this session would have witnessed it.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "witness_capture": "available"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"witness_capture\":\"available\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "witness_capture": "available"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "f9a80f89bc6e776c48a8b84f2a03e1218be03b00c8cb371b41202e0fb725a383",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "recorded",
+        "capture": "available"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "witness_capture_unavailable",
+      "note": "No watcher. The absence of peer.observed in this session says nothing about what was in .provenance/.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "witness_capture": "unavailable"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"witness_capture\":\"unavailable\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "witness_capture": "unavailable"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "fe924a43f5225c22780d19d94c0e545abbf74315a81fdce8ef703738aa34a567",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "recorded",
+        "capture": "unavailable"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "witness_capture_not_owned_rejected",
+      "note": "git_capture's third value is not legal here. A port that shares one enum between the two fields fails this case.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "witness_capture": "not_owned"
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"witness_capture\":\"not_owned\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "witness_capture": "not_owned"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "c1119f1c2441dc83a62e0658bc7adb6cba31205518d7dc5f861566457819ac1e",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "malformed",
+        "problem": "unknown_value"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "witness_capture_null_is_not_absent",
+      "note": "Reads as absence, hashes differently from omission.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "witness_capture": null
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"witness_capture\":null}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "witness_capture": null
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "560d6f295f93bfa76db4948e91d52db2dbc2d731694b8d0bc1aea7f98fc610c6",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "file_scope_complete",
+      "note": "The effective resolved file set. A path NOT in a complete list was not watched, which is what makes \"no events for this file\" unambiguous.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "Solver.java",
+            "src/Board.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"Solver.java\",\"src/Board.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "Solver.java",
+              "src/Board.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9be40b1ce437c1c90590c6d8dc0ce8e558571bd445fab23cce544ab4c74c60a1",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [
+          "Solver.java",
+          "src/Board.java"
+        ],
+        "complete": true
+      }
+    },
+    {
+      "name": "file_scope_empty_is_a_real_answer",
+      "note": "The scope resolved to nothing. A positive claim that explains every file’s silence — not absence, and not to be folded into it.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "2ec0a8f40b960fec75321d11b4c6ce126e91d951904098e38ffec87e34f2242c",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [],
+        "complete": true
+      }
+    },
+    {
+      "name": "file_scope_truncated",
+      "note": "The list is a strict subset. A path in it WAS watched; a path not in it is UNKNOWN, never \"not watched\".",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "Solver.java"
+          ],
+          "complete": false
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":false,\"watched\":[\"Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "Solver.java"
+            ],
+            "complete": false
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9b1d4a852ffaaed15de19543f370e56adcf84e23dd248fe25c9c4dd52958f95a",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [
+          "Solver.java"
+        ],
+        "complete": false
+      }
+    },
+    {
+      "name": "file_scope_missing_complete_rejected",
+      "note": "complete is required and is never inferred — the field exists to remove an inference.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "Solver.java"
+          ]
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"watched\":[\"Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "Solver.java"
+            ]
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "6e295632ccf362cc0bab03f1a60277170f7a8b7fa79b405fcd9c4077349ea40f",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "complete_not_a_boolean"
+      }
+    },
+    {
+      "name": "file_scope_not_an_object_rejected",
+      "note": "An array is not a file scope; the list lives under `watched`.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": [
+          "Solver.java"
+        ]
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":[\"Solver.java\"],\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": [
+            "Solver.java"
+          ]
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "e7d3a68d774f8bce4cba3e4cdf8ae47e8ccfeadc5a72174179bb4a9eac447094",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "not_an_object"
+      }
+    },
+    {
+      "name": "file_scope_absolute_path_rejected",
+      "note": "S14(b). An absolute path embeds the account name and the machine layout. The WHOLE set is rejected, not just this entry.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "Solver.java",
+            "/Users/student/cs61b/Solver.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"Solver.java\",\"/Users/student/cs61b/Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "Solver.java",
+              "/Users/student/cs61b/Solver.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "02a896c6d5fbe73fd2c32353fb76253f7403dc28bac9187bff133538188bfc09",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "path_absolute"
+      }
+    },
+    {
+      "name": "file_scope_windows_path_rejected",
+      "note": "A Windows drive path is absolute too. A port that only checks for a leading \"/\" fails this case.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "C:\\Users\\student\\Solver.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"C:\\\\Users\\\\student\\\\Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "C:\\Users\\student\\Solver.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9666fa6e0a9056e88424ad792f3003dff70aa34335b3d270aa1b3c7cee667a8f",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "path_absolute"
+      }
+    },
+    {
+      "name": "file_scope_remote_url_rejected",
+      "note": "S14(b). A remote URL embeds the org and frequently the student’s own username.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "https://github.com/some-student/proj2/Solver.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"https://github.com/some-student/proj2/Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "https://github.com/some-student/proj2/Solver.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "4d7b98f7f1273dad95a12b1436f7d73378d3bec2e86309452fd181060d406216",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "path_has_colon"
+      }
+    },
+    {
+      "name": "file_scope_scp_remote_rejected",
+      "note": "git’s scp-style remote has no \"://\" and is still a remote URL. The rule is any colon outside a Windows drive letter.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "git@github.com:someone/proj2.git"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"git@github.com:someone/proj2.git\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "git@github.com:someone/proj2.git"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "86e77e59b326d95706c903c9dada6d7a5dab9171ad5afeaf17eca15139b2ed9b",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "path_has_colon"
+      }
+    },
+    {
+      "name": "file_scope_parent_escape_rejected",
+      "note": "A \"..\" segment names something outside the assignment scope.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "../other-course/Solver.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"../other-course/Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "../other-course/Solver.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "74943c6b02cbe92ab9e5d5ba88df38d5f74bf2b1a1bc0f758c5a2d54153d3e8d",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "malformed",
+        "problem": "path_escapes_scope"
+      }
+    },
+    {
+      "name": "file_scope_dotted_names_accepted",
+      "note": "Paths that merely LOOK risky are ordinary: a leading dot, a doubled dot inside a segment, and backslash separators are all accepted verbatim.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            ".hidden/config.txt",
+            "a..b/Solver.java",
+            "src\\main\\Board.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\".hidden/config.txt\",\"a..b/Solver.java\",\"src\\\\main\\\\Board.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              ".hidden/config.txt",
+              "a..b/Solver.java",
+              "src\\main\\Board.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "a1b5a43aa1aee662ea8e705e28c114e5a8df161f70b342330dbc4987e72a84ab",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [
+          ".hidden/config.txt",
+          "a..b/Solver.java",
+          "src\\main\\Board.java"
+        ],
+        "complete": true
+      }
+    },
+    {
+      "name": "file_scope_unknown_extra_key_accepted",
+      "note": "Forward compatibility: a newer recorder adding a key must not make this reader refuse the whole scope.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": {
+          "watched": [
+            "Solver.java"
+          ],
+          "complete": true,
+          "resolution": "repo_tracked"
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"resolution\":\"repo_tracked\",\"watched\":[\"Solver.java\"]},\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": {
+            "watched": [
+              "Solver.java"
+            ],
+            "complete": true,
+            "resolution": "repo_tracked"
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "66f30679a60c46c3739cef00285ed9e31e009743047836b166723269a64050fa",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [
+          "Solver.java"
+        ],
+        "complete": true
+      }
+    },
+    {
+      "name": "file_scope_null_is_not_absent",
+      "note": "Reads as absence, hashes differently from omission.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_scope": null
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":null,\"format_version\":\"1.0\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "file_scope": null
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "0b0c03b3e26b905c30621188436dc5f2928849af8c08b18c096657048f295267",
+      "git_capture": {
+        "kind": "absent"
+      },
+      "witness_capture": {
+        "kind": "absent"
+      },
+      "file_scope": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "all_three_reported",
+      "note": "The shape a §5.6-conformant recorder emits when it can answer all three. The three fields are independent: a port may land one before the others.",
+      "data": {
+        "format_version": "1.0",
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "prev_session_id": null,
+        "assignment": {
+          "id": "proj2",
+          "semester": "fa26"
+        },
+        "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recorder": {
+          "version": "1.2.0",
+          "extension_id": "itsgeagle.provenance-recorder"
+        },
+        "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "git_capture": "available",
+        "witness_capture": "available",
+        "file_scope": {
+          "watched": [
+            "Solver.java"
+          ],
+          "complete": true
+        }
+      },
+      "canonical_json": "{\"assignment\":{\"id\":\"proj2\",\"semester\":\"fa26\"},\"file_scope\":{\"complete\":true,\"watched\":[\"Solver.java\"]},\"format_version\":\"1.0\",\"git_capture\":\"available\",\"machine_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"manifest_sig\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"prev_session_id\":null,\"recorder\":{\"extension_id\":\"itsgeagle.provenance-recorder\",\"version\":\"1.2.0\"},\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"session_pubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"witness_capture\":\"available\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "session.start",
+        "data": {
+          "format_version": "1.0",
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "prev_session_id": null,
+          "assignment": {
+            "id": "proj2",
+            "semester": "fa26"
+          },
+          "manifest_sig": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "recorder": {
+            "version": "1.2.0",
+            "extension_id": "itsgeagle.provenance-recorder"
+          },
+          "session_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "git_capture": "available",
+          "witness_capture": "available",
+          "file_scope": {
+            "watched": [
+              "Solver.java"
+            ],
+            "complete": true
+          }
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "c0d089ffbb38bf520d75c86f048410720359602da566f8e28aa1ebd2a28923dc",
+      "git_capture": {
+        "kind": "recorded",
+        "capture": "available"
+      },
+      "witness_capture": {
+        "kind": "recorded",
+        "capture": "available"
+      },
+      "file_scope": {
+        "kind": "recorded",
+        "watched": [
+          "Solver.java"
+        ],
+        "complete": true
+      }
+    }
+  ]
+}
