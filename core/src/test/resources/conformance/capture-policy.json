@@ -29,7 +29,8 @@
     "ext.snapshot",
     "ext.activate",
     "recorder.degraded",
-    "recorder.recovered_from_corruption"
+    "recorder.recovered_from_corruption",
+    "peer.observed"
   ],
   "policy_gated_event_kinds": {
     "selection.change": "selection_change",

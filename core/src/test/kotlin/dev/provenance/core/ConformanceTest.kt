@@ -447,6 +447,13 @@ class ConformanceTest {
             // the empty-vs-absent cases below vacuous.
             parents = (o["parents"] as? JsonArray)?.map { it.jsonPrimitive.content },
             branch = (o["branch"] as? JsonPrimitive)?.content,
+            // The D12 repository discriminator. `as? JsonPrimitive` is null for BOTH an absent
+            // key and an explicit JsonNull, which is the writer rule (OMIT, never null) —
+            // and the round-trip assertion below is what makes that load-bearing: the
+            // `root_commit_sha_null_is_not_absent` case carries `null` in its `data`, so a
+            // rebuilt payload that omitted it would no longer equal the vector.
+            rootCommitSha = (o[REPOSITORY_DISCRIMINATOR_FIELD] as? JsonPrimitive)
+                ?.takeIf { it.isString }?.content,
         )
 
         /**
@@ -462,6 +469,14 @@ class ConformanceTest {
                 val o = case.jsonObject
                 val name = o["name"]!!.jsonPrimitive.content
                 val data = o["data"]!!.jsonObject
+
+                // `root_commit_sha: null` is a READER case, not a writer one: the writer rule
+                // is OMIT, never null, and [GitEventPayload] enforces that structurally, so
+                // this payload is deliberately not expressible through it. Its canonical bytes
+                // and hash are pinned in `a writer omits the discriminator rather than
+                // spelling it null` instead — where they are asserted to DIFFER from what this
+                // port can emit, which is the actual claim the case makes.
+                if (data[REPOSITORY_DISCRIMINATOR_FIELD] is JsonNull) continue
 
                 // Round-trip through the typed payload: what a recorder would actually emit.
                 val rebuilt = payloadOf(data).toJsonObject()
@@ -500,9 +515,148 @@ class ConformanceTest {
                         "branch_with_slash",
                         "branch_non_ascii",
                         "octopus_merge",
+                        // D12, the repository discriminator. Nine cases, and the guard names
+                        // every one: a truncated fixture must fail loudly rather than shrink
+                        // the reachable test space, which is the fixture rule the decision log
+                        // draws from bug 10.
+                        "root_commit_sha_recorded",
+                        "root_commit_sha_sha256_repository",
+                        "root_commit_sha_is_the_root_itself",
+                        "root_commit_sha_absent_shallow_clone",
+                        "root_commit_sha_null_is_not_absent",
+                        "root_commit_sha_repository_path_rejected",
+                        "root_commit_sha_uppercase_rejected",
+                        "root_commit_sha_abbreviated_rejected",
+                        "root_commit_sha_empty_rejected",
                     ),
                 ),
                 "git-event.json lost a mandatory case",
+            )
+        }
+
+        /**
+         * THE D12 NARROWING, case by case: every vector's `discriminator` verdict, reproduced
+         * by [readRepositoryDiscriminator].
+         *
+         * `absent` and `malformed` both fold the observation into the unlabelled repository,
+         * so a port that collapsed them would still place every commit correctly — and would
+         * silently stop COUNTING the recorders that said something wrong. They are asserted
+         * apart for that reason. Neither is ever a finding.
+         *
+         * The eleven pre-D12 cases carry no `discriminator` key and must read `absent`: an
+         * unlabelled payload is exactly the pre-D12 world, which is the compatibility
+         * guarantee this whole field rests on.
+         */
+        @Test
+        fun `the repository discriminator narrows exactly as log-core says`() {
+            var recorded = 0
+            var malformed = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val read = readRepositoryDiscriminator(o["data"]!!.jsonObject)
+                val expected = o["discriminator"]?.jsonObject
+                if (expected == null) {
+                    assertEquals(RepositoryDiscriminatorRead.Absent, read, name)
+                    continue
+                }
+                assertEquals(expected["kind"]!!.jsonPrimitive.content, read.kind, name)
+                when (read) {
+                    is RepositoryDiscriminatorRead.Recorded -> {
+                        recorded++
+                        assertEquals(
+                            expected["rootCommitSha"]!!.jsonPrimitive.content,
+                            read.rootCommitSha,
+                            name,
+                        )
+                    }
+                    is RepositoryDiscriminatorRead.Malformed -> {
+                        malformed++
+                        assertEquals(
+                            expected["problem"]!!.jsonPrimitive.content,
+                            read.problem.wire,
+                            name,
+                        )
+                    }
+                    is RepositoryDiscriminatorRead.Absent -> Unit
+                }
+            }
+            // Guard against a fixture that lost its positive or its negative half. A vector
+            // with only accepted cases proves a reader that accepts everything.
+            assertEquals(3, recorded, "git-event.json lost a `recorded` case")
+            assertEquals(4, malformed, "git-event.json lost a `malformed` case")
+        }
+
+        /**
+         * MANDATORY, and the writer half of rule 6: this port CANNOT spell the unknown
+         * discriminator as `null`.
+         *
+         * Omission and `null` canonicalize differently and therefore chain to different
+         * hashes, exactly as `parents: []` and an absent `parents` do. A `null`-emitting writer
+         * would produce a log whose entries hash differently from every other recorder's for
+         * the identical observation — a silent, permanent cross-implementation divergence.
+         *
+         * The claim is made by CONSTRUCTION: `rootCommitSha = null` reproduces the
+         * shallow-clone case byte for byte, and can never reproduce the `null` case's bytes.
+         */
+        @Test
+        fun `a writer omits the discriminator rather than spelling it null`() {
+            val byName = v["cases"]!!.jsonArray.associateBy {
+                it.jsonObject["name"]!!.jsonPrimitive.content
+            }
+            val absent = byName["root_commit_sha_absent_shallow_clone"]!!.jsonObject
+            val nulled = byName["root_commit_sha_null_is_not_absent"]!!.jsonObject
+
+            // The two vectors really are the same payload plus/minus the spelling.
+            assertFalse(REPOSITORY_DISCRIMINATOR_FIELD in absent["data"]!!.jsonObject)
+            assertTrue(nulled["data"]!!.jsonObject[REPOSITORY_DISCRIMINATOR_FIELD] is JsonNull)
+            assertNotEquals(
+                absent["hash"]!!.jsonPrimitive.content,
+                nulled["hash"]!!.jsonPrimitive.content,
+            )
+
+            val emitted = payloadOf(absent["data"]!!.jsonObject).copy(rootCommitSha = null)
+                .toJsonObject()
+            assertFalse(
+                REPOSITORY_DISCRIMINATOR_FIELD in emitted,
+                "a writer must never put the key there at all",
+            )
+            val canonical = Canonical.canonicalize(emitted.toString())
+            assertEquals(absent["canonical_json"]!!.jsonPrimitive.content, canonical)
+            assertNotEquals(nulled["canonical_json"]!!.jsonPrimitive.content, canonical)
+        }
+
+        /**
+         * A 64-hex sha-256 root and a 40-hex sha-1 root are both legal object names, and a
+         * port that hard-coded 40 would silently unlabel every sha-256 repository — which
+         * degrades to lost correlation, never to a finding, and is therefore exactly the kind
+         * of defect nothing else would report.
+         */
+        @Test
+        fun `both git object formats are accepted as discriminators`() {
+            val byName = v["cases"]!!.jsonArray.associateBy {
+                it.jsonObject["name"]!!.jsonPrimitive.content
+            }
+            for (name in listOf("root_commit_sha_recorded", "root_commit_sha_sha256_repository")) {
+                val data = byName[name]!!.jsonObject["data"]!!.jsonObject
+                val read = readRepositoryDiscriminator(data)
+                assertInstanceOf(RepositoryDiscriminatorRead.Recorded::class.java, read, name)
+            }
+            assertEquals(
+                40,
+                (
+                    readRepositoryDiscriminator(
+                        byName["root_commit_sha_recorded"]!!.jsonObject["data"]!!.jsonObject,
+                    ) as RepositoryDiscriminatorRead.Recorded
+                    ).rootCommitSha.length,
+            )
+            assertEquals(
+                64,
+                (
+                    readRepositoryDiscriminator(
+                        byName["root_commit_sha_sha256_repository"]!!.jsonObject["data"]!!.jsonObject,
+                    ) as RepositoryDiscriminatorRead.Recorded
+                    ).rootCommitSha.length,
             )
         }
 
@@ -557,7 +711,20 @@ class ConformanceTest {
                 v["no_author_identity_note"]!!.jsonPrimitive.content.isNotEmpty(),
                 "the vector must keep stating the constraint",
             )
-            val allowed = setOf("operation", "commit_sha", "sha", "parents", "branch")
+            // `root_commit_sha` joins the STRUCTURAL set, and only because it is structural:
+            // it names a repository by its root commit, which is a graph fact. It is
+            // deliberately NOT the repository path and NOT a remote URL — a path is arguably
+            // an identifier and a remote URL embeds the org and often the student's own
+            // username (S14(b)) — and `readRepositoryDiscriminator` rejecting both is what
+            // keeps that true for a nonconforming writer as well as a conforming one.
+            val allowed = setOf(
+                "operation",
+                "commit_sha",
+                "sha",
+                "parents",
+                "branch",
+                REPOSITORY_DISCRIMINATOR_FIELD,
+            )
             for (case in v["cases"]!!.jsonArray) {
                 val o = case.jsonObject
                 val name = o["name"]!!.jsonPrimitive.content
@@ -579,6 +746,269 @@ class ConformanceTest {
             assertFalse("git.event" in POLICY_GATED_EVENT_KINDS)
             assertTrue(isEventKindCaptured("git.event", DEFAULT_CAPTURE_POLICY))
             assertTrue(v["floor_note"]!!.jsonPrimitive.content.isNotEmpty())
+        }
+    }
+
+    /**
+     * `peer-observed.json` — peer witnessing: the canonical bytes, the chain hashes, and the
+     * narrowing verdict for each case.
+     *
+     * Every ACCEPTED case is built through this port's own emitter
+     * ([PeerObservedPayload.toJsonObject]) rather than by echoing the fixture's `data` back,
+     * so the assertion is that this recorder EMITS those bytes — not merely that it can read
+     * them. A test that decoded the fixture and re-encoded it would pass on a writer that
+     * never produced the shape at all.
+     *
+     * Every REJECTED case is fed to the narrowing as-is, because a nonconforming payload is by
+     * definition one this port cannot construct. Asserting accept AND reject is the point:
+     * a reader that accepts everything passes a happy-path-only suite.
+     */
+    @Nested
+    inner class PeerObservedVectors {
+        private val v by lazy { vector("peer-observed.json") }
+
+        /** Rebuild a case's `data` through the typed payload — the writer path. */
+        private fun emit(o: JsonObject): JsonObject = PeerObservedPayload(
+            file = o["file"]!!.jsonPrimitive.content,
+            sha256 = o["sha256"]!!.jsonPrimitive.content,
+            bytes = o["bytes"]!!.jsonPrimitive.long,
+            // `as? JsonPrimitive` is null for JsonNull, which is the "chain not read" case.
+            sessionId = (o["session_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+            seqHigh = (o["seq_high"] as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString }?.long,
+            lastHash = (o["last_hash"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+            state = PeerObservedState.fromWire(o["state"]!!.jsonPrimitive.content)!!,
+        ).toJsonObject()
+
+        @Test
+        fun `the five states match log-core, in order`() {
+            assertEquals(
+                v["states"]!!.jsonArray.map { it.jsonPrimitive.content },
+                PeerObservedState.WIRE_VALUES,
+            )
+        }
+
+        /**
+         * The accepted cases, emitted by this port and pinned twice: the JCS canonical bytes
+         * AND the resulting chain hash.
+         *
+         * `unparseable_file` and `seq_high_zero` are what make this load-bearing. The first
+         * carries all three chain fields as EXPLICIT nulls — omitting them changes the
+         * canonical bytes and therefore the hash, so a port that spelled absence as an absent
+         * key fails on the hash rather than shipping a silently divergent log. The second
+         * carries `seq_high: 0`, the shortest honest witness there is; a truthiness check
+         * anywhere in the emitter turns it into all-nulls and fails here too.
+         */
+        @Test
+        fun `accepted cases reproduce log-core canonical json and chain hashes`() {
+            var accepted = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                if (!o["accepted"]!!.jsonPrimitive.boolean) continue
+                val data = o["data"]!!.jsonObject
+                accepted++
+
+                // `accepted_unknown_extra_key` is a READER case: the extra key is by
+                // definition one this port does not know, so it cannot be emitted. Its bytes
+                // are still pinned below, against the fixture's own `data`.
+                val rebuilt = if (data.keys == setOf(
+                        "file", "sha256", "bytes", "session_id", "seq_high", "last_hash", "state",
+                    )
+                ) {
+                    val emitted = emit(data)
+                    assertEquals(data, emitted, name)
+                    emitted
+                } else {
+                    data
+                }
+
+                assertEquals(
+                    o["canonical_json"]!!.jsonPrimitive.content,
+                    Canonical.canonicalize(rebuilt.toString()),
+                    name,
+                )
+                val e = o["envelope"]!!.jsonObject
+                val chained = chainEntry(
+                    o["prev_hash"]!!.jsonPrimitive.content,
+                    Envelope(
+                        seq = e["seq"]!!.jsonPrimitive.long,
+                        t = e["t"]!!.jsonPrimitive.long,
+                        wall = e["wall"]!!.jsonPrimitive.content,
+                        kind = e["kind"]!!.jsonPrimitive.content,
+                        data = rebuilt,
+                    ),
+                )
+                assertEquals(o["hash"]!!.jsonPrimitive.content, chained.hash, name)
+
+                // ...and the narrowing accepts it, reporting the same value back.
+                val parsed = validatePeerObservedPayload(rebuilt)
+                assertInstanceOf(PeerObservedParse.Ok::class.java, parsed, name)
+                val value = o["value"]!!.jsonObject
+                val payload = (parsed as PeerObservedParse.Ok).payload
+                assertEquals(value["file"]!!.jsonPrimitive.content, payload.file, name)
+                assertEquals(value["sha256"]!!.jsonPrimitive.content, payload.sha256, name)
+                assertEquals(value["bytes"]!!.jsonPrimitive.long, payload.bytes, name)
+                assertEquals(value["state"]!!.jsonPrimitive.content, payload.state.wire, name)
+                assertEquals(
+                    (value["session_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+                    payload.sessionId,
+                    name,
+                )
+                assertEquals(
+                    (value["seq_high"] as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString }?.long,
+                    payload.seqHigh,
+                    name,
+                )
+                assertEquals(
+                    (value["last_hash"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
+                    payload.lastHash,
+                    name,
+                )
+            }
+            assertEquals(7, accepted, "peer-observed.json lost an accepted case")
+        }
+
+        /**
+         * The rejected cases, each with the exact error variant.
+         *
+         * The variant matters and is not decoration: `partially_parsed` and
+         * `unparseable_with_chain_values` are two different self-contradictions, and a port
+         * that collapsed them would still refuse the payload while losing the one thing a
+         * staff-facing report can say about WHY.
+         */
+        @Test
+        fun `rejected cases are refused with log-core's own error`() {
+            var rejected = 0
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                if (o["accepted"]!!.jsonPrimitive.boolean) continue
+                rejected++
+
+                val parsed = validatePeerObservedPayload(o["data"]!!.jsonObject)
+                assertInstanceOf(PeerObservedParse.Err::class.java, parsed, name)
+                val error = (parsed as PeerObservedParse.Err).error
+                val expected = o["error"]!!.jsonObject
+                assertEquals(expected["kind"]!!.jsonPrimitive.content, error.kind, name)
+
+                when (error) {
+                    is PeerObservedShapeError.PartiallyParsed -> {
+                        assertEquals(
+                            expected["present"]!!.jsonArray.map { it.jsonPrimitive.content },
+                            error.present,
+                            name,
+                        )
+                        assertEquals(
+                            expected["absent"]!!.jsonArray.map { it.jsonPrimitive.content },
+                            error.absent,
+                            name,
+                        )
+                    }
+                    is PeerObservedShapeError.UnparseableWithChainValues -> assertEquals(
+                        expected["present"]!!.jsonArray.map { it.jsonPrimitive.content },
+                        error.present,
+                        name,
+                    )
+                    is PeerObservedShapeError.UnknownState -> assertEquals(
+                        expected["state"]!!.jsonPrimitive.content,
+                        error.state,
+                        name,
+                    )
+                    is PeerObservedShapeError.BadField -> assertEquals(
+                        expected["field"]!!.jsonPrimitive.content,
+                        error.field,
+                        name,
+                    )
+                    else -> Unit
+                }
+
+                // The rejected bytes still chain — a witness this reader declines is not a
+                // corrupt log, and `parseEntries` must not reject an unknown-shaped payload.
+                val e = o["envelope"]!!.jsonObject
+                val chained = chainEntry(
+                    o["prev_hash"]!!.jsonPrimitive.content,
+                    Envelope(
+                        seq = e["seq"]!!.jsonPrimitive.long,
+                        t = e["t"]!!.jsonPrimitive.long,
+                        wall = e["wall"]!!.jsonPrimitive.content,
+                        kind = e["kind"]!!.jsonPrimitive.content,
+                        data = o["data"]!!.jsonObject,
+                    ),
+                )
+                assertEquals(o["hash"]!!.jsonPrimitive.content, chained.hash, name)
+            }
+            assertEquals(5, rejected, "peer-observed.json lost a rejected case")
+        }
+
+        /**
+         * Guard against a truncated fixture. Every case is named, so a vector that quietly
+         * lost its `seq_high: 0` or its `unparseable` case fails here rather than shrinking
+         * the reachable test space — the fixture rule the decision log draws from bug 10.
+         */
+        @Test
+        fun `the vector still carries every mandatory case`() {
+            val names = v["cases"]!!.jsonArray
+                .map { it.jsonObject["name"]!!.jsonPrimitive.content }
+                .toSet()
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "appeared_parsed",
+                        "grew",
+                        "shrank",
+                        "disappeared",
+                        "unparseable_file",
+                        "seq_high_zero",
+                        "rejected_named_session_without_tip",
+                        "rejected_seq_without_hash",
+                        "rejected_unparseable_with_chain_values",
+                        "rejected_unknown_state",
+                        "rejected_uppercase_sha256",
+                        "accepted_unknown_extra_key",
+                    ),
+                ),
+                "peer-observed.json lost a mandatory case: $names",
+            )
+            assertEquals(12, names.size)
+        }
+
+        /**
+         * `peer.observed` is a FLOOR kind: it has no key in `policy.capture`, so "off" is not
+         * expressible. Provisional — see the note in the vector and in [FLOOR_EVENT_KINDS].
+         */
+        @Test
+        fun `peer observed is on the floor and has no policy gate`() {
+            assertTrue("peer.observed" in FLOOR_EVENT_KINDS)
+            assertFalse("peer.observed" in POLICY_GATED_EVENT_KINDS)
+            assertTrue(isEventKindCaptured("peer.observed", DEFAULT_CAPTURE_POLICY))
+            assertTrue(v["floor_note"]!!.jsonPrimitive.content.isNotEmpty())
+        }
+
+        /**
+         * NO IDENTITY, anywhere in the vector family. A witness names a FILE and a CHAIN
+         * POSITION and nothing else. This payload describes somebody ELSE's artifact, so the
+         * CPHS constraint that keeps author identity out of `git.event` applies with more
+         * force — and `file` is a BASENAME, never a path that could leak a directory layout.
+         */
+        @Test
+        fun `no case carries identity or a path outside the provenance directory`() {
+            assertTrue(v["no_identity_note"]!!.jsonPrimitive.content.isNotEmpty())
+            val structural = setOf(
+                "file", "sha256", "bytes", "session_id", "seq_high", "last_hash", "state",
+            )
+            for (case in v["cases"]!!.jsonArray) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val data = o["data"]!!.jsonObject
+                // `accepted_unknown_extra_key` deliberately carries one extra key to prove
+                // forward compatibility; nothing else may.
+                if (name != "accepted_unknown_extra_key") {
+                    assertEquals(structural, data.keys, name)
+                }
+                val file = data["file"]!!.jsonPrimitive.content
+                assertFalse(file.contains('/'), "$name: file must be a basename, not a path")
+                assertFalse(file.contains('\\'), "$name: file must be a basename, not a path")
+            }
         }
     }
 

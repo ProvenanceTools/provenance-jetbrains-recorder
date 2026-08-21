@@ -147,6 +147,15 @@ val FLOOR_EVENT_KINDS: List<String> = listOf(
     "ext.activate",
     "recorder.degraded",
     "recorder.recovered_from_corruption",
+    // Peer witnessing (program spec §7 mechanism 2). On the FLOOR — it has no key in
+    // `policy.capture`, so "off" is not expressible. That placement is provisional and is
+    // recorded as such in the monorepo's decision log: the collaboration spec §5.6 assigns
+    // "was witnessing AVAILABLE?" to a `session.start` capability report rather than to a
+    // capture knob, and adding a `policy.capture` key here would publish a course-SIGNED
+    // manifest field ahead of the decision that gives it meaning. If a per-course off switch
+    // is ever required, the entry moves to POLICY_GATED_EVENT_KINDS under a
+    // `peer_observation` key — in the same change across all three recorders.
+    "peer.observed",
 )
 
 /**

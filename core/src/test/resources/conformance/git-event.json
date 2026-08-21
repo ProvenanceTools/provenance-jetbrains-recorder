@@ -3,6 +3,9 @@
   "floor_note": "git.event is a FLOOR event kind and adding fields to its payload does not change that. It has no key in policy.capture, so \"off\" is not expressible — which is deliberate: the commit graph is the exculpatory evidence that a large insert was a merge or a checkout rather than a paste, and a course must not be able to switch that off.",
   "no_author_identity_note": "NO git author name and NO author email, here or anywhere else in the log. This is a protocol constraint, not a style preference: the approved CPHS protocol treats a new category of identifier as requiring a filed modification BEFORE implementation. sha, parents and branch describe the SHAPE of the history, not who made it. Attribution has a designed, opaque home already — student_ref inside session.start.identity. A port that adds an author field is out of protocol.",
   "parents_order_note": "JCS sorts object keys but NOT array elements. parents[0] is the branch merged INTO, so the order carries meaning and must never be sorted or normalized.",
+  "repository_discriminator_note": "root_commit_sha identifies WHICH REPOSITORY an observation came from, by that repository's ROOT-COMMIT SHA (decision D12). A scope can observe more than one repository — a submodule, or a repo nested inside the one owning the assignment root — and their sha spaces are unrelated, so a reader that keys commits by sha alone merges two graphs that have nothing to do with each other. The root commit was chosen because BOTH PARTNERS DERIVE THE SAME VALUE OFFLINE, which is the whole point: a discriminator two partners disagree about cannot correlate anything. A session-salted hash of the repo path was rejected for exactly that reason. It is NOT the repository path (arguably an identifier, certainly noisy) and NOT a remote URL (embeds the org and often the student's username), which is why a value that is not a commit sha is REJECTED rather than used.",
+  "repository_discriminator_absence_note": "ABSENT is the ordinary case and always will be. Every bundle recorded before this landed has no such field, and a SHALLOW CLONE has no reachable root commit — the boundary commit it reports has no parents but is not a root, so a recorder that emitted it would publish a value a full clone of the same repository disagrees with. A port MUST OMIT the field in both cases. Absent means \"this observation is unlabelled\": never \"a different repository\", never a defect, and never evidence of anything about the student. OMIT, never null — the two canonicalize differently and therefore chain to different hashes, exactly as `parents: []` and an absent `parents` do.",
+  "repository_discriminator_writer_note": "WRITER RULE, so three ports derive the same value: take the root of the FIRST-PARENT lineage of HEAD (git rev-list --max-parents=0 --first-parent HEAD); if that yields more than one — an orphan branch or a squashed import merged in — take the lexicographically smallest, so the choice is deterministic. OMIT the field if the repository is shallow (git rev-parse --is-shallow-repository), if the command fails, or if it yields nothing. Several root commits in one repository is ORDINARY and is never a finding, and neither is two partners deriving different values: the cost of disagreement is lost correlation, which surfaces as \"unknown\", and it must never be more than that.",
   "cases": [
     {
       "name": "legacy_1x",
@@ -314,6 +317,303 @@
       },
       "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
       "hash": "84a5d428d93f7de0f12c4aeef13fa12ad3fe59b01e30d1379f5275fa9fcf0038"
+    },
+    {
+      "name": "root_commit_sha_recorded",
+      "note": "The ordinary labelled commit. Note where JCS sorts the new key: after `parents` and before `sha`. This is the SAME payload as ordinary_commit plus the field, so the two MUST hash differently — a port that drops an unrecognised field silently produces the other one's hash.",
+      "data": {
+        "operation": "commit",
+        "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "branch": "main",
+        "root_commit_sha": "9999999999999999999999999999999999999999"
+      },
+      "canonical_json": "{\"branch\":\"main\",\"commit_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"9999999999999999999999999999999999999999\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "branch": "main",
+          "root_commit_sha": "9999999999999999999999999999999999999999"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "211820ba0346948eeb58b09c24fb6d7012d9063c0dfac97a86f8e63708e52bc7",
+      "discriminator": {
+        "kind": "recorded",
+        "rootCommitSha": "9999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "name": "root_commit_sha_sha256_repository",
+      "note": "A sha-256 repository: the root commit is 64 hex, not 40. Both lengths are legal object names and both must be accepted.",
+      "data": {
+        "operation": "commit",
+        "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root_commit_sha": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "canonical_json": "{\"commit_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "root_commit_sha": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "0ee8a809d1ff625eaefe5bc664810535a0d5c7ab2055c8905c3771b28fbd6467",
+      "discriminator": {
+        "kind": "recorded",
+        "rootCommitSha": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    },
+    {
+      "name": "root_commit_sha_is_the_root_itself",
+      "note": "The root commit labelling its own repository: parents is [] and root_commit_sha equals sha. Ordinary, and NOT a special case — a reader compares the discriminator for equality and never relates it to the commit graph.",
+      "data": {
+        "operation": "commit",
+        "commit_sha": "9999999999999999999999999999999999999999",
+        "sha": "9999999999999999999999999999999999999999",
+        "parents": [],
+        "root_commit_sha": "9999999999999999999999999999999999999999"
+      },
+      "canonical_json": "{\"commit_sha\":\"9999999999999999999999999999999999999999\",\"operation\":\"commit\",\"parents\":[],\"root_commit_sha\":\"9999999999999999999999999999999999999999\",\"sha\":\"9999999999999999999999999999999999999999\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "commit_sha": "9999999999999999999999999999999999999999",
+          "sha": "9999999999999999999999999999999999999999",
+          "parents": [],
+          "root_commit_sha": "9999999999999999999999999999999999999999"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9fb4b1e9666a5a030a6bb5554ed979459e7c4e07a3fd20958594c698a1f9442b",
+      "discriminator": {
+        "kind": "recorded",
+        "rootCommitSha": "9999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "name": "root_commit_sha_absent_shallow_clone",
+      "note": "A shallow clone: the root commit is unreachable, so the field is OMITTED. Note the boundary commit reports parents [] and is NOT a root — recordedRoot means root-or-truncated-lineage. Reads as absent, which is not a defect and not evidence. Its hash deliberately EQUALS the root_commit case above: an unlabelled payload is byte-identical to the pre-D12 world, which is the whole compatibility guarantee.",
+      "data": {
+        "operation": "commit",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parents": [],
+        "branch": "main"
+      },
+      "canonical_json": "{\"branch\":\"main\",\"commit_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"operation\":\"commit\",\"parents\":[],\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parents": [],
+          "branch": "main"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "e7db36328742337bfe5a8db236a2edbfb47bfe3bf1d500e5165674340fb98060",
+      "discriminator": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "root_commit_sha_null_is_not_absent",
+      "note": "A port that spells the unknown case as null instead of omitting the key produces DIFFERENT canonical bytes and a different chain hash from root_commit_sha_absent_shallow_clone. Readers accept null as absence so such a log still parses, but a writer MUST omit.",
+      "data": {
+        "operation": "commit",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parents": [],
+        "branch": "main",
+        "root_commit_sha": null
+      },
+      "canonical_json": "{\"branch\":\"main\",\"commit_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"operation\":\"commit\",\"parents\":[],\"root_commit_sha\":null,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parents": [],
+          "branch": "main",
+          "root_commit_sha": null
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "680de67d5c90d1c2cc87a3707dced648cf49f200858b9051ae0525f05987df55",
+      "discriminator": {
+        "kind": "absent"
+      }
+    },
+    {
+      "name": "root_commit_sha_repository_path_rejected",
+      "note": "A repository PATH — the identifier this field exists to avoid. Rejected, and the observation is folded in with the unlabelled ones. This is the one place a path or a remote URL can be stopped before it reaches a staff-facing UI.",
+      "data": {
+        "operation": "commit",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root_commit_sha": "/Users/student/cs61b/proj2"
+      },
+      "canonical_json": "{\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"/Users/student/cs61b/proj2\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "root_commit_sha": "/Users/student/cs61b/proj2"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "bed1e5011947d49262ee5fd1c219d43178c5d0be19e2663f26bdc4b859ee7829",
+      "discriminator": {
+        "kind": "malformed",
+        "problem": "not_a_commit_sha"
+      }
+    },
+    {
+      "name": "root_commit_sha_uppercase_rejected",
+      "note": "Lowercase hex only, as git prints it. Rejected rather than case-folded: folding is the normalization that could merge two values a reader must compare exactly.",
+      "data": {
+        "operation": "commit",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root_commit_sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "canonical_json": "{\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "root_commit_sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "a0959abaf963325995ae7506f7bcc4829b4acf4bca1ed649749eb0ae0539a7bf",
+      "discriminator": {
+        "kind": "malformed",
+        "problem": "not_a_commit_sha"
+      }
+    },
+    {
+      "name": "root_commit_sha_abbreviated_rejected",
+      "note": "An abbreviated sha is not the same value as the full one, and expanding it here would be a guess. Rejected.",
+      "data": {
+        "operation": "commit",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root_commit_sha": "9999999"
+      },
+      "canonical_json": "{\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"9999999\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "root_commit_sha": "9999999"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "0544615e8680c07bb1fc4c522502b24189c69af1f15eba67932ce5a8c334323a",
+      "discriminator": {
+        "kind": "malformed",
+        "problem": "not_a_commit_sha"
+      }
+    },
+    {
+      "name": "root_commit_sha_empty_rejected",
+      "note": "The empty string would key every repository the same, which is worse than no key at all. Rejected.",
+      "data": {
+        "operation": "commit",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root_commit_sha": ""
+      },
+      "canonical_json": "{\"operation\":\"commit\",\"parents\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"root_commit_sha\":\"\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "git.event",
+        "data": {
+          "operation": "commit",
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parents": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "root_commit_sha": ""
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "79a1ec714e6f37f495f3e9a3dc9b4f438850a788eaa19a36df9e0ff75089a571",
+      "discriminator": {
+        "kind": "malformed",
+        "problem": "empty"
+      }
     }
   ]
 }

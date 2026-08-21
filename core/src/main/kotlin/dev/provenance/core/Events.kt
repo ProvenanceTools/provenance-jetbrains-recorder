@@ -394,6 +394,27 @@ data class GitEventPayload(
     val parents: List<String>? = null,
     /** Current branch name. Absent when HEAD is detached; never invented. */
     val branch: String? = null,
+    /**
+     * The REPOSITORY DISCRIMINATOR (decision D12): the root-commit sha of the repository this
+     * observation came from, lowercase hex, 40 for sha-1 or 64 for sha-256.
+     *
+     * A scope can observe more than one repository — a submodule, or a repository nested
+     * inside the one that owns the assignment root — and their sha spaces are unrelated, so a
+     * reader that keys observed commits by sha alone merges two graphs that have nothing to do
+     * with each other. This is what lets the analyzer key on `(repository, sha)`.
+     *
+     * **OMITTED, never `null`.** Absence is a legal, permanent, blameless answer — a shallow
+     * clone, an older recorder, any failure at all — and an absent key canonicalizes
+     * differently from an explicit `null`, so the two chain to different hashes exactly as
+     * `parents: []` and an absent `parents` do. Readers accept `null` as absence so a
+     * nonconforming log still parses; a writer that emits it is nonconforming.
+     *
+     * Never the repository path and never a remote URL (S14(b)) — a path is arguably an
+     * identifier and a remote URL embeds the org and often the student's own username. The
+     * writer validates every candidate through [readRepositoryDiscriminator] for exactly that
+     * reason.
+     */
+    val rootCommitSha: String? = null,
 )
 
 fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
@@ -408,6 +429,9 @@ fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
         }
     }
     if (branch != null) put("branch", branch)
+    // OMITTED when unknown, never `null` — see the field's KDoc. `if (x != null)` and not a
+    // `put(k, x)` with a nullable overload, so absence can never be spelled as JsonNull.
+    if (rootCommitSha != null) put(REPOSITORY_DISCRIMINATOR_FIELD, rootCommitSha)
 }
 
 /**
