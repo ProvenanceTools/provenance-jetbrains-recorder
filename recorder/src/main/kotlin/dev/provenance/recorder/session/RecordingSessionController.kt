@@ -231,8 +231,9 @@ class RecordingSessionController(
         }
 
         // §5.6 item 2 — git_capture. See GitCapabilityProbe.kt for exactly what this can and
-        // cannot report on this host.
-        val gitCapture: GitCaptureCapability = probeGitCapture()
+        // cannot report on this host, and how NOT_OWNED is reached via a reflective
+        // GitRepositoryManager read scoped to THIS session's own workspace root.
+        val gitCapture: GitCaptureCapability? = probeGitCapture(project, activated.workspaceRoot)
 
         // §5.6 item 1 — file_scope, the effective resolved file set (S25). Pure; no platform
         // dependency at all.

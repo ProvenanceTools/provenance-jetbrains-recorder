@@ -1,6 +1,10 @@
 package dev.provenance.recorder.wiring.git
 
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
 import dev.provenance.core.GitCaptureCapability
+import java.nio.file.Path
 
 /**
  * The `session.start.git_capture` CAPABILITY REPORT (collaboration spec §5.6 item 2), write
@@ -14,48 +18,117 @@ import dev.provenance.core.GitCaptureCapability
  * regardless of any runtime "is it installed" guard (see [GitWiringStartupActivity]'s
  * docstring). [probeGitCapture] is called from [dev.provenance.recorder.session.RecordingSessionController],
  * which IS reachable from the main, always-loaded `plugin.xml`, so this file — unlike its
- * siblings — must import NOTHING from `git4idea.*`. [isClassLoadable] is a purely reflective
- * probe (`Class.forName` takes a `String`, never a type reference), which is what makes that
- * possible: this file's own bytecode never mentions a Git4Idea class, so it is safe to load
- * unconditionally.
+ * siblings — must import NOTHING from `git4idea.*`. Every git4idea type this file touches
+ * ([isClassLoadable], [reflectiveGitRepositoryRoots]) is reached by [Class.forName] /
+ * [java.lang.reflect.Method], never a static import, which is what makes that possible: this
+ * file's own bytecode never mentions a Git4Idea class, so it is safe to load unconditionally.
+ * [Project] and [VirtualFile] are core-platform types (`com.intellij.openapi.*`), not
+ * Git4Idea's — referencing them here carries none of that risk.
  *
- * ## Scope: `available` / `unavailable` only — `NOT_OWNED` is not derived here
+ * ## `NOT_OWNED`, reachable via a reflective repository enumeration
  *
  * log-core's `git_capture` has three answers (see `GitCaptureCapability`'s KDoc), and the VS
  * Code recorder computes all three synchronously off `vscode.git`'s `repositories` getter. On
- * this host that repository list lives behind `git4idea.repo.GitRepositoryManager`, and reaching
- * it safely from here would need either:
+ * this host that repository list lives behind `git4idea.repo.GitRepositoryManager`.
  *
- *  1. a REFLECTIVE call through `GitRepositoryManager.getInstance(project).repositories` (no
- *     static type reference, so classloading-safe) — not attempted here because it cannot be
- *     validated without a running IDE with Git4Idea enabled, and a wrong method/field name would
- *     fail silently (an exception this probe would have to swallow into `UNAVAILABLE`, exactly
- *     as it would for the genuinely-absent case, so a broken reflective probe and a real
- *     "no Git4Idea" would be indistinguishable in the field); or
- *  2. threading the current session's ownership predicate through
- *     [dev.provenance.recorder.wiring.RecorderGitState] (already loaded unconditionally, already
- *     the seam `git.event` routing goes through) and having [installGitWiring] populate it — but
- *     that activity and [dev.provenance.recorder.activation.RecorderActivationActivity] (which
- *     starts the session that needs the answer) are BOTH `postStartupActivity` entries with no
- *     ordering guarantee between them, so the value session.start would read could easily not
- *     exist yet on the very first project open.
+ * A prior pass here reported `NOT_OWNED` as needing a decision between two designs: a
+ * reflective repository enumeration, or threading the session router's own ownership answer
+ * through [dev.provenance.recorder.wiring.RecorderGitState] (already loaded unconditionally,
+ * already the seam `git.event` routing goes through). The second is genuinely unsafe:
+ * [installGitWiring] and [dev.provenance.recorder.activation.RecorderActivationActivity] (which
+ * starts the session that needs the answer) are both `postStartupActivity` entries with no
+ * ordering guarantee, so a value read through that seam at session-start time could easily not
+ * exist yet.
  *
- * Both are real, buildable designs; neither is a small, obviously-correct addition on top of the
- * existing D12 (`root_commit_sha`) plumbing, which never had this problem because it labels
- * `git.event` payloads emitted asynchronously by [GitWiringStartupActivity] itself, never a
- * value session.start needs synchronously at construction time. Rather than invent one of the
- * two under this task, this probe answers only what a single, safe, race-free check can answer:
- * whether Git4Idea is on the classpath at all. That is exactly the [GitCaptureCapability.UNAVAILABLE]
- * distinction — "nothing this session did could have produced a `git.event`" — which is also the
- * one D16 cites as the missing context for `git_unrecorded_in`. `NOT_OWNED` (git worked, but no
- * repository was in scope) is never reported by this recorder today; every git4idea-enabled
- * session reports [GitCaptureCapability.AVAILABLE], which is the same "wait and see" answer a
- * `git.event`-free session already gave before this field existed. Extending this to `NOT_OWNED`
- * is a follow-up, not a silent gap: it needs one of the two designs above, decided and reviewed
- * on its own.
+ * The first was rejected on the grounds that it "cannot be validated without a running IDE with
+ * Git4Idea enabled." That is not so: `recorder/build.gradle.kts` already pulls Git4Idea in as a
+ * `bundledPlugins` TEST dependency, and `GitExternalChangeGateTest` already drives a real
+ * `GitRepositoryManager` through `BasePlatformTestCase` (init a real repo, map it, wait for
+ * Git4Idea to detect it). [reflectiveGitRepositoryRoots] is validated the same way, against the
+ * genuine class, in [GitCapabilityProbeIntegrationTest]. The method signatures reflected on
+ * here (`GitRepositoryManager.getInstance(Project)`,
+ * `.getRepositories()`, `Repository.getRoot()`) were also confirmed directly against the
+ * `vcs-git.jar` bundled with this project's own `platformVersion` (2026.1.4) — decompiled with
+ * `javap`, not guessed.
+ *
+ * ## No cross-activity race
+ *
+ * [probeGitCapture] does **not** read anything [GitWiringStartupActivity] or any other
+ * `postStartupActivity` populates. `GitRepositoryManager` is git4idea's OWN project service; the
+ * probe asks it directly, synchronously, the moment [dev.provenance.recorder.session.RecordingSessionController]'s
+ * `init` block runs. The only timing caveat is the one the VS Code implementation already
+ * documents for its own snapshot: git4idea's own VCS-root detection may not have finished
+ * mapping every repository the instant a project opens, so a repository that appears moments
+ * later is not seen by this call. That cannot manufacture a WRONG answer, only a stale one in
+ * the conservative direction — an empty (or incomplete) repository list reads as
+ * [GitCaptureCapability.AVAILABLE] (see `decideGitCapture`'s "zero repositories" rule below),
+ * never as [GitCaptureCapability.NOT_OWNED]. That is the same "wait and see" answer this probe
+ * already gave for every git4idea-enabled session before this file changed.
+ *
+ * ## Why `NOT_OWNED` is actually reachable here, not merely theoretical
+ *
+ * [dev.provenance.recorder.session.RecorderSessionManager] supports N **concurrently active**
+ * sessions in one project — nested-manifest discovery finds one verified assignment root per
+ * `.provenance-manifest`, and each gets its own [dev.provenance.recorder.session.RecordingSessionController].
+ * `git.event` is routed to the owning session by nearest-ancestor of the git repository's own
+ * root ([RecorderGitState]'s KDoc: "used by the installed router to find the owning session by
+ * nearest-ancestor; null routes to no owner (dropped)"). IntelliJ auto-detects every nested
+ * `.git` directory under a project as its own VCS mapping — unlike VS Code, this needs no
+ * multi-root workspace to be true even of a single content root — so a project with two
+ * sibling assignment directories (e.g. a `61b/hw1/` with its own repo and a `61c/hw2/` that is
+ * NOT under version control, both concurrently recording) is a real, unremarkable shape: for
+ * the `61c/hw2/` session, `GitRepositoryManager.getRepositories()` answers non-empty (it sees
+ * `61b/hw1`'s repository), Git4Idea is plainly available, and yet nothing that session's own
+ * router will ever route reaches it — exactly [GitCaptureCapability.NOT_OWNED]'s definition:
+ * "git observation worked, and every repository visible to it was outside this session's
+ * assignment scope."
+ *
+ * [decideGitCapture] mirrors [RecorderSessionManager]'s own ownership predicate
+ * (`normalized.startsWith(root)`, repository root at-or-below the session root) exactly, so this
+ * capability report never disagrees with what the live router actually does. It does not attempt
+ * to fix or extend that predicate. Note for a future reader: a repository root sitting ABOVE the
+ * assignment root (one shared class repo, the assignment as a subdirectory — the "standard
+ * nested layout" the monorepo's VS Code recorder had a routing bug for, since fixed there) is
+ * ALSO not owned under this predicate, exactly as [RecorderSessionManager]'s real router does
+ * not route such a repository's `git.event`s to any session today. Whether that routing itself
+ * should change is a separate, pre-existing question this task does not touch — this probe is
+ * required only to describe accurately what the recorder actually does, not what it should do.
  */
-fun probeGitCapture(git4IdeaClassLoadable: () -> Boolean = ::isGit4IdeaClassLoadable): GitCaptureCapability =
-    if (git4IdeaClassLoadable()) GitCaptureCapability.AVAILABLE else GitCaptureCapability.UNAVAILABLE
+fun probeGitCapture(
+    project: Project,
+    sessionRoot: Path,
+    git4IdeaClassLoadable: () -> Boolean = ::isGit4IdeaClassLoadable,
+    repositoryRootsOf: (Project) -> List<Path>? = ::reflectiveGitRepositoryRoots,
+): GitCaptureCapability? {
+    if (!git4IdeaClassLoadable()) return GitCaptureCapability.UNAVAILABLE
+    // null means the reflective probe itself failed (a method/field mismatch on some IDE's
+    // Git4Idea build) rather than "zero repositories" — those are different facts, and only
+    // the latter is an answer this session is entitled to give. Guessing is worse than
+    // silence: omit rather than report a capability this probe could not actually establish.
+    val repositoryRoots = repositoryRootsOf(project) ?: return null
+    return decideGitCapture(sessionRoot, repositoryRoots)
+}
+
+/**
+ * The pure ownership decision, isolated from IntelliJ/Git4Idea entirely so it is testable with
+ * plain [Path]s.
+ *
+ * Mirrors [dev.provenance.recorder.session.RecorderSessionManager]'s own `sessionOwning`
+ * predicate: a repository is owned by this session iff its root is at-or-below [sessionRoot].
+ * **Zero repositories is [GitCaptureCapability.AVAILABLE], not [GitCaptureCapability.NOT_OWNED]**
+ * — an assignment with no git repository (yet) has nothing to route away from, and the live
+ * `GitRepositoryChangeListener` subscription would pick one up if it appeared later. `NOT_OWNED`
+ * is reserved for "at least one repository exists, and none of them is this session's".
+ */
+internal fun decideGitCapture(sessionRoot: Path, repositoryRoots: List<Path>): GitCaptureCapability {
+    if (repositoryRoots.isEmpty()) return GitCaptureCapability.AVAILABLE
+    val normalizedSessionRoot = sessionRoot.normalize()
+    val owned = repositoryRoots.any { repoRoot ->
+        val normalizedRepoRoot = runCatching { repoRoot.toRealPath() }.getOrDefault(repoRoot.normalize())
+        normalizedRepoRoot.startsWith(normalizedSessionRoot)
+    }
+    return if (owned) GitCaptureCapability.AVAILABLE else GitCaptureCapability.NOT_OWNED
+}
 
 /** [probeGitCapture]'s production check: is `GitRepositoryManager` loadable on this classpath? */
 internal fun isGit4IdeaClassLoadable(): Boolean = isClassLoadable("git4idea.repo.GitRepositoryManager")
@@ -82,3 +155,48 @@ internal fun isClassLoadable(className: String): Boolean =
         if (t is VirtualMachineError) throw t
         false
     }
+
+/**
+ * Every currently known Git4Idea repository's working-tree root, or `null` if the reflective
+ * probe itself could not answer.
+ *
+ * Purely reflective ([Class.forName] + [java.lang.reflect.Method], never a static git4idea
+ * import) for the same class-loading-safety reason as [isClassLoadable] — see the file
+ * docstring. Only called after [isGit4IdeaClassLoadable] has already confirmed
+ * `GitRepositoryManager` itself is loadable, so a failure here is a genuine method/field
+ * mismatch (a Git4Idea build this reflection was not written against), not class absence.
+ *
+ * The three reflected calls — `GitRepositoryManager.getInstance(Project)`,
+ * `GitRepositoryManager.getRepositories()`, `Repository.getRoot()` (inherited by every
+ * `GitRepository` instance, resolved via the repository's own runtime class rather than a
+ * static `Repository` reference) — were confirmed against the `vcs-git.jar` bundled with this
+ * project's own `platformVersion` (`javap git4idea/repo/GitRepositoryManager.class` /
+ * `GitRepository.class`), not merely assumed.
+ *
+ * `null` on ANY failure — a missing method, an unexpected return type, an exception from
+ * git4idea itself — never a partial list. A single malformed entry is rare enough that folding
+ * it into "the whole probe could not answer" (which [probeGitCapture] turns into an omitted
+ * field) is simpler and safer than partially trusting a reflective read that already surprised
+ * us once.
+ */
+internal fun reflectiveGitRepositoryRoots(project: Project): List<Path>? =
+    try {
+        val managerClass = Class.forName("git4idea.repo.GitRepositoryManager")
+        val manager = managerClass.getMethod("getInstance", Project::class.java).invoke(null, project)
+        if (manager == null) {
+            null
+        } else {
+            @Suppress("UNCHECKED_CAST")
+            val repositories = managerClass.getMethod("getRepositories").invoke(manager) as List<Any>
+            repositories.map { repo ->
+                val root = repo.javaClass.getMethod("getRoot").invoke(repo) as VirtualFile
+                root.toNioPath()
+            }
+        }
+    } catch (t: Throwable) {
+        if (t is VirtualMachineError) throw t
+        LOG.debug("provenance: reflective GitRepositoryManager probe failed", t)
+        null
+    }
+
+private val LOG = Logger.getInstance("dev.provenance.recorder.wiring.git.GitCapabilityProbe")
