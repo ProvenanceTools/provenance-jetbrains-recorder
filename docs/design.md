@@ -76,12 +76,37 @@ semantics. This table is the port's core risk register.
 | git | git extension API | Git4Idea (may be absent in some IDEs) | Med — must degrade gracefully |
 | plugin snapshot | `vscode.extensions.all` | `PluginManagerCore.getPlugins()` | Low — fills the existing `ext.snapshot` event shape |
 | status bar | status bar item | `StatusBarWidgetFactory` | Low |
+| peer witnessing (`peer.observed`) | one `FileSystemWatcher` on `.provenance/` | `BulkFileListener` on VFS, **plus a directory sweep in the drain** | **High** — same cached-VFS quirk as external change; a `git pull` in an external terminal fires no VFS event at all |
+| repository discriminator (`root_commit_sha`) | `execFile` spawn of `git rev-list` | git4idea `Git.runCommand` + `GitLineHandler` | Low — the VCS API resolves the executable, so the whole `git.path` / PATH ladder the VS Code port needs does not arise |
 
 **External-change detection is the highest-risk item.** IntelliJ's VFS is a
 cached snapshot that refreshes on window focus; the recorder PRD §4.5 note
 ("easy to get the direction wrong") is doubly true here because the on-disk vs
 expected-content comparison interacts with *when* the VFS believes the file
 changed. Budget for this specifically.
+
+**Peer witnessing pays the same VFS tax, and answers it differently.** The
+writer contract specifies one directory watcher whose callback does no I/O. On
+this host a watcher alone is not sufficient: a `git pull` run in an external
+terminal — the single most common way a partner's `.slog` arrives — produces no
+VFS event until something triggers a refresh, so a watcher-only port would
+silently witness nothing in the ordinary case. `PeerWatcher` therefore treats
+the VFS listener as a **promptness signal** and the directory listing taken at
+drain time as the **source of truth**; both feed one queue, drained at one
+point. This is a deliberate deviation from the VS Code shape, and it is safe
+because an unchanged file emits nothing, so the sweep cannot produce a duplicate
+observation. It costs one directory listing per checkpoint.
+
+**The git discriminator deliberately does not spawn git.** The VS Code port
+must, because its git API cannot walk first-parent lineage, and that forced a
+whole candidate-resolution ladder on it (the host's resolved binary, then the
+configured `git.path`, then `PATH`) to cope with GUI applications on Windows not
+inheriting a useful `PATH`. `Git.runCommand` is the top rung of that ladder by
+construction: it uses git4idea's configured `GitExecutable`, which also covers
+WSL / remote / IJent executables that are not local binaries at all. The one
+cross-platform hazard that survives is CRLF — `"false\r" != "false"` would make
+every Windows repository look shallow — so every output LINE is trimmed, pinned
+by tests over CRLF-shaped input.
 
 ## 5. Producer identity & the one format wrinkle
 
