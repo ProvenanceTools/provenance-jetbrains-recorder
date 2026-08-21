@@ -20,6 +20,10 @@ import dev.provenance.core.GitEventPayload
  *  - **An empty parent list is not the same as an absent one.** `[]` is a positive claim
  *    ("root commit"); absent means "could not read". A read failure is not entitled to make
  *    the former claim, so [reader] returning null omits the field entirely.
+ *  - **`root_commit_sha` is OMITTED, never `null`** (decision D12 writer rule 6). Absence and
+ *    an explicit `null` canonicalize differently and therefore chain to different hashes,
+ *    exactly as `parents: []` and an absent `parents` do. [GitEventPayload] cannot express
+ *    `null`, so this is structural rather than a rule to remember.
  */
 fun buildGitEventPayload(
     operation: String,
@@ -28,6 +32,15 @@ fun buildGitEventPayload(
     branch: String?,
     /** Resolves parents for [sha]. Null result means "unknown", not "none". */
     reader: GitCommitGraphReader?,
+    /**
+     * The repository discriminator (decision D12): THIS repository's root-commit sha, derived
+     * once per repository at wiring time and memoized. Null omits the field.
+     *
+     * Passed in rather than derived here, because rule 1 is that it is derived once per
+     * repository and never on the event path — and because a builder that could derive it
+     * would be a builder that eventually does.
+     */
+    rootCommitSha: String?,
 ): GitEventPayload {
     // Only consulted when there is a sha to resolve. A repository with no HEAD (a fresh
     // `git init`) has no commit to describe, and asking for one would be a wasted VCS call.
@@ -44,5 +57,10 @@ fun buildGitEventPayload(
         sha = sha,
         parents = parents,
         branch = branch,
+        // Rule 10: the label rides on every event that carries a `sha`, not only on commits —
+        // an unlabelled observation does not correlate even when its neighbours in the same
+        // session do. It is withheld when there is no `sha`, because there is then no observed
+        // commit for it to place.
+        rootCommitSha = if (sha != null) rootCommitSha else null,
     )
 }

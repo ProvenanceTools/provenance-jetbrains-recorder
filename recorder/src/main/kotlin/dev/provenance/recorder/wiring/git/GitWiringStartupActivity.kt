@@ -8,6 +8,9 @@ import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.concurrency.AppExecutorUtil
 import dev.provenance.recorder.wiring.RecorderGitState
+import git4idea.commands.Git
+import git4idea.commands.GitCommand
+import git4idea.commands.GitLineHandler
 import git4idea.history.GitHistoryUtils
 import git4idea.repo.GitRepository
 import git4idea.repo.GitRepositoryChangeListener
@@ -74,7 +77,21 @@ interface GitWiring {
  * Install the git.event subscription and return a handle. [GitWiringStartupActivity] calls
  * this and discards the handle; tests keep it so they can await [GitWiring.settled].
  */
-fun installGitWiring(project: Project): GitWiring {
+fun installGitWiring(
+    project: Project,
+    /**
+     * The D12 repository-discriminator memo. Defaults to the PRODUCTION one on purpose: a
+     * dependency that must be remembered is one that eventually is not, and a forgotten
+     * discriminator is not a loud failure — it is a silently unlabelled repository, which is
+     * exactly the shape decision-log bug 3 took when the whole commit-graph feature went dark
+     * for the standard nested layout.
+     *
+     * Overridden by unit tests, which must not invoke git.
+     */
+    discriminators: RepositoryDiscriminators = RepositoryDiscriminators { root ->
+        deriveRootCommitSha(root, gitPlumbing(project))
+    },
+): GitWiring {
     val state = project.service<RecorderGitState>()
 
     // Bounded to ONE thread: that is what keeps emission ordered. Shut down with the
@@ -108,11 +125,26 @@ fun installGitWiring(project: Project): GitWiring {
 
                 // --- Async part, queued so emission stays ordered.
                 executor.execute {
+                    // The D12 discriminator, derived ONCE per repository and memoized —
+                    // never on the event path in any real sense: the first state change for a
+                    // repository pays for it, every later one reads the memo. It is derived
+                    // here rather than at install time because a `GitRepositoryChangeListener`
+                    // is the only entry point this wiring has; there is no repository
+                    // enumeration hook, and enumerating `GitRepositoryManager` at install
+                    // would miss a repository mapped later in the session.
+                    //
+                    // `repoRoot` is THIS repository's own working-tree root — writer rule 9.
+                    // git4idea surfaces a submodule as its own `GitRepository` with its own
+                    // root, so it reaches here separately and gets its own memo entry.
+                    // Labelling a submodule event with the outer repository's root would
+                    // re-create the exact sha-space merge the field exists to prevent.
+                    val rootCommitSha = discriminators.of(repoRoot)
                     val payload = buildGitEventPayload(
                         operation = "state_change",
                         sha = sha,
                         branch = branch,
                         reader = commitGraphReader(project, repository),
+                        rootCommitSha = rootCommitSha,
                     )
                     // Re-read the seam: the session may have ended while this was queued,
                     // in which case there is nothing to append to.
@@ -161,5 +193,57 @@ private fun commitGraphReader(project: Project, repository: GitRepository): GitC
             null
         }
     }
+
+/**
+ * The production [GitPlumbing]: two read-only git commands, run through the **IntelliJ VCS
+ * API** (`git4idea.commands.Git`) rather than a raw process spawn.
+ *
+ * The VS Code recorder has to spawn `git` itself (`execFile`, no shell, fixed args, 5s
+ * timeout) because its git API cannot walk first-parent lineage. This plugin does not have
+ * that constraint: `Git.runCommand` + [GitLineHandler] runs an arbitrary plumbing subcommand
+ * with a FIXED argument list and no shell, which is exactly what `rev-list --max-parents=0
+ * --first-parent HEAD` needs. Going through the platform buys three things a spawn would not:
+ *
+ *  - it uses git4idea's CONFIGURED executable ([git4idea.config.GitExecutable]), so it works on
+ *    a machine where `git` is not on the IDE process's PATH, and on WSL / remote / IJent
+ *    setups where the executable is not a local binary at all — the same environments that
+ *    cannot fsync or atomic-move and that the writer already has handling for;
+ *  - it inherits the platform's process management and teardown rather than adding a second,
+ *    parallel one with its own leak surface;
+ *  - it cannot be handed a shell string: the subcommand is a [GitCommand] constant and the
+ *    arguments are a list.
+ *
+ * **The one thing it does not buy is a timeout knob** — `Git.runCommand` has none. Accepted:
+ * both commands are local object-database reads that consult no remote and need no
+ * credentials, they run on the bounded background executor whose only other work is already a
+ * blocking VCS read, and they run ONCE per repository. A hang would delay `git.event` emission
+ * for that repository; it cannot block the EDT, the document path, or the log writer. The same
+ * is already true of [GitHistoryUtils.collectCommitsMetadata] on this path.
+ *
+ * A non-zero exit throws, which [deriveRootCommitSha] converts into an omission.
+ */
+private fun gitPlumbing(project: Project): GitPlumbing = GitPlumbing { repoRoot, command, args ->
+    val subcommand = PLUMBING_COMMANDS[command]
+        ?: throw IllegalArgumentException("unsupported git plumbing subcommand: $command")
+    val handler = GitLineHandler(project, repoRoot, subcommand)
+    handler.addParameters(args)
+    val result = Git.getInstance().runCommand(handler)
+    if (!result.success()) {
+        throw IllegalStateException(
+            "git $command exited ${result.exitCode}: ${result.errorOutputAsJoinedString}",
+        )
+    }
+    result.output
+}
+
+/**
+ * The complete set of git subcommands this plugin may run. A closed map, not a lookup by name:
+ * the recorder reads the object database and does nothing else, and a subcommand that could
+ * write, fetch or rewrite must not be reachable from here even by a typo.
+ */
+private val PLUMBING_COMMANDS: Map<String, GitCommand> = mapOf(
+    "rev-parse" to GitCommand.REV_PARSE,
+    "rev-list" to GitCommand.REV_LIST,
+)
 
 private val LOG = Logger.getInstance(GitWiringStartupActivity::class.java)

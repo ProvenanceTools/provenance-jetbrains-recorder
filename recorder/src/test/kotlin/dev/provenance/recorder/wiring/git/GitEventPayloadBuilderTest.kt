@@ -65,6 +65,7 @@ class GitEventPayloadBuilderTest {
             sha = real.hash,
             branch = "main",
             reader = GitCommitGraphReader { GitCommitView(sha = real.hash, parents = real.parents) },
+            rootCommitSha = null,
         )
 
         val json = payload.toJsonObject()
@@ -95,7 +96,7 @@ class GitEventPayloadBuilderTest {
     @Test
     fun `parents order is preserved exactly and never sorted`() {
         // Deliberately in an order a sort would change.
-        val merge = buildGitEventPayload("commit", c, "main", reader(listOf(b, a)))
+        val merge = buildGitEventPayload("commit", c, "main", reader(listOf(b, a)), rootCommitSha = null)
         assertEquals(listOf(b, a), merge.parents)
         assertEquals(
             listOf(b, a),
@@ -110,23 +111,23 @@ class GitEventPayloadBuilderTest {
      */
     @Test
     fun `an empty parent list is distinct from an absent one`() {
-        val rootCommit = buildGitEventPayload("commit", a, "main", reader(emptyList()))
+        val rootCommit = buildGitEventPayload("commit", a, "main", reader(emptyList()), rootCommitSha = null)
         assertEquals(emptyList<String>(), rootCommit.parents)
         assertTrue("[] must survive to the wire", "parents" in rootCommit.toJsonObject())
         assertEquals(0, rootCommit.toJsonObject()["parents"]!!.jsonArray.size)
 
-        val unknown = buildGitEventPayload("commit", a, "main", reader(null))
+        val unknown = buildGitEventPayload("commit", a, "main", reader(null), rootCommitSha = null)
         assertNull(unknown.parents)
         assertFalse("unknown parents must be OMITTED", "parents" in unknown.toJsonObject())
 
         // A reader that fails outright is "unknown", never "root commit".
         val throwing = GitCommitGraphReader { throw IllegalStateException("shallow clone") }
-        val failed = buildGitEventPayload("commit", a, "main", throwing)
+        val failed = buildGitEventPayload("commit", a, "main", throwing, rootCommitSha = null)
         assertNull(failed.parents)
         assertFalse("parents" in failed.toJsonObject())
 
         // So is having no reader at all (Git4Idea absent / older API).
-        val noReader = buildGitEventPayload("commit", a, "main", null)
+        val noReader = buildGitEventPayload("commit", a, "main", null, rootCommitSha = null)
         assertNull(noReader.parents)
         assertFalse("parents" in noReader.toJsonObject())
     }
@@ -138,7 +139,7 @@ class GitEventPayloadBuilderTest {
     /** `commit_sha` duplicates `sha` on purpose: 1.x readers only know the former. */
     @Test
     fun `commit_sha is still emitted alongside sha for 1_x readers`() {
-        val json = buildGitEventPayload("commit", b, "main", reader(listOf(a))).toJsonObject()
+        val json = buildGitEventPayload("commit", b, "main", reader(listOf(a)), rootCommitSha = null).toJsonObject()
         assertEquals(b, json["commit_sha"]!!.jsonPrimitive.content)
         assertEquals(b, json["sha"]!!.jsonPrimitive.content)
     }
@@ -146,7 +147,7 @@ class GitEventPayloadBuilderTest {
     /** Detached HEAD omits `branch` entirely rather than inventing a name for it. */
     @Test
     fun `branch is omitted on detached HEAD`() {
-        val json = buildGitEventPayload("checkout", a, null, reader(emptyList())).toJsonObject()
+        val json = buildGitEventPayload("checkout", a, null, reader(emptyList()), rootCommitSha = null).toJsonObject()
         assertFalse("branch" in json)
         assertEquals(setOf("operation", "commit_sha", "sha", "parents"), json.keys)
     }
@@ -156,7 +157,7 @@ class GitEventPayloadBuilderTest {
     fun `a repo with no HEAD emits operation only and never consults the reader`() {
         var consulted = false
         val spy = GitCommitGraphReader { consulted = true; null }
-        val json = buildGitEventPayload("state_change", null, null, spy).toJsonObject()
+        val json = buildGitEventPayload("state_change", null, null, spy, rootCommitSha = null).toJsonObject()
         assertEquals(setOf("operation"), json.keys)
         assertFalse("no sha means nothing to resolve", consulted)
     }
