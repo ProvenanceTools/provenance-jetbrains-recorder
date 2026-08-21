@@ -6,6 +6,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.util.concurrency.AppExecutorUtil
 import dev.provenance.core.CapturePolicy
@@ -39,6 +40,10 @@ import dev.provenance.recorder.io.writeRollingSeal
 import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.ActiveFileTracker
+import dev.provenance.recorder.wiring.NioPeerFiles
+import dev.provenance.recorder.wiring.PeerFiles
+import dev.provenance.recorder.wiring.PeerWatcher
+import dev.provenance.recorder.wiring.ProvenanceDirVfsListener
 import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.Heartbeat
 import dev.provenance.recorder.wiring.RecordableSessionSink
@@ -137,6 +142,15 @@ class RecordingSessionController(
      * degrades to a skipped seal — never a failed session.
      */
     computeExtensionHash: () -> String = { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
+    /**
+     * PEER WITNESSING: the read-only view of `.provenance/` the watcher is handed.
+     *
+     * Injectable so a test can drive the observation state machine without a real directory,
+     * and — the reason it is a separate type rather than a lambda — so the ABSENCE of a write
+     * operation is visible in the signature. Defaults to [NioPeerFiles] over this session's own
+     * provenance directory.
+     */
+    peerFiles: PeerFiles? = null,
 ) : RecordableSessionSink {
     /** [RecordableSessionSink]: the root the routers relativize recorded paths against. */
     override val workspaceRoot: Path = activated.workspaceRoot
@@ -188,6 +202,13 @@ class RecordingSessionController(
      * see the gate in `init` for why that asymmetry is the safe one.
      */
     private val rollingSeal: RollingSealMaintainer?
+
+    /**
+     * PEER WITNESSING (program spec §7 mechanism 2). Drained on the checkpoint cadence and
+     * once at teardown; see the two call sites below. Never null — witnessing is a floor
+     * capability with no `policy.capture` key, so there is nothing to gate it on.
+     */
+    private val peerWatcher: PeerWatcher
     private var ended = false
 
     init {
@@ -301,6 +322,44 @@ class RecordingSessionController(
             )
         }
 
+        // Step 5a2: PEER WITNESSING (program spec §7 mechanism 2, collaboration spec §5.5).
+        //
+        // One watcher over THIS session's `.provenance/`, constructed with a read-only view of
+        // it: [PeerFiles] declares `list` and `read` and nothing else, so renaming, rewriting
+        // or deleting a partner's log is unreachable rather than merely unwritten. Decision-log
+        // bug 2 was exactly that mistake made once already, in startup recovery, and a
+        // directory full of other students' evidence is the second place it could be made.
+        //
+        // `isOwnFile` excludes this session's own two artifacts by BASENAME (rule 4). Only the
+        // filename uuid is known to the session, and it is minted independently of the logical
+        // session id — the two id spaces decision-log bugs 10 and 12 were both about — so the
+        // predicate is built from the paths, never from `sessionId`.
+        peerWatcher = PeerWatcher(
+            files = peerFiles ?: NioPeerFiles(activated.provenanceDir),
+            isOwnFile = { name ->
+                name == slogPath.fileName.toString() ||
+                    name == "${slogPath.fileName}.meta"
+            },
+            // Through `record`, the SAME guarded path every other emitter uses: dropped after
+            // endSession, gated by the capture policy (peer.observed is on the floor, so the
+            // gate always passes), and chained by SessionHost under its lock.
+            emit = { payload -> record("peer.observed", payload.toJsonObject()) },
+            // Witnessing is best effort. A failure here is logged and degrades to "no
+            // observation this round" — deliberately NOT routed into the DiskFullHandler,
+            // which would switch the session to a critical-events-only ring buffer and trade
+            // the student's event stream for a witness.
+            onError = { e -> LOG.warn("provenance: peer watcher error", e) },
+        )
+        // Rule 1: ONE listener on the directory, not one per file. Rule 2: its callback does no
+        // I/O. It is a promptness signal only — the drain sweeps the directory itself, because
+        // IntelliJ's VFS is a cached layer and a `git pull` in an external terminal produces no
+        // VFS event until something refreshes. See PeerWatcher's docstring.
+        ApplicationManager.getApplication().messageBus.connect(parentDisposable).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            ProvenanceDirVfsListener(activated.provenanceDir, peerWatcher),
+        )
+        Disposer.register(parentDisposable) { peerWatcher.dispose() }
+
         // Step 5b: checkpoint cadence + ordered async sign+persist (every checkpointInterval
         // entries). drain()ed from endSession() so the last in-flight checkpoint isn't lost.
         checkpointCadence = CheckpointCadence(checkpointInterval)
@@ -319,7 +378,18 @@ class RecordingSessionController(
                 try {
                     meta.appendCheckpoint(cp)
                 } finally {
-                    rollingSeal?.roll()
+                    // PEER-WITNESS DRAIN 1 of 2, on the checkpoint cadence (writer contract
+                    // rule 3) and BEFORE the rolling seal, so the observations it emits are in
+                    // the `.slog` that the seal about to be written commits to. All of the
+                    // watcher's I/O happens here, on the checkpoint coroutine's dispatcher —
+                    // never on a VFS callback. drain() never throws, so it cannot mask or
+                    // displace the append's error, and it runs under CheckpointScheduler's own
+                    // mutex so two drains cannot interleave.
+                    try {
+                        peerWatcher.drain()
+                    } finally {
+                        rollingSeal?.roll()
+                    }
                 }
             },
             onError = { e -> LOG.warn("checkpoint sign/write error", e) },
@@ -491,6 +561,21 @@ class RecordingSessionController(
      */
     fun endSession(reason: String) {
         if (ended) return
+
+        // PEER-WITNESS DRAIN 2 of 2, before `ended` closes the emit path and before
+        // `session.end`, so the observations land INSIDE the session they belong to.
+        //
+        // Checkpoints fire every `checkpointInterval` entries, so a partner's log that arrived
+        // after the last one would otherwise never be witnessed by this session at all — and a
+        // `git pull` immediately before closing the IDE is an ordinary thing to do. This is
+        // also why there is no timer: the contract's "checkpoint or a timer, whichever is
+        // later" reads backwards (running both gives whichever is SOONER), and a teardown drain
+        // is what makes a long-idle session merely LATE to witness rather than silent.
+        //
+        // Order matters and is the reverse of the write-point ordering below: this must run
+        // while `record` still emits. drain() never throws.
+        peerWatcher.drain()
+
         ended = true
         try {
             host.emit("session.end", SessionEndPayload(reason).toJsonObject())
@@ -500,6 +585,7 @@ class RecordingSessionController(
             // this session's correlator; nothing to clear here anymore.
             pasteTicker.dispose()
             heartbeat.dispose()
+            peerWatcher.dispose()
             runBlocking { checkpointScheduler.drain() }
             writer.dispose()
             meta.dispose()
