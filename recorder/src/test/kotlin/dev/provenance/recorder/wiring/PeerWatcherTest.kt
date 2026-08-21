@@ -738,6 +738,51 @@ class PeerWatcherTest {
     }
 
     /**
+     * EVERY READ HAPPENS BEFORE EVERY EMIT, in one drain.
+     *
+     * This is the Kotlin spelling of the rule VS Code writes as "every await is above the
+     * chain-advance seam". Hashing and parsing a multi-megabyte foreign log BETWEEN two chain
+     * advances puts an unbounded I/O operation inside a run of `seq` allocations, which is how
+     * an emitter starves the others and how a batch of related observations gets scattered
+     * through an unrelated event stream.
+     *
+     * Asserted structurally rather than by timing, because a timing assertion about "the
+     * entries came out together" is a flake waiting to happen: the journal below records the
+     * ORDER of the two kinds of operation, so moving the `emit` inside the observe loop fails
+     * deterministically and on every machine.
+     */
+    @Test
+    fun `one drain does all of its reading before any of its emitting`() {
+        val journal = mutableListOf<String>()
+        val logs = listOf("session-a.slog", "session-b.slog", "session-c.slog")
+        val journaling = object : PeerFiles {
+            override fun list(): List<String> = logs
+            override fun read(name: String): ForeignLogRead {
+                journal.add("read:$name")
+                return ForeignLogRead.Bytes(realLog("s-$name", 2))
+            }
+        }
+        val watcher = PeerWatcher(
+            files = journaling,
+            isOwnFile = { false },
+            emit = { journal.add("emit:${it.file}") },
+        )
+        watcher.drain()
+
+        assertEquals(
+            listOf(
+                "read:session-a.slog",
+                "read:session-b.slog",
+                "read:session-c.slog",
+                "emit:session-a.slog",
+                "emit:session-b.slog",
+                "emit:session-c.slog",
+            ),
+            journal,
+        )
+    }
+
+    /**
      * THE SESSIONHOST SEAM. A watcher ADDS AN EMITTER, and the `SessionHost` critical section
      * is the only thing standing between that and a manufactured tamper finding.
      *
