@@ -105,6 +105,37 @@ class RootCommitShaTest {
         assertEquals(ROOT_A, deriveRootCommitSha(repo, g))
     }
 
+    /**
+     * WINDOWS CRLF — writer correction 4, and the one correction from the VS Code hardening
+     * pass that bites a port which does not spawn git itself.
+     *
+     * On Windows git's stdout is CRLF. `"false\r" != "false"` silently makes EVERY repository
+     * look shallow, and a `\r`-suffixed sha is not lowercase hex so the reader rejects it as
+     * malformed. Neither produces an error: they produce an entire platform that omits the
+     * field and quietly fails to correlate. So every LINE is trimmed, not the output as a whole.
+     */
+    @Test
+    fun `CRLF output does not make every Windows repository look shallow`() {
+        val g = RecordingGit(
+            mapOf(
+                "rev-parse" to listOf("false\r"),
+                "rev-list" to listOf("$ROOT_B\r", "$ROOT_A\r", "\r"),
+            ),
+        )
+        assertEquals(ROOT_A, deriveRootCommitSha(repo, g))
+    }
+
+    /** ...and a CRLF-suffixed sha must not reach the payload as a malformed discriminator. */
+    @Test
+    fun `a CRLF-suffixed sha is trimmed, not rejected as malformed`() {
+        val derived = deriveRootCommitSha(
+            repo,
+            RecordingGit(mapOf("rev-parse" to listOf("false\r"), "rev-list" to listOf("$ROOT_A\r"))),
+        )
+        assertEquals(ROOT_A, derived)
+        assertFalse("no carriage return may survive", derived!!.contains('\r'))
+    }
+
     // -----------------------------------------------------------------------
     // Absence — legal, permanent, blameless
     // -----------------------------------------------------------------------

@@ -88,9 +88,7 @@ fun installGitWiring(
      *
      * Overridden by unit tests, which must not invoke git.
      */
-    discriminators: RepositoryDiscriminators = RepositoryDiscriminators { root ->
-        deriveRootCommitSha(root, gitPlumbing(project))
-    },
+    discriminators: RepositoryDiscriminators = defaultDiscriminators(project),
 ): GitWiring {
     val state = project.service<RecorderGitState>()
 
@@ -195,6 +193,22 @@ private fun commitGraphReader(project: Project, repository: GitRepository): GitC
     }
 
 /**
+ * The production discriminator memo.
+ *
+ * **Writer correction 7: the executable seam is resolved once per WIRING; the VALUE is derived
+ * once per REPOSITORY.** Two different scopes, and conflating them is waste on top of waste —
+ * the answer to "where is git" cannot differ between two repositories in one session. Hence the
+ * `val` here rather than a `gitPlumbing(project)` inside the lambda, which would rebuild the
+ * seam for every repository the session observes.
+ *
+ * On this host that resolution is git4idea's, not ours — see [gitPlumbing].
+ */
+private fun defaultDiscriminators(project: Project): RepositoryDiscriminators {
+    val plumbing = gitPlumbing(project)
+    return RepositoryDiscriminators { root -> deriveRootCommitSha(root, plumbing) }
+}
+
+/**
  * The production [GitPlumbing]: two read-only git commands, run through the **IntelliJ VCS
  * API** (`git4idea.commands.Git`) rather than a raw process spawn.
  *
@@ -221,6 +235,30 @@ private fun commitGraphReader(project: Project, repository: GitRepository): GitC
  * is already true of [GitHistoryUtils.collectCommitsMetadata] on this path.
  *
  * A non-zero exit throws, which [deriveRootCommitSha] converts into an omission.
+ *
+ * ## The `root_commit_sha` writer corrections, and why most of them are moot here
+ *
+ * The VS Code implementation surfaced seven corrections about REACHING git, and six of them are
+ * consequences of spawning a bare `git` — needing an ordered candidate ladder (the host's
+ * resolved binary, then its configured `git.path`, then `PATH`), handling `git.path` being an
+ * ARRAY, laddering only on a candidate that never STARTED, avoiding a shell, and resolving the
+ * executable once per wiring. **This port does not spawn**, so there is no ladder to get wrong:
+ * git4idea's [git4idea.config.GitExecutable] IS the host's own resolved binary, which is the
+ * TOP rung of that ladder and the one the correction says to prefer. It already covers the
+ * Windows `C:\Program Files\Git\cmd\git.exe` case, the `git.path`-equivalent setting, and
+ * WSL / remote / IJent executables that are not local binaries at all.
+ *
+ * The one correction that DOES bite here is CRLF: git prints `false\r\n` on Windows, and
+ * `"false\r" != "false"` would silently make every repository look shallow, while a
+ * `\r`-suffixed sha is not lowercase hex and would be rejected as malformed. Neither produces
+ * an error — they produce an entire platform that omits the field and quietly fails to
+ * correlate. [deriveRootCommitSha] therefore trims EVERY LINE, not the output as a whole, and
+ * a test drives CRLF-shaped output through it.
+ *
+ * **Not proved, and worth saying plainly:** this repository has no Windows or Linux CI either.
+ * The parsing is pinned against CRLF-shaped inputs through the [GitPlumbing] seam and the real
+ * invocation is covered on macOS; the platform behaviour of git4idea's own executable
+ * resolution is trusted, not verified here.
  */
 private fun gitPlumbing(project: Project): GitPlumbing = GitPlumbing { repoRoot, command, args ->
     val subcommand = PLUMBING_COMMANDS[command]
