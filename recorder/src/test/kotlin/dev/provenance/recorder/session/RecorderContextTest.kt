@@ -1,15 +1,20 @@
 package dev.provenance.recorder.session
 
 import dev.provenance.core.CourseCert
+import dev.provenance.core.GitCaptureCapability
 import dev.provenance.core.Manifest
 import dev.provenance.core.ManifestCollaboration
 import dev.provenance.core.ManifestParse
 import dev.provenance.core.ManifestScope
 import dev.provenance.core.ManifestSubmission
+import dev.provenance.core.SessionFileScope
 import dev.provenance.core.Sha256
+import dev.provenance.core.WitnessCaptureCapability
 import dev.provenance.core.parseManifestValue
 import dev.provenance.core.toJsonObject
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -228,5 +233,123 @@ class RecorderContextTest {
             setOf("enrollment", "enrollment_cert", "session_pubkey_sig"),
             json["identity"]!!.jsonObject.keys,
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // §5.6 capability reports — omitted (never null) when not supplied, present verbatim
+    // when supplied. The DERIVATION of each value (probeGitCapture, probeWitnessCapture,
+    // resolveFileScope) is tested independently below and in the wiring/ test package; this
+    // section is only about buildRecorderContext's OWN contract: null in, absent key out;
+    // a value in, that exact value out.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `all three capability reports are omitted, never null, when not supplied`() {
+        val json = contextFor(v2Manifest()).toJsonObject()
+        for (key in listOf("git_capture", "witness_capture", "file_scope")) {
+            assertFalse("$key must be absent, not present-and-null", key in json)
+        }
+    }
+
+    @Test
+    fun `a supplied git_capture is emitted verbatim`() {
+        for (capture in GitCaptureCapability.entries) {
+            val json = buildRecorderContext(
+                manifest = v2Manifest(),
+                prevSessionId = null,
+                sessionId = "sess-1",
+                sessionPubkeyHex = "d".repeat(64),
+                ideVersion = "2026.1.4",
+                platform = "darwin-arm64",
+                recorderVersion = "0.1.0",
+                recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+                hostnameProvider = { "host-1" },
+                usernameProvider = { "alice" },
+                gitCapture = capture,
+            ).toJsonObject()
+            assertEquals(capture.name, capture.wire, json["git_capture"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `a supplied witness_capture is emitted verbatim`() {
+        for (capture in WitnessCaptureCapability.entries) {
+            val json = buildRecorderContext(
+                manifest = v2Manifest(),
+                prevSessionId = null,
+                sessionId = "sess-1",
+                sessionPubkeyHex = "d".repeat(64),
+                ideVersion = "2026.1.4",
+                platform = "darwin-arm64",
+                recorderVersion = "0.1.0",
+                recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+                hostnameProvider = { "host-1" },
+                usernameProvider = { "alice" },
+                witnessCapture = capture,
+            ).toJsonObject()
+            assertEquals(capture.name, capture.wire, json["witness_capture"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `a supplied file_scope is emitted with both watched and complete`() {
+        val scope = SessionFileScope(watched = listOf("Solver.java", "src/Board.java"), complete = false)
+        val json = buildRecorderContext(
+            manifest = v2Manifest(),
+            prevSessionId = null,
+            sessionId = "sess-1",
+            sessionPubkeyHex = "d".repeat(64),
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            hostnameProvider = { "host-1" },
+            usernameProvider = { "alice" },
+            fileScope = scope,
+        ).toJsonObject()
+        val fs = json["file_scope"]!!.jsonObject
+        assertEquals(false, fs["complete"]!!.jsonPrimitive.boolean)
+        assertEquals(listOf("Solver.java", "src/Board.java"), fs["watched"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    // -----------------------------------------------------------------------
+    // resolveFileScope (§5.6 item 1, S25) — direct port of recorder-context.ts's
+    // resolveFileScope/FILE_SCOPE_MAX_ENTRIES.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `resolveFileScope reports the full list as complete when under the cap`() {
+        val scope = resolveFileScope(listOf("Solver.java", "src/Board.java"))
+        assertNotNull(scope)
+        assertTrue(scope!!.complete)
+        assertEquals(listOf("Solver.java", "src/Board.java"), scope.watched)
+    }
+
+    @Test
+    fun `resolveFileScope reports an empty list as complete, not absent`() {
+        val scope = resolveFileScope(emptyList())
+        assertNotNull(scope)
+        assertTrue(scope!!.complete)
+        assertTrue(scope.watched.isEmpty())
+    }
+
+    @Test
+    fun `resolveFileScope caps at FILE_SCOPE_MAX_ENTRIES and reports complete false`() {
+        val many = (0 until FILE_SCOPE_MAX_ENTRIES + 10).map { "file$it.py" }
+        val scope = resolveFileScope(many)
+        assertNotNull(scope)
+        assertFalse(scope!!.complete)
+        assertEquals(FILE_SCOPE_MAX_ENTRIES, scope.watched.size)
+        assertEquals(many.take(FILE_SCOPE_MAX_ENTRIES), scope.watched)
+    }
+
+    @Test
+    fun `resolveFileScope omits the field rather than write an unsafe path into a signed log`() {
+        // S14(b): an absolute path, a colon (remote URL), or a ".." segment in the manifest's
+        // files_under_review must never reach the signed chain. A course that authored one gets
+        // the whole field omitted, not a partially-scrubbed list.
+        assertNull(resolveFileScope(listOf("Solver.java", "/etc/passwd")))
+        assertNull(resolveFileScope(listOf("Solver.java", "../other-course/Solver.java")))
+        assertNull(resolveFileScope(listOf("git@github.com:someone/proj2.git")))
     }
 }
