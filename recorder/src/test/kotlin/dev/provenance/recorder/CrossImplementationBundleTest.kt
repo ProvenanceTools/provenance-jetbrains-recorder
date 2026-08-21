@@ -21,6 +21,8 @@ import dev.provenance.core.ManifestCollaboration
 import dev.provenance.core.ManifestScope
 import dev.provenance.core.ManifestSubmission
 import dev.provenance.core.ParseResult
+import dev.provenance.core.PeerObservedParse
+import dev.provenance.core.validatePeerObservedPayload
 import dev.provenance.core.Sha256
 import dev.provenance.core.parseEntries
 import dev.provenance.core.rollingManifestFilenames
@@ -316,6 +318,106 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         return UnflushedSession(controller, disposable)
     }
 
+    // -----------------------------------------------------------------------
+    // PEER WITNESSING: a second contributor's log in the same `.provenance/`
+    // -----------------------------------------------------------------------
+
+    /**
+     * A SECOND, REAL, FULLY RECORDED session against the same `.provenance/` — the shape a
+     * shared repository takes after a `git pull` drops a partner's log into the tree.
+     *
+     * The point is what the FIRST session does about it. Its peer watcher sweeps
+     * `.provenance/`, hashes this log, reads its chain tip, and writes a `peer.observed` into
+     * its OWN signed chain at teardown — and the monorepo's real `reconcileWitnesses` must then
+     * read that witness as `corroborated` against the log actually packed in the archive. That
+     * round trip cannot be tested inside this repository: it takes a real producer and the real
+     * consumer, which is the whole reason this gate exists.
+     *
+     * Deliberately records no document events. Check 8 compares the SUBMITTED bytes against the
+     * last recorded state of the reviewed file, and a second session touching that file would
+     * make this gate about check 8's multi-session semantics rather than about witnessing.
+     *
+     * Flushed and cleanly ended, unlike [startSessionTornDownBeforeItsFirstFlush]: a foreign log
+     * has to be PRESENT in the archive for `corroborated` to be reachable at all. A witness
+     * naming a log that is not there is `absent`, which is deliberately not a finding — and a
+     * gate that only ever produced `absent` would prove nothing about the corroboration path.
+     */
+    private fun recordPartnerSessionInTheSameDirectory(
+        submission: ManifestSubmission,
+    ): RecordingSessionController {
+        val disposable = Disposer.newDisposable(testRootDisposable, "provjet-e2e-partner-session")
+        val controller = RecordingSessionController(
+            activated = ActivatedWorkspace(manifest(submission), wsRoot.resolve(".provenance"), wsRoot),
+            project = project,
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            parentDisposable = disposable,
+            clock = FixedClock(0, Instant.parse("2026-09-08T00:00:00Z")),
+            scheduler = NoopScheduler(),
+            computeExtensionHash = { EXTENSION_HASH },
+        )
+        controller.flush()
+        // Ended here, so its writers are closed and its `.slog` is a settled artifact by the
+        // time the other session witnesses it — the ordinary "partner pushed, you pulled" case.
+        controller.endSession("partner submitted")
+        assertTrue(
+            "the partner's log must be a real, non-empty artifact",
+            Files.size(controller.slogPath) > 0,
+        )
+        return controller
+    }
+
+    /**
+     * THE WITNESS, read out of the packed bytes: session A's chain must carry a `peer.observed`
+     * naming session B's log, and B's log must be in the archive so the verdict can be reached.
+     *
+     * Asserted on the Kotlin side too, and not only in `run_e2e.sh`, because the shell gate
+     * SKIPS when the monorepo is absent. A producer regression must be a red Gradle test rather
+     * than a silently skipped one.
+     */
+    private fun assertOneSessionWitnessesAnother(zipPath: Path) {
+        val contents = zipEntryContents(zipPath)
+        val logs = contents.filterKeys { it.endsWith(".slog") }
+        val byLogicalId = logs.mapNotNull { (name, bytes) ->
+            (parseEntries(String(bytes, Charsets.UTF_8)) as? ParseResult.Ok)
+                ?.let { logicalSessionIdOf(it.entries)?.let { id -> id to name } }
+        }.toMap()
+
+        var corroboratable = 0
+        for ((name, bytes) in logs) {
+            val entries = (parseEntries(String(bytes, Charsets.UTF_8)) as ParseResult.Ok).entries
+            val ownId = logicalSessionIdOf(entries)
+            for (entry in entries) {
+                if (entry.kind != "peer.observed") continue
+                // Every witness this recorder writes must narrow through the SHARED reader.
+                val parsed = validatePeerObservedPayload(entry.data)
+                assertTrue("a witness in $name did not narrow: $parsed", parsed is PeerObservedParse.Ok)
+                val payload = (parsed as PeerObservedParse.Ok).payload
+                assertFalse(
+                    "a chain must not witness itself",
+                    ownId != null && ownId == payload.sessionId,
+                )
+                assertFalse("a witness must never name our own log", payload.file == name)
+                val witnessedId = payload.sessionId ?: continue
+                val witnessedLog = byLogicalId[witnessedId] ?: continue
+                val witnessedEntries =
+                    (parseEntries(String(contents[witnessedLog]!!, Charsets.UTF_8)) as ParseResult.Ok).entries
+                // The corroboration test the real reader runs: the present log reaches the
+                // witnessed `seq`, and the hash there matches. NOT a digest comparison — a
+                // foreign log is append-only, so the witnessed bytes are normally a PREFIX.
+                val at = witnessedEntries.firstOrNull { it.seq == payload.seqHigh }
+                if (at != null && at.hash == payload.lastHash) corroboratable++
+            }
+        }
+        assertTrue(
+            "the archive must carry at least one witness the real reconcileWitnesses can " +
+                "corroborate; without one this gate proves nothing about peer witnessing",
+            corroboratable > 0,
+        )
+    }
+
     /**
      * THE LOADER'S OWN INVARIANT, asserted directly rather than as a filename list: every rolling
      * seal in the archive names a session whose log is in the archive too.
@@ -433,9 +535,22 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
             Files.exists(provDir.resolve(ghostSeal.json)) && Files.exists(provDir.resolve(ghostSeal.sig)),
         )
 
+        // PEER WITNESSING: a partner's fully recorded log lands in the same `.provenance/`,
+        // exactly as a `git pull` in a shared repository delivers it. It must be here BEFORE
+        // the teardown below, because teardown is where this session's peer watcher drains.
+        val partner = recordPartnerSessionInTheSameDirectory(ManifestSubmission.GIT)
+
         // Teardown is what writes the FINAL seal: both writers are closed first, so the
-        // digests it signs are whole-file commitments rather than a prefix.
+        // digests it signs are whole-file commitments rather than a prefix. It is ALSO the
+        // second peer-witness drain, so the partner's log is witnessed into this session's own
+        // chain here — before session.end, inside the session it belongs to.
         session.controller.endSession("submit")
+
+        val witnessed = String(Files.readAllBytes(session.controller.slogPath), Charsets.UTF_8)
+        assertTrue(
+            "the recorder must witness the partner's log into its own chain",
+            (parseEntries(witnessed) as ParseResult.Ok).entries.any { it.kind == "peer.observed" },
+        )
 
         val expected = rollingManifestFilenames(session.controller.sessionId)
         assertTrue(
@@ -465,7 +580,14 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
         assertTrue(names.contains(expected.json))
         assertTrue(names.contains(expected.sig))
         assertTrue(names.contains(REVIEWED_FILE))
+        // The partner's own artifacts travel with the archive — that is what a shared
+        // `.provenance/` committed to a repository looks like, and it is what makes the
+        // witness checkable rather than merely present.
+        val partnerLog = partner.slogPath.fileName.toString()
+        assertTrue("the partner's log must be packed: $names", names.contains(partnerLog))
+        assertTrue(names.contains("$partnerLog.meta"))
         assertEveryRollingSealNamesAPackedSession(gatePath)
+        assertOneSessionWitnessesAnother(gatePath)
         println("PROVJET_E2E_ROLLING_BUNDLE=" + gatePath.toAbsolutePath())
     }
 
