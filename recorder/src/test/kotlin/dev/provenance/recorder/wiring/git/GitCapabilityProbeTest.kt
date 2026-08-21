@@ -1,37 +1,180 @@
 package dev.provenance.recorder.wiring.git
 
+import com.intellij.openapi.project.Project
 import dev.provenance.core.GitCaptureCapability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Proxy
+import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
- * [probeGitCapture] and its reflective seam [isClassLoadable], tested as pure functions per
- * CLAUDE.md ("test the event-to-log-entry transformation as a pure function, separately from
- * the platform wiring") — no IntelliJ SDK, no fixture, no running IDE.
+ * [probeGitCapture], [decideGitCapture] and the reflective seams [isClassLoadable] /
+ * [isGit4IdeaClassLoadable], tested as pure functions per CLAUDE.md ("test the
+ * event-to-log-entry transformation as a pure function, separately from the platform wiring")
+ * — no IntelliJ SDK fixture, no running IDE.
+ *
+ * [fakeProject] stands in for the one constructor argument [probeGitCapture] cannot avoid
+ * taking (it is threaded straight through to the injected [probeGitCapture] `repositoryRootsOf`
+ * seam, which every test here overrides). `Project` is a platform interface with no concrete
+ * no-arg implementation available outside a running IDE; a [Proxy] that fails any invocation
+ * proves the value is genuinely never called when the seam is overridden — the real reflective
+ * adapter ([reflectiveGitRepositoryRoots]) is covered separately in
+ * [GitCapabilityProbeIntegrationTest], against a real project and a real Git4Idea repository.
  */
 class GitCapabilityProbeTest {
-    @Test
-    fun `probeGitCapture reports available when Git4Idea is classloadable`() {
-        assertEquals(GitCaptureCapability.AVAILABLE, probeGitCapture { true })
-    }
+    private fun fakeProject(): Project =
+        Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, method, _ ->
+            throw AssertionError(
+                "probeGitCapture must not touch Project directly when repositoryRootsOf is " +
+                    "overridden; unexpectedly called Project.${method.name}",
+            )
+        } as Project
+
+    private fun path(s: String): Path = Paths.get(s)
+
+    // -------------------------------------------------------------------------------------
+    // probeGitCapture: the classloadable gate and the omission rule.
+    // -------------------------------------------------------------------------------------
 
     @Test
     fun `probeGitCapture reports unavailable when Git4Idea is not classloadable`() {
-        assertEquals(GitCaptureCapability.UNAVAILABLE, probeGitCapture { false })
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/hw1"),
+            git4IdeaClassLoadable = { false },
+            repositoryRootsOf = { error("must not be called when Git4Idea is not classloadable") },
+        )
+        assertEquals(GitCaptureCapability.UNAVAILABLE, result)
     }
 
     @Test
-    fun `probeGitCapture never reports not_owned`() {
-        // See GitCapabilityProbe.kt's file docstring for exactly why: NOT_OWNED needs either a
-        // reflective repository enumeration or cross-activity coordination that this task does
-        // not add. Pinned here so a future change to this function's scope is a visible,
-        // deliberate diff to this assertion, not a silent behavior change.
-        for (loadable in listOf(true, false)) {
-            assertTrue(probeGitCapture { loadable } != GitCaptureCapability.NOT_OWNED)
-        }
+    fun `probeGitCapture omits the field when the reflective repository read itself fails`() {
+        // null from repositoryRootsOf means "the reflective probe could not answer", distinct
+        // from an empty list ("answered: zero repositories"). Omission, never a guess.
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/hw1"),
+            git4IdeaClassLoadable = { true },
+            repositoryRootsOf = { null },
+        )
+        assertNull(result)
     }
+
+    @Test
+    fun `probeGitCapture reports available when no repository is visible yet`() {
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/hw1"),
+            git4IdeaClassLoadable = { true },
+            repositoryRootsOf = { emptyList() },
+        )
+        assertEquals(GitCaptureCapability.AVAILABLE, result)
+    }
+
+    @Test
+    fun `probeGitCapture reports available when the session's own repository is visible`() {
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/hw1"),
+            git4IdeaClassLoadable = { true },
+            repositoryRootsOf = { listOf(path("/ws/hw1")) },
+        )
+        assertEquals(GitCaptureCapability.AVAILABLE, result)
+    }
+
+    @Test
+    fun `probeGitCapture reports not_owned when every visible repository belongs to a sibling session`() {
+        // The reachable shape this task's investigation confirmed: two concurrently-active,
+        // nested-manifest-discovered assignment roots in one project, one of them a git repo,
+        // the other not. See GitCapabilityProbe.kt's file docstring.
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/61c/hw2"),
+            git4IdeaClassLoadable = { true },
+            repositoryRootsOf = { listOf(path("/ws/61b/hw1")) },
+        )
+        assertEquals(GitCaptureCapability.NOT_OWNED, result)
+    }
+
+    @Test
+    fun `probeGitCapture reports available when only one of several visible repositories is owned`() {
+        val result = probeGitCapture(
+            fakeProject(),
+            path("/ws/61b/hw1"),
+            git4IdeaClassLoadable = { true },
+            repositoryRootsOf = { listOf(path("/ws/61c/hw2"), path("/ws/61b/hw1")) },
+        )
+        assertEquals(GitCaptureCapability.AVAILABLE, result)
+    }
+
+    // -------------------------------------------------------------------------------------
+    // decideGitCapture: the pure ownership predicate, isolated from Project/Git4Idea entirely.
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `decideGitCapture is available for zero repositories`() {
+        assertEquals(GitCaptureCapability.AVAILABLE, decideGitCapture(path("/ws/hw1"), emptyList()))
+    }
+
+    @Test
+    fun `decideGitCapture is available when the session root equals a repository root`() {
+        assertEquals(
+            GitCaptureCapability.AVAILABLE,
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws/hw1"))),
+        )
+    }
+
+    @Test
+    fun `decideGitCapture is available when a repository is nested under the session root`() {
+        // The submodule / nested-repository case D12's root_commit_sha exists to disambiguate:
+        // the assignment root itself owns a repository beneath it.
+        assertEquals(
+            GitCaptureCapability.AVAILABLE,
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws/hw1/vendor/lib"))),
+        )
+    }
+
+    @Test
+    fun `decideGitCapture is not_owned when the only visible repository is a sibling`() {
+        assertEquals(
+            GitCaptureCapability.NOT_OWNED,
+            decideGitCapture(path("/ws/hw2"), listOf(path("/ws/hw1"))),
+        )
+    }
+
+    @Test
+    fun `decideGitCapture is not_owned when the only visible repository is the session root's parent`() {
+        // A repository whose root sits ABOVE the assignment root is the "standard nested
+        // course layout" shape (one shared class repo, assignment as a subdirectory). This
+        // recorder's own git.event router (RecorderSessionManager.sessionOwning) does not
+        // route such a repository to any session either — decideGitCapture mirrors that
+        // router's actual behavior faithfully rather than a broader, aspirational one. See
+        // the file docstring: fixing that routing predicate is a separate, pre-existing
+        // question this task does not touch.
+        assertEquals(
+            GitCaptureCapability.NOT_OWNED,
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws"))),
+        )
+    }
+
+    @Test
+    fun `decideGitCapture is available when at least one of several repositories is owned`() {
+        assertEquals(
+            GitCaptureCapability.AVAILABLE,
+            decideGitCapture(path("/ws/hw1"), listOf(path("/ws/hw2"), path("/ws/hw1"))),
+        )
+    }
+
+    // -------------------------------------------------------------------------------------
+    // isClassLoadable / isGit4IdeaClassLoadable — unchanged behavior, kept from before.
+    // -------------------------------------------------------------------------------------
 
     @Test
     fun `isClassLoadable is true for a real JDK class`() {
@@ -46,11 +189,23 @@ class GitCapabilityProbeTest {
     @Test
     fun `isGit4IdeaClassLoadable agrees with isClassLoadable on the real class name`() {
         // recorder/build.gradle.kts pulls in Git4Idea as a `bundledPlugins` test dependency (for
-        // GitEventPayloadBuilderTest / RootCommitShaTest), so this is expected to be TRUE on
-        // this module's test classpath — unlike a real IDE with Git4Idea genuinely absent, which
-        // is what production `probeGitCapture` exists to detect. The point of this test is only
-        // that the two functions agree and neither throws, not to fix a direction that depends
-        // on this module's own Gradle wiring.
+        // GitEventPayloadBuilderTest / RootCommitShaTest / GitCapabilityProbeIntegrationTest),
+        // so this is expected to be TRUE on this module's test classpath — unlike a real IDE
+        // with Git4Idea genuinely absent, which is what production `probeGitCapture` exists to
+        // detect. The point of this test is only that the two functions agree and neither
+        // throws, not to fix a direction that depends on this module's own Gradle wiring.
         assertEquals(isClassLoadable("git4idea.repo.GitRepositoryManager"), isGit4IdeaClassLoadable())
+    }
+
+    @Test
+    fun `reflectiveGitRepositoryRoots fails closed to null rather than throw`() {
+        // git4idea.repo.GitRepositoryManager is genuinely on this module's test classpath (see
+        // isGit4IdeaClassLoadable's test above), so this exercises the REAL reflected class —
+        // just handed a Project it cannot actually use (fakeProject()'s proxy throws on every
+        // method call). Whatever GitRepositoryManager.getInstance does internally with that
+        // Project, the result is a thrown exception, and reflectiveGitRepositoryRoots must turn
+        // that into `null`, never propagate it. The genuine, successful reflective read against
+        // a real project and a real repository is covered in GitCapabilityProbeIntegrationTest.
+        assertNull(reflectiveGitRepositoryRoots(fakeProject()))
     }
 }
