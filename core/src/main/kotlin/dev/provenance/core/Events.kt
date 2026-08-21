@@ -93,6 +93,17 @@ data class SessionStartPayload(
      * never stop a session recording.
      */
     val identity: SessionIdentity? = null,
+    /**
+     * The three `session.start` CAPABILITY REPORTS (collaboration spec §5.6). See
+     * `SessionCapabilities.kt` for the full contract. Each is nullable and OMITTED — never
+     * emitted as JSON `null` — when there is nothing to report; [toJsonObject] enforces that
+     * structurally via `?.let { put(...) }`.
+     */
+    val gitCapture: GitCaptureCapability? = null,
+    /** @see gitCapture */
+    val witnessCapture: WitnessCaptureCapability? = null,
+    /** @see gitCapture */
+    val fileScope: SessionFileScope? = null,
 )
 
 fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
@@ -136,6 +147,11 @@ fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
     // entry is permanent and unrepairable, so emitting nothing is strictly better than
     // emitting something broken.
     identity?.let { put("identity", it.toJsonObject()) }
+    // The three §5.6 capability reports. Omitted, never present-and-null, when there is
+    // nothing to report — see SessionCapabilities.kt.
+    gitCapture?.let { put("git_capture", it.wire) }
+    witnessCapture?.let { put("witness_capture", it.wire) }
+    fileScope?.let { put("file_scope", it.toJsonObject()) }
 }
 
 data class SessionHeartbeatPayload(val focused: Boolean, val activeFile: String?, val idleSinceMs: Long)

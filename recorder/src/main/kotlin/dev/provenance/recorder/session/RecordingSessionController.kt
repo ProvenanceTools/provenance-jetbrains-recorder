@@ -12,12 +12,14 @@ import com.intellij.util.concurrency.AppExecutorUtil
 import dev.provenance.core.CapturePolicy
 import dev.provenance.core.Clock
 import dev.provenance.core.FocusChangePayload
+import dev.provenance.core.GitCaptureCapability
 import dev.provenance.core.Manifest
 import dev.provenance.core.ManifestSubmission
 import dev.provenance.core.RecorderDegradedPayload
 import dev.provenance.core.SessionEndPayload
 import dev.provenance.core.SessionResumedPayload
 import dev.provenance.core.SystemClock
+import dev.provenance.core.WitnessCaptureCapability
 import dev.provenance.core.encryptSessionPrivkey
 import dev.provenance.core.isEventKindCaptured
 import dev.provenance.core.resolveCapturePolicy
@@ -47,7 +49,9 @@ import dev.provenance.recorder.wiring.ProvenanceDirVfsListener
 import dev.provenance.recorder.wiring.ClockSkewWatcher
 import dev.provenance.recorder.wiring.Heartbeat
 import dev.provenance.recorder.wiring.RecordableSessionSink
+import dev.provenance.recorder.wiring.git.probeGitCapture
 import dev.provenance.recorder.wiring.paste.PasteAnomalyTicker
+import dev.provenance.recorder.wiring.probeWitnessCapture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -218,6 +222,22 @@ class RecordingSessionController(
         policy = resolveCapturePolicy(activated.manifest.policy)
 
         Files.createDirectories(activated.provenanceDir)
+
+        // §5.6 item 3 — witness_capture (collaboration spec, D16 context). See
+        // WitnessCapabilityProbe.kt for why this probes the directory listing rather than the
+        // VFS_CHANGES subscription a few steps below.
+        val witnessCapture: WitnessCaptureCapability = probeWitnessCapture(activated.provenanceDir) { e ->
+            LOG.warn("provenance: .provenance/ not listable; peer witnessing unavailable", e)
+        }
+
+        // §5.6 item 2 — git_capture. See GitCapabilityProbe.kt for exactly what this can and
+        // cannot report on this host.
+        val gitCapture: GitCaptureCapability = probeGitCapture()
+
+        // §5.6 item 1 — file_scope, the effective resolved file set (S25). Pure; no platform
+        // dependency at all.
+        val fileScope = resolveFileScope(activated.manifest.filesUnderReview)
+
         // Step 1: session keypair.
         val keypair = generateSessionKeypair()
         sessionPrivkey = keypair.privateKey
@@ -256,6 +276,9 @@ class RecordingSessionController(
             recorderVersion = recorderVersion,
             recorderExtensionId = recorderExtensionId,
             identity = (identityOutcome as? IdentityOutcome.Emitted)?.identity,
+            gitCapture = gitCapture,
+            witnessCapture = witnessCapture,
+            fileScope = fileScope,
         )
 
         // Step 3: disk-full handler. Constructed before the writer so handleWriteError can be

@@ -1,10 +1,47 @@
 package dev.provenance.recorder.session
 
+import dev.provenance.core.GitCaptureCapability
 import dev.provenance.core.HostInfo
 import dev.provenance.core.Manifest
+import dev.provenance.core.SessionFileScope
 import dev.provenance.core.SessionIdentity
 import dev.provenance.core.SessionStartPayload
 import dev.provenance.core.Sha256
+import dev.provenance.core.WitnessCaptureCapability
+import dev.provenance.core.buildFileScope
+
+/**
+ * The cap on [SessionFileScope.watched], in entries. Ported from recorder-context.ts's
+ * `FILE_SCOPE_MAX_ENTRIES`.
+ *
+ * Today's resolver is the manifest's own `files_under_review`, a hand-authored course list of a
+ * handful of files, so this never bites. It exists because the field's whole value is that a
+ * consumer can read a path's ABSENCE from the list as "not watched", and an unbounded list
+ * inside a single hash-chained entry is not something a future `scope: 'repo'` resolver should
+ * be able to produce by accident. When the cap bites, the recorder emits `complete: false`, and
+ * every reader then downgrades absence to _unknown_ rather than to _not watched_.
+ *
+ * Part of the writer contract: the three recorders must cap at the same number, or two ports
+ * disagree about when `complete` goes false. **Must match log-core's own constant.**
+ */
+const val FILE_SCOPE_MAX_ENTRIES: Int = 4096
+
+/**
+ * Resolve the EFFECTIVE FILE SET this session will watch — collaboration spec §5.6 item 1,
+ * S25. Direct port of `resolveFileScope` in recorder-context.ts.
+ *
+ * Today this is the identity function over `manifest.files_under_review`: that list is already
+ * assignment-root-relative by construction (the same category of path `doc.open.path` already
+ * carries), so it needs no further resolution — see the TS docstring for why this is still the
+ * right field to publish rather than a mere copy of the manifest. [buildFileScope] rejects an
+ * absolute path, a colon, or a `..` segment; a course that put one in its manifest gets the
+ * field OMITTED (returns null) rather than an unsafe path written into a signed log — S14(b).
+ */
+fun resolveFileScope(filesUnderReview: List<String>): SessionFileScope? {
+    val complete = filesUnderReview.size <= FILE_SCOPE_MAX_ENTRIES
+    val watched = if (complete) filesUnderReview else filesUnderReview.take(FILE_SCOPE_MAX_ENTRIES)
+    return buildFileScope(watched, complete)
+}
 
 /**
  * Builds the session.start payload (PRD §5.1). All environment-dependent lookups
@@ -31,6 +68,12 @@ fun buildRecorderContext(
      * Assembled and CHAIN-VERIFIED by `buildSessionIdentity` before it reaches here.
      */
     identity: SessionIdentity? = null,
+    /** §5.6 item 2 — see `GitCapabilityProbe.kt`. Null omits the field. */
+    gitCapture: GitCaptureCapability? = null,
+    /** §5.6 item 3 — see the probe in `RecordingSessionController.init`. Null omits the field. */
+    witnessCapture: WitnessCaptureCapability? = null,
+    /** §5.6 item 1 — see [resolveFileScope]. Null omits the field. */
+    fileScope: SessionFileScope? = null,
 ): SessionStartPayload {
     // A silent empty-string hostname would make machine_id collide across different
     // machines with the same username, defeating its purpose — fall back to "unknown".
@@ -89,6 +132,9 @@ fun buildRecorderContext(
         // claim inside a signed, hash-chained entry is permanent, so emitting nothing is
         // strictly better than emitting something broken.
         identity = identity,
+        gitCapture = gitCapture,
+        witnessCapture = witnessCapture,
+        fileScope = fileScope,
     )
 }
 
