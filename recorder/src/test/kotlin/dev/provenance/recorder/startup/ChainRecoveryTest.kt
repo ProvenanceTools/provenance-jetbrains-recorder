@@ -239,6 +239,77 @@ class ChainRecoveryTest {
     }
 
     // -----------------------------------------------------------------------
+    // A DAMAGED WALL CLOCK COSTS A .slog ITS ORDER, NEVER ITS AUTHOR.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Damage ONLY the `wall` on the first line, leaving `student_ref` intact and the
+     * line valid JSON. The hash covers `wall`, so the chain no longer validates — which
+     * is precisely what used to drive the quarantine.
+     *
+     * Damaging the wall rather than truncating is the point: a truncated first line
+     * would erase `student_ref` too, and a fixture that does that tests nothing here.
+     */
+    private fun damageWall(text: String): String =
+        text.replaceFirst(Regex("\"wall\":\"[^\"]*\""), "\"wall\":\"2026-13-45T99:99:99.999Z\"")
+
+    @Test
+    fun `does not quarantine a partner's log whose only damage is its wall clock`() = runBlocking {
+        // The narrowest reachable form of the evidence-destruction bug, and the one an
+        // attacker gets for free: `session.start.wall` is a plain string in the clear.
+        // The whole first-line parse used to fail on it, throwing away `student_ref`
+        // with the timestamp and demoting bob's log to `unattributed`. An UNENROLLED
+        // recorder may act on `unattributed` files, so alice — who has done nothing but
+        // not enroll — selected bob's log, failed its now-broken chain, and renamed it
+        // `.corrupt-<ISO>`. Sealing excludes `.corrupt-` files, so bob's evidence left
+        // the submission with alice's commit as the paper trail.
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf("$dir/session-bob.slog" to SlogReadResult.Ok(damageWall(danglingSession("theirs", "bob")))),
+            ownStudentRef = null,
+        )
+        assertEquals(RecoveryDecision.CleanStart, recoverPreviousSession(deps))
+        assertTrue("a partner's .slog was renamed", deps.renames.isEmpty())
+    }
+
+    @Test
+    fun `an enrolled recorder is not blocked from quarantining its OWN wall-damaged log`() = runBlocking {
+        // The other half of the rule. The all-or-nothing parse demoted our own damaged
+        // log to `unattributed` too, which an ENROLLED recorder may not touch — so it
+        // silently lost the ability to recover from its own corruption.
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf("$dir/s.slog" to SlogReadResult.Ok(damageWall(completeSession("mine", "alice")))),
+            ownStudentRef = "alice",
+        )
+        val decision = recoverPreviousSession(deps)
+        assertEquals(
+            RecoveryDecision.PreviousSessionCorrupt("$dir/s.slog.corrupt-2026-07-14T10-20-30-500Z"),
+            decision,
+        )
+        assertEquals(1, deps.renames.size)
+    }
+
+    @Test
+    fun `an enrolled recorder never touches a partner's wall-damaged log`() = runBlocking {
+        // Defence in depth alongside the unenrolled case above. This one held before the
+        // fix too (an enrolled recorder may not touch `unattributed` files either), but
+        // it is the assertion that must not regress if eligibility is ever loosened.
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(
+                    completeSession("ours", "alice", Instant.parse("2026-07-14T09:00:00.000Z")),
+                ),
+                "$dir/session-zzz.slog" to SlogReadResult.Ok(damageWall(danglingSession("theirs", "bob"))),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.PreviousSessionComplete("ours"), recoverPreviousSession(deps))
+        assertTrue("a partner's .slog was renamed", deps.renames.isEmpty())
+    }
+
+    // -----------------------------------------------------------------------
     // Unenrolled recorder + unattributed files: the pre-enrollment solo
     // behaviour, unchanged.
     // -----------------------------------------------------------------------

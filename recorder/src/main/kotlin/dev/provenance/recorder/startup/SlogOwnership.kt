@@ -23,7 +23,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * The signal is `session.start.identity.enrollment.student_ref` and ONLY that. Not
  * `machine_id` (salted with the session id, so it never matches across sessions), not
  * `session_pubkey` (fresh per session by design), not the filename UUID (minted per file
- * and unrelated to any identity).
+ * and unrelated to any identity) — and NOT the `wall` clock, which is read from the same
+ * line but is a strictly separate fact. A damaged `wall` costs a `.slog` its ORDER; it
+ * must never cost it its AUTHOR. See [parseSessionStartHead].
  *
  * ```
  *   own           both refs present and equal        eligible: may be selected, linked,
@@ -85,8 +87,15 @@ fun isEligible(ownership: SlogOwnership, ownStudentRef: String?): Boolean = when
     SlogOwnership.Unattributed -> ownStudentRef == null
 }
 
-/** The two facts the first line yields: when the session started, and whose it claims to be. */
-internal data class SlogStartHead(val wallMs: Long, val studentRef: String?)
+/**
+ * The two facts the first line yields, read INDEPENDENTLY of one another: when the
+ * session started, and whose it claims to be.
+ *
+ * [wallMs] is nullable on purpose. A file with no usable timestamp is *unorderable*; it
+ * is emphatically not *unattributable*, and conflating the two is what let a flipped byte
+ * in a timestamp erase a partner's evidence.
+ */
+internal data class SlogStartHead(val wallMs: Long?, val studentRef: String?)
 
 private val SLOG_HEAD_JSON = Json { ignoreUnknownKeys = true }
 
@@ -96,10 +105,18 @@ private val SLOG_HEAD_JSON = Json { ignoreUnknownKeys = true }
  * Only the first line: this runs once per file at startup and must not become proportional
  * to log size. `session.start` is always seq 0, so one line is enough.
  *
- * Returns null when the file does not begin with a parseable `session.start` carrying a
- * parseable `wall`. Such a file is not a usable ordering candidate; the corrupt path deals
- * with it if it ends up chosen, and its ownership is `unattributed` because a file we
- * cannot read cannot tell us whose it is.
+ * Returns null ONLY when the first line is not a parseable `session.start` at all — then
+ * the file genuinely cannot say whose it is, and its ownership is `unattributed`.
+ *
+ * A `session.start` that IS parseable always yields its `student_ref`, even when its
+ * `wall` does not parse. The two used to be all-or-nothing, and that was a live
+ * evidence-destruction defect: `session.start.wall` is a plain string in the clear, so
+ * flipping one byte of a classmate's timestamp made the whole parse fail, threw away
+ * their `student_ref` with it, and demoted their log to `unattributed`. An UNENROLLED
+ * recorder may select and quarantine `unattributed` files, so an innocent bystander's
+ * tooling renamed the victim's log `.corrupt-<ISO>` — which sealing excludes — with the
+ * bystander's commit as the paper trail. Ownership is `student_ref` and only
+ * `student_ref`, which is what the class table always claimed.
  *
  * `wall` goes through core's [parseIsoInstantMs] rather than `Instant.parse` so the three
  * ports share one accepting set (see its KDoc).
@@ -117,8 +134,10 @@ internal fun parseSessionStartHead(text: String): SlogStartHead? {
     }
 
     if (stringOf(entry["kind"]) != "session.start") return null
-    val wall = stringOf(entry["wall"]) ?: return null
-    val wallMs = parseIsoInstantMs(wall) ?: return null
+
+    // A missing, non-string, or unparseable `wall` yields null: an UNORDERABLE candidate,
+    // never an UNATTRIBUTABLE one. Note this does NOT short-circuit the student_ref read.
+    val wallMs = stringOf(entry["wall"])?.let { parseIsoInstantMs(it) }
 
     return SlogStartHead(wallMs, extractStudentRef(entry["data"]))
 }
@@ -189,15 +208,20 @@ suspend fun selectEligible(
         // last eligible one.
         eligibleFallback = filename
 
-        if (head == null) continue
+        // Eligible but unorderable: unreadable, no `session.start`, or no parseable
+        // `wall`. It stays available as `eligibleFallback` above — it IS ours to touch —
+        // but it cannot compete for `best`, which is ordered on wall. This skip MUST stay
+        // below the fallback assignment; above it, an unorderable own log would silently
+        // lose its own crash recovery.
+        val wallMs = head?.wallMs ?: continue
 
         if (bestFilename == null ||
-            head.wallMs > bestWallMs ||
-            (head.wallMs == bestWallMs && filename > bestFilename)
+            wallMs > bestWallMs ||
+            (wallMs == bestWallMs && filename > bestFilename)
         ) {
             bestFilename = filename
             bestText = (read as SlogReadResult.Ok).text
-            bestWallMs = head.wallMs
+            bestWallMs = wallMs
         }
     }
 

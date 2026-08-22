@@ -147,6 +147,42 @@ class SlogOwnershipTest {
         assertEquals("z.slog", pick?.filename)
     }
 
+    // -----------------------------------------------------------------------
+    // A DAMAGED WALL COSTS A FILE ITS ORDER, NEVER ITS AUTHOR.
+    //
+    // `session.start.wall` is a plain string in the clear, so damaging a
+    // classmate's timestamp costs an attacker nothing. Reading the wall and the
+    // student_ref as one all-or-nothing parse meant one flipped byte threw away
+    // the author along with the timestamp, demoting a partner's log to
+    // `unattributed` — which an UNENROLLED recorder may select and quarantine.
+    // -----------------------------------------------------------------------
+
+    /**
+     * A first line that is a perfectly readable `session.start` naming its author, whose
+     * `wall` is not a parseable timestamp. The realistic shape of one flipped byte.
+     */
+    private fun wallDamagedHead(studentRef: String) = head("2026-13-45T99:99:99.999Z", studentRef)
+
+    @Test
+    fun `still reads ownership off a session start whose wall is unparseable`() = runBlocking {
+        // Ownership is `student_ref` and ONLY `student_ref`.
+        val files = mapOf("$dir/session-bob.slog" to SlogReadResult.Ok(wallDamagedHead("bob")))
+        // Unenrolled: the ONLY configuration in which an `unattributed` file is
+        // eligible at all, and therefore the only one the defect was reachable from.
+        assertNull(selectEligible(listOf("session-bob.slog"), dir, reader(files), null))
+    }
+
+    @Test
+    fun `an unparseable wall on OUR own log still leaves it quarantinable`() = runBlocking {
+        // The other half of the same rule: reading ownership independently of the wall
+        // also means an enrolled recorder can still act on its OWN damaged log, which
+        // the all-or-nothing parse denied it.
+        val files = mapOf("$dir/session-mine.slog" to SlogReadResult.Ok(wallDamagedHead("alice")))
+        val pick = selectEligible(listOf("session-mine.slog"), dir, reader(files), "alice")
+        assertEquals("session-mine.slog", pick?.filename)
+        assertNull("unorderable, so it is the fallback and carries no text", pick?.text)
+    }
+
     @Test
     fun `an unparseable wall is not an ordering candidate`() = runBlocking {
         val files = mapOf(
