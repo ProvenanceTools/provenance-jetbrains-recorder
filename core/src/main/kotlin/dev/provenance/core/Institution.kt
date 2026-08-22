@@ -449,6 +449,95 @@ fun checkInstitutionCertWindow(cert: InstitutionCert, at: String): CertWindowSta
     checkWindow(cert.validFrom, cert.validUntil, at)
 
 // ---------------------------------------------------------------------------
+// The 2.1 chain walk
+// ---------------------------------------------------------------------------
+
+/**
+ * The CURRENT 2.1 institution-scoped walk, called by `verifyIdentityChain` in
+ * `Enrollment.kt` (which stays the router and the home of the 2.0 walk, because
+ * `SessionIdentity` and `IdentityChain` are historical wire slots that live there).
+ *
+ * It lives HERE, with the 2.1 types, parsers, signature checks and windows it calls,
+ * so that a change to the 2.1 rules is a change to one file. It is deliberately NOT
+ * factored into a walker shared with 2.0: the bodies are copy-pasted on purpose, so a
+ * 2.0 bugfix can never silently change which 2.1 bytes verify.
+ */
+internal fun walkInstitutionChain(
+    identity: SessionIdentity,
+    sessionPubkey: String,
+    anchor: InstitutionCert?,
+    sessionStartedAt: String,
+): IdentityChain {
+    if (anchor == null) return IdentityChain.MissingTrustAnchor("institution_cert")
+
+    // Step 0b — shape before signatures, for both artifacts.
+    val cert = when (val c = parseInstitutionCert(identityCertJson(identity.enrollmentCert))) {
+        is EnrollmentParse.Err -> return IdentityChain.InvalidCertShape(c.reason)
+        is EnrollmentParse.Ok -> c.value
+    }
+    val credential = when (
+        val t = parseStudentCredential(identityCredentialJson(identity.enrollment))
+    ) {
+        is EnrollmentParse.Err -> return IdentityChain.InvalidTokenShape(t.reason)
+        is EnrollmentParse.Ok -> t.value
+    }
+
+    // Step 1 — the credential verifies against the key the ROOT vouched for.
+    //
+    // Deliberately the ANCHOR's institutionPubkey, never the travelling cert's. Step 2
+    // forces the two to be equal anyway, but reading the key from the
+    // already-root-verified value means a swapped travelling cert can never introduce
+    // a key of the attacker's choosing, whatever happens downstream.
+    if (!verifyStudentCredential(credential, anchor.institutionPubkey)) {
+        return IdentityChain.InvalidInstitutionSignature
+    }
+
+    // Step 2 — THE INSTITUTION ANCHOR CHECK. The replacement for 2.0's course_id
+    // triple comparison, and mandatory for exactly the same reason: root certifies
+    // many institutions, so a genuine signature by a genuinely certified key proves
+    // only WHO signed, never WHOM they were entitled to speak for. Comparing the id at
+    // every link is what makes replaying one signer's credential under another's
+    // authority impossible rather than merely unlikely.
+    val pubkeyMismatch = cert.institutionPubkey != anchor.institutionPubkey
+    if (credential.institutionId != cert.institutionId ||
+        cert.institutionId != anchor.institutionId ||
+        pubkeyMismatch
+    ) {
+        return IdentityChain.InstitutionMismatch(
+            credentialInstitutionId = credential.institutionId,
+            certInstitutionId = cert.institutionId,
+            anchorInstitutionId = anchor.institutionId,
+            pubkeyMismatch = pubkeyMismatch,
+        )
+    }
+
+    // Step 3 — the student key adopted THIS session key.
+    if (!IDENTITY_HEX_64_RE.matches(sessionPubkey)) {
+        return IdentityChain.InvalidSessionPubkey
+    }
+    val binding = StudentSessionBinding(
+        institutionId = credential.institutionId,
+        studentRef = credential.studentRef,
+        sessionPubkey = sessionPubkey,
+    )
+    if (!verifyStudentSessionBinding(binding, identity.sessionPubkeySig, credential.studentPubkey)) {
+        return IdentityChain.InvalidSessionPubkeySignature
+    }
+
+    // Step 4 — non-fatal windows, each against its own relevant issue time.
+    return IdentityChain.InstitutionOk(
+        institutionId = credential.institutionId,
+        studentRef = credential.studentRef,
+        studentPubkey = credential.studentPubkey,
+        institutionPubkey = anchor.institutionPubkey,
+        cert = cert,
+        credential = credential,
+        certWindow = checkInstitutionCertWindow(cert, credential.issuedAt),
+        tokenWindow = checkCredentialWindow(credential, sessionStartedAt),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------
 
