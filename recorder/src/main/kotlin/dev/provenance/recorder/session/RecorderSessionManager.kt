@@ -11,12 +11,19 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import dev.provenance.core.Clock
 import dev.provenance.core.Manifest
+import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SystemClock
+import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
+import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.commands.sealBundle
 import dev.provenance.recorder.events.ExplanationTagger
+import dev.provenance.recorder.identity.CourseKeyCache
+import dev.provenance.recorder.identity.IdentityOutcome
+import dev.provenance.recorder.identity.PasswordSafeSecretStore
+import dev.provenance.recorder.identity.buildSessionIdentity
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.plugin.ownPluginDescriptor
 import dev.provenance.recorder.startup.NioRecoveryDeps
@@ -217,12 +224,55 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         }
     }
 
-    /** Production entry point, called from activation once a discovered manifest verifies.
-     * No-op (logs) if a session for this root is already active. */
+    /**
+     * Production entry point, called from activation once a discovered manifest verifies.
+     * No-op if a session for this root is already active.
+     *
+     * ORDER MATTERS, and it is the whole point of this method's shape:
+     *
+     *  1. session keypair — the student key countersigns exactly this public key;
+     *  2. session identity — chain-verified, and the ONLY source of `student_ref`;
+     *  3. chain recovery, handed that `student_ref`;
+     *  4. the controller, handed all three.
+     *
+     * Recovery used to run FIRST, with no identity in existence and therefore no way to
+     * tell this student's `.slog` files from a partner's in a shared, committed
+     * `.provenance/`. It selected whichever file sorted last and quarantined it (renamed to
+     * `<slog>.corrupt-<ts>`) if it failed to read, parse or chain-validate — deleting a
+     * partner's evidence from the submission, with git history showing the innocent student
+     * doing it. Moving identity ahead of recovery is what closes that; see `SlogOwnership.kt`.
+     *
+     * Nothing between steps 1 and 3 consumes the recovery result, and `prev_session_id` is
+     * not read until `session.start` is built, so the move is behaviour-preserving apart
+     * from the ownership gate itself.
+     *
+     * `ownStudentRef` is null whenever the identity was not emitted — not enrolled, no
+     * keyring, a lapsed cert. That is the common case today, it is handled explicitly inside
+     * `recoverPreviousSession`, and it must never throw or block recording.
+     */
     suspend fun startFromActivation(root: Path, manifest: Manifest) {
         if (sessions.containsKey(root.normalize())) return
         val provenanceDir = root.resolve(".provenance")
-        val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString()))
+        val clock = SystemClock()
+
+        val keypair = generateSessionKeypair()
+        val identityOutcome = buildSessionIdentity(
+            manifest = manifest,
+            sessionPubkeyHex = keypair.publicKeyHex,
+            // Windows are judged against the session's own start instant, never wall-clock
+            // now, so an archived bundle still reads correctly years later.
+            sessionStartedAt = clock.wall(),
+            secrets = PasswordSafeSecretStore(),
+            // Resolved defensively for the same reason the controller does: a missing cache
+            // must degrade to direct derivation, never fail session start.
+            keyCache = runCatching {
+                ApplicationManager.getApplication()?.getService(CourseKeyCache::class.java)
+            }.getOrNull(),
+            rootPubkeyHex = ROOT_PUBLIC_KEY_HEX,
+        )
+        val ownStudentRef = (identityOutcome as? IdentityOutcome.Emitted)?.verified?.studentRef
+
+        val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString(), ownStudentRef))
         val descriptor = ownPluginDescriptor()
         start(
             activated = ActivatedWorkspace(manifest, provenanceDir, root),
@@ -231,6 +281,9 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             platform = System.getProperty("os.name") ?: "unknown",
             recorderVersion = descriptor?.version ?: "0.0.0",
             recorderExtensionId = RECORDER_PLUGIN_ID,
+            clock = clock,
+            preparedKeypair = keypair,
+            preparedIdentity = identityOutcome,
         )
     }
 
@@ -254,6 +307,14 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
          * classic seal work can make the rolling seal work too, with one override.
          */
         computeExtensionHash: () -> String = extensionHashOverride ?: { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
+        /**
+         * The keypair and identity [startFromActivation] already had to build so that chain
+         * recovery could be handed a real `student_ref`. Null for the many tests that inject
+         * a [RecoveryDecision] directly — those do not go through the ownership path, so the
+         * controller makes its own, exactly as before.
+         */
+        preparedKeypair: SessionKeypair? = null,
+        preparedIdentity: IdentityOutcome? = null,
     ): ActiveSession {
         val root = activated.workspaceRoot.normalize()
         check(sessions[root] == null) { "a recording session is already active for root $root" }
@@ -272,6 +333,8 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             scheduler = scheduler,
             recovery = recovery,
             computeExtensionHash = computeExtensionHash,
+            preparedKeypair = preparedKeypair,
+            preparedIdentity = preparedIdentity,
         )
 
         // Shared explanation tagger, one PER SESSION: git wiring marks THIS session's tagger on

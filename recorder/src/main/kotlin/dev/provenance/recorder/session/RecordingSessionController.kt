@@ -17,6 +17,7 @@ import dev.provenance.core.Manifest
 import dev.provenance.core.ManifestSubmission
 import dev.provenance.core.RecorderDegradedPayload
 import dev.provenance.core.SessionEndPayload
+import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SessionResumedPayload
 import dev.provenance.core.SystemClock
 import dev.provenance.core.WitnessCaptureCapability
@@ -105,14 +106,6 @@ class RecordingSessionController(
      */
     heartbeatIntervalMs: Long? = null,
     /**
-     * Plan 8: the startup chain-recovery decision for this workspace's .provenance dir,
-     * already computed by the caller (recoverPreviousSession, via NioRecoveryDeps). This
-     * controller never calls recoverPreviousSession itself — wiring recovery into
-     * activation/project-open is a later integration pass; this constructor param is the
-     * injectable seam that pass will fill in. Defaults to CleanStart so every existing
-     * call site (no prior session to recover) is unaffected.
-     */
-    /**
      * Where the student's identity material lives. Injectable so unit tests can supply a
      * map without a running IDE; production uses the PasswordSafe credential vault.
      */
@@ -126,6 +119,14 @@ class RecordingSessionController(
     keyCache: CourseKeyCache? = runCatching {
         ApplicationManager.getApplication()?.getService(CourseKeyCache::class.java)
     }.getOrNull(),
+    /**
+     * The startup chain-recovery decision for this workspace's `.provenance` dir, already
+     * computed by the caller (`recoverPreviousSession`, via `NioRecoveryDeps`). This
+     * controller never calls `recoverPreviousSession` itself, and must not: recovery has to
+     * run AFTER this session's identity exists so it can tell our own `.slog` files from a
+     * partner's, and the identity is built by the caller for exactly that reason (see
+     * [preparedIdentity]). Defaults to CleanStart, for call sites with no prior session.
+     */
     recovery: RecoveryDecision = RecoveryDecision.CleanStart,
     checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
     /** Plan 8: disk-full user disclosure. Defaults to the real balloon notifier. */
@@ -155,6 +156,24 @@ class RecordingSessionController(
      * provenance directory.
      */
     peerFiles: PeerFiles? = null,
+    /**
+     * OWNERSHIP-AWARE RECOVERY ORDERING. This session's keypair and identity, when the
+     * caller already had to build them.
+     *
+     * `recoverPreviousSession` needs this session's `student_ref` to tell our own `.slog`
+     * from a partner's in a shared, committed `.provenance/` — and `student_ref` comes from
+     * the identity, which countersigns the session keypair. So on the production path
+     * ([RecorderSessionManager.startFromActivation]) the order is keypair → identity →
+     * recovery → controller, and both results arrive here already made. Recovering with a
+     * null ref instead would leave the evidence-destruction bug open, so this is not an
+     * optimisation.
+     *
+     * Null (the default) means "make them here", which is what every test that constructs a
+     * controller directly, and every caller with no prior session to recover, does.
+     */
+    preparedKeypair: SessionKeypair? = null,
+    /** See [preparedKeypair]. Must have been built against that keypair's public half. */
+    preparedIdentity: IdentityOutcome? = null,
 ) : RecordableSessionSink {
     /** [RecordableSessionSink]: the root the routers relativize recorded paths against. */
     override val workspaceRoot: Path = activated.workspaceRoot
@@ -239,8 +258,11 @@ class RecordingSessionController(
         // dependency at all.
         val fileScope = resolveFileScope(activated.manifest.filesUnderReview)
 
-        // Step 1: session keypair.
-        val keypair = generateSessionKeypair()
+        // Step 1: session keypair. Supplied by the caller on the production path, because
+        // the identity that countersigns exactly this public key has to exist BEFORE
+        // startup recovery runs (see [preparedKeypair]); generated here for the many test
+        // call sites that construct a controller directly.
+        val keypair = preparedKeypair ?: generateSessionKeypair()
         sessionPrivkey = keypair.privateKey
 
         // Step 2: session.start payload. prev_session_id is set ONLY for a dangling prior
@@ -252,7 +274,12 @@ class RecordingSessionController(
         // Step 2a: the enrollment identity, if the student has one for this course. Assembled
         // and chain-verified before it is written; a failure at ANY point here yields no
         // identity and changes nothing else about the session. Never a reason not to record.
-        val identityOutcome = buildSessionIdentity(
+        //
+        // On the production path this was already built by the caller, BEFORE chain recovery,
+        // because recovery needs its `student_ref` to tell our own `.slog` files from a
+        // partner's (see [preparedIdentity]). Rebuilding it here would derive the student key
+        // a second time for no benefit, so the caller's result is reused verbatim.
+        val identityOutcome = preparedIdentity ?: buildSessionIdentity(
             manifest = activated.manifest,
             sessionPubkeyHex = keypair.publicKeyHex,
             sessionStartedAt = clock.wall(),

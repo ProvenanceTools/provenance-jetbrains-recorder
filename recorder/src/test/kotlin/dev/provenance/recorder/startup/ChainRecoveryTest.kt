@@ -5,8 +5,10 @@ import dev.provenance.core.HashedEnvelope
 import dev.provenance.core.serializeEntry
 import dev.provenance.recorder.session.createSessionHost
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,6 +22,7 @@ class ChainRecoveryTest {
     private class FakeDeps(
         override val provenanceDir: String,
         private val files: MutableMap<String, SlogReadResult>,
+        override val ownStudentRef: String? = null,
         private val nowInstant: Instant = Instant.parse("2026-07-14T10:20:30.500Z"),
     ) : RecoveryDeps {
         val reads = mutableListOf<String>()
@@ -41,27 +44,60 @@ class ChainRecoveryTest {
         override fun now(): Instant = nowInstant
     }
 
-    /** Build a chain-valid .slog text from (kind, data) pairs via the real session host. */
-    private fun chainText(vararg kinds: Pair<String, Map<String, String>>): String {
+    /**
+     * Build a chain-valid .slog text from (kind, data) pairs via the real session host.
+     *
+     * [startWall] seeds the FixedClock, so the emitted `session.start.wall` is the value
+     * ownership-aware selection orders on. `data` is a JsonObject rather than a flat
+     * Map<String, String> because `student_ref` lives at
+     * `data.identity.enrollment.student_ref` — nested, not flat.
+     */
+    private fun chainText(
+        vararg kinds: Pair<String, JsonObject>,
+        startWall: Instant = Instant.parse("2026-07-14T09:00:00.000Z"),
+    ): String {
         val collected = mutableListOf<HashedEnvelope>()
-        val host = createSessionHost("sess-xyz", FixedClock()) { collected.add(it) }
+        val host = createSessionHost("sess-xyz", FixedClock(initialWall = startWall)) { collected.add(it) }
         for ((kind, data) in kinds) {
-            host.emit(kind, buildJsonObject { data.forEach { (k, v) -> put(k, v) } })
+            host.emit(kind, data)
         }
         return collected.joinToString("") { serializeEntry(it) }
     }
 
-    private fun completeSession(sessionId: String = "prev-123"): String =
+    private fun obj(vararg pairs: Pair<String, String>): JsonObject =
+        buildJsonObject { pairs.forEach { (k, v) -> put(k, v) } }
+
+    /** A `session.start` payload, optionally carrying an enrollment identity. */
+    private fun startData(sessionId: String, studentRef: String? = null): JsonObject = buildJsonObject {
+        put("session_id", sessionId)
+        if (studentRef != null) {
+            putJsonObject("identity") {
+                putJsonObject("enrollment") { put("student_ref", studentRef) }
+            }
+        }
+    }
+
+    private fun completeSession(
+        sessionId: String = "prev-123",
+        studentRef: String? = null,
+        startWall: Instant = Instant.parse("2026-07-14T09:00:00.000Z"),
+    ): String =
         chainText(
-            "session.start" to mapOf("session_id" to sessionId),
-            "doc.change" to mapOf("path" to "a.txt"),
-            "session.end" to mapOf("reason" to "closed"),
+            "session.start" to startData(sessionId, studentRef),
+            "doc.change" to obj("path" to "a.txt"),
+            "session.end" to obj("reason" to "closed"),
+            startWall = startWall,
         )
 
-    private fun danglingSession(sessionId: String = "prev-456"): String =
+    private fun danglingSession(
+        sessionId: String = "prev-456",
+        studentRef: String? = null,
+        startWall: Instant = Instant.parse("2026-07-14T09:00:00.000Z"),
+    ): String =
         chainText(
-            "session.start" to mapOf("session_id" to sessionId),
-            "doc.change" to mapOf("path" to "a.txt"),
+            "session.start" to startData(sessionId, studentRef),
+            "doc.change" to obj("path" to "a.txt"),
+            startWall = startWall,
         )
 
     @Test
@@ -70,19 +106,142 @@ class ChainRecoveryTest {
         assertEquals(RecoveryDecision.CleanStart, recoverPreviousSession(deps))
     }
 
+    // -----------------------------------------------------------------------
+    // Selection: latest session.start wall, NOT the alphabetically last filename.
+    // -----------------------------------------------------------------------
+
     @Test
-    fun `alphabetically last slog is chosen`() = runBlocking {
+    fun `latest session start wall wins over the alphabetically last filename`() = runBlocking {
         val deps = FakeDeps(
             dir,
             mutableMapOf(
-                "$dir/session-aaa.slog" to SlogReadResult.Ok(completeSession("first")),
-                "$dir/session-zzz.slog" to SlogReadResult.Ok(completeSession("last")),
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(
+                    completeSession("newer", "alice", Instant.parse("2026-07-14T11:00:00.000Z")),
+                ),
+                "$dir/session-zzz.slog" to SlogReadResult.Ok(
+                    completeSession("older", "alice", Instant.parse("2026-07-14T09:00:00.000Z")),
+                ),
             ),
+            ownStudentRef = "alice",
         )
-        val decision = recoverPreviousSession(deps)
-        assertEquals(RecoveryDecision.PreviousSessionComplete("last"), decision)
-        assertEquals(listOf("$dir/session-zzz.slog"), deps.reads)
+        assertEquals(RecoveryDecision.PreviousSessionComplete("newer"), recoverPreviousSession(deps))
+        assertTrue("nothing quarantined", deps.renames.isEmpty())
     }
+
+    @Test
+    fun `equal walls tie-break on filename descending`() = runBlocking {
+        val sameWall = Instant.parse("2026-07-14T10:00:00.000Z")
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(completeSession("first", "alice", sameWall)),
+                "$dir/session-zzz.slog" to SlogReadResult.Ok(completeSession("last", "alice", sameWall)),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.PreviousSessionComplete("last"), recoverPreviousSession(deps))
+    }
+
+    @Test
+    fun `a partner's newer slog never wins over our own older one`() = runBlocking {
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(
+                    completeSession("ours", "alice", Instant.parse("2026-07-14T09:00:00.000Z")),
+                ),
+                "$dir/session-zzz.slog" to SlogReadResult.Ok(
+                    completeSession("theirs", "bob", Instant.parse("2026-07-14T23:00:00.000Z")),
+                ),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.PreviousSessionComplete("ours"), recoverPreviousSession(deps))
+        assertTrue("nothing quarantined", deps.renames.isEmpty())
+    }
+
+    // -----------------------------------------------------------------------
+    // A FOREIGN .slog IS NEVER RENAMED. This is the regression guard for the
+    // evidence-destruction bug: in a shared, committed .provenance/ the file
+    // that fails to read/parse/validate is very often the PARTNER'S, and
+    // quarantining it removes their evidence from the submission entirely.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `an UNREADABLE foreign slog is never renamed`() = runBlocking {
+        // An unreadable file cannot name its owner, so it classifies as `unattributed`
+        // — and an ENROLLED recorder (non-null ownStudentRef) may not touch a file it
+        // cannot prove is its own. It is not selected and, crucially, not quarantined.
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(
+                    completeSession("ours", "alice", Instant.parse("2026-07-14T09:00:00.000Z")),
+                ),
+                "$dir/session-zzz.slog" to SlogReadResult.Err("read_error"),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.PreviousSessionComplete("ours"), recoverPreviousSession(deps))
+        assertTrue("foreign .slog was renamed", deps.renames.isEmpty())
+    }
+
+    @Test
+    fun `a chain-broken foreign slog is never renamed`() = runBlocking {
+        val partner = completeSession("theirs", "bob", Instant.parse("2026-07-14T23:00:00.000Z"))
+        val lines = partner.trimEnd('\n').split("\n").toMutableList()
+        lines[1] = lines[1].replace("a.txt", "TAMPERED.txt")
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-aaa.slog" to SlogReadResult.Ok(
+                    completeSession("ours", "alice", Instant.parse("2026-07-14T09:00:00.000Z")),
+                ),
+                "$dir/session-zzz.slog" to SlogReadResult.Ok(lines.joinToString("\n") + "\n"),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.PreviousSessionComplete("ours"), recoverPreviousSession(deps))
+        assertTrue("foreign .slog was renamed", deps.renames.isEmpty())
+    }
+
+    @Test
+    fun `enrolled recorder in an all-foreign directory yields CleanStart with zero renames`() = runBlocking {
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/session-bob1.slog" to SlogReadResult.Ok(danglingSession("theirs-1", "bob")),
+                "$dir/session-bob2.slog" to SlogReadResult.Err("read_error"),
+            ),
+            ownStudentRef = "alice",
+        )
+        assertEquals(RecoveryDecision.CleanStart, recoverPreviousSession(deps))
+        assertTrue("a partner's .slog was renamed", deps.renames.isEmpty())
+    }
+
+    @Test
+    fun `an UNENROLLED recorder never touches a slog that names a student`() = runBlocking {
+        // Asymmetric `foreign`: we hold no identity and the candidate holds one. We cannot
+        // claim to be a contributor we cannot name, so the file is theirs, not ours.
+        // The first line must stay INTACT — that is what names bob. The corruption is
+        // further down (a half-written second entry), which is exactly the shape a partner's
+        // log has mid-`git checkout`.
+        val partner = danglingSession("theirs", "bob")
+        val lines = partner.trimEnd('\n').split("\n")
+        val truncated = lines[0] + "\n" + lines[1].substring(0, lines[1].length / 2) + "\n"
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf("$dir/session-bob.slog" to SlogReadResult.Ok(truncated)),
+            ownStudentRef = null,
+        )
+        assertEquals(RecoveryDecision.CleanStart, recoverPreviousSession(deps))
+        assertTrue("a partner's .slog was renamed", deps.renames.isEmpty())
+    }
+
+    // -----------------------------------------------------------------------
+    // Unenrolled recorder + unattributed files: the pre-enrollment solo
+    // behaviour, unchanged.
+    // -----------------------------------------------------------------------
 
     @Test
     fun `complete session yields PreviousSessionComplete with no quarantine`() = runBlocking {
@@ -100,12 +259,41 @@ class ChainRecoveryTest {
     }
 
     @Test
+    fun `an enrolled recorder still recovers its OWN dangling session`() = runBlocking {
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf("$dir/s.slog" to SlogReadResult.Ok(danglingSession("prev-456", "alice"))),
+            ownStudentRef = "alice",
+        )
+        val decision = recoverPreviousSession(deps)
+        assertEquals(RecoveryDecision.PreviousSessionDangling("prev-456", "$dir/s.slog"), decision)
+    }
+
+    @Test
     fun `unreadable file is quarantined with the exact colon-and-dot-replaced path`() = runBlocking {
         val deps = FakeDeps(dir, mutableMapOf("$dir/s.slog" to SlogReadResult.Err("read_error")))
         val decision = recoverPreviousSession(deps)
         val expectedQuarantine = "$dir/s.slog.corrupt-2026-07-14T10-20-30-500Z"
         assertEquals(RecoveryDecision.PreviousSessionCorrupt(expectedQuarantine), decision)
         assertEquals(listOf("$dir/s.slog" to expectedQuarantine), deps.renames)
+    }
+
+    @Test
+    fun `with nothing parseable the fallback is the alphabetically last ELIGIBLE file`() = runBlocking {
+        val deps = FakeDeps(
+            dir,
+            mutableMapOf(
+                "$dir/s-a.slog" to SlogReadResult.Err("read_error"),
+                "$dir/s-z.slog" to SlogReadResult.Err("read_error"),
+            ),
+        )
+        val decision = recoverPreviousSession(deps)
+        assertEquals(
+            RecoveryDecision.PreviousSessionCorrupt("$dir/s-z.slog.corrupt-2026-07-14T10-20-30-500Z"),
+            decision,
+        )
+        assertEquals(1, deps.renames.size)
+        assertEquals("$dir/s-z.slog", deps.renames[0].first)
     }
 
     @Test
@@ -130,14 +318,14 @@ class ChainRecoveryTest {
 
     @Test
     fun `first entry not session_start is quarantined`() = runBlocking {
-        val text = chainText("doc.change" to mapOf("path" to "a.txt"))
+        val text = chainText("doc.change" to obj("path" to "a.txt"))
         val deps = FakeDeps(dir, mutableMapOf("$dir/s.slog" to SlogReadResult.Ok(text)))
         assertTrue(recoverPreviousSession(deps) is RecoveryDecision.PreviousSessionCorrupt)
     }
 
     @Test
     fun `session_start without session_id is quarantined`() = runBlocking {
-        val text = chainText("session.start" to mapOf("format_version" to "1.0"))
+        val text = chainText("session.start" to obj("format_version" to "1.0"))
         val deps = FakeDeps(dir, mutableMapOf("$dir/s.slog" to SlogReadResult.Ok(text)))
         assertTrue(recoverPreviousSession(deps) is RecoveryDecision.PreviousSessionCorrupt)
     }

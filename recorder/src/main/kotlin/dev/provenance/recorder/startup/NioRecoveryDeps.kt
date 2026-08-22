@@ -31,6 +31,12 @@ import kotlin.streams.toList
  */
 class NioRecoveryDeps internal constructor(
     override val provenanceDir: String,
+    /**
+     * This session's `student_ref`, or null when the student holds no verifying enrollment.
+     * The ownership signal — see `SlogOwnership.kt`. Defaulted to null so the existing
+     * unenrolled-path call sites keep exactly the behaviour they had.
+     */
+    override val ownStudentRef: String? = null,
     /** Test seam for the atomic attempt; production is a plain ATOMIC_MOVE. */
     private val atomicMove: AtomicMover = AtomicMover { from, to ->
         Files.move(from, to, StandardCopyOption.ATOMIC_MOVE)
