@@ -159,19 +159,41 @@ val FLOOR_EVENT_KINDS: List<String> = listOf(
 )
 
 /**
- * The complement of [FLOOR_EVENT_KINDS]: every event kind a policy can switch off,
- * mapped to the boolean `policy.capture` key that switches it.
+ * The three boolean keys `policy.capture` can carry — a CLOSED set, as a type.
  *
- * log-core asserts at compile time that `FLOOR_EVENT_KINDS ∪ keys(...)` is exactly
- * its `EventKind` union. This port has no `EventKind` enum — kinds are plain
- * strings here — so that particular assertion is not expressible; the conformance
- * vector pins both lists instead.
+ * This exists so that [isEventKindCaptured] can dispatch on an exhaustible subject and
+ * therefore need no `else` branch. It used to be a plain `String`, and the `when` needed
+ * an `else -> true` the compiler could not remove: a typo in a
+ * [POLICY_GATED_EVENT_KINDS] VALUE (`"termnial"`) fell into that branch and silently
+ * CAPTURED an event a course had switched off. There is no possible typo now — a
+ * misspelling is not a constant — and adding a member without handling it in
+ * [isEventKindCaptured] fails the build. That is this port's answer to log-core's
+ * `satisfies` check in `policy.ts`.
+ *
+ * [wireName] is the on-the-wire JSON key inside `policy.capture`, and it is the part
+ * that is signed and pinned by the `capture_policy` conformance vector. The Kotlin
+ * constant names are local; [wireName] is the contract.
  */
-val POLICY_GATED_EVENT_KINDS: Map<String, String> = mapOf(
-    "selection.change" to "selection_change",
-    "focus.change" to "focus_change",
-    "terminal.open" to "terminal",
-    "terminal.command" to "terminal",
+enum class PolicyGateKey(val wireName: String) {
+    SELECTION_CHANGE("selection_change"),
+    FOCUS_CHANGE("focus_change"),
+    TERMINAL("terminal"),
+}
+
+/**
+ * The complement of [FLOOR_EVENT_KINDS]: every event kind a policy can switch off,
+ * mapped to the `policy.capture` key that switches it.
+ *
+ * log-core asserts at compile time that `FLOOR_EVENT_KINDS ∪ keys(...)` is exactly its
+ * `EventKind` union. This port has no `EventKind` enum — kinds are plain strings here —
+ * so THAT half is still not expressible and the conformance vector pins both lists
+ * instead. The VALUE half is expressible and is now typed: see [PolicyGateKey].
+ */
+val POLICY_GATED_EVENT_KINDS: Map<String, PolicyGateKey> = mapOf(
+    "selection.change" to PolicyGateKey.SELECTION_CHANGE,
+    "focus.change" to PolicyGateKey.FOCUS_CHANGE,
+    "terminal.open" to PolicyGateKey.TERMINAL,
+    "terminal.command" to PolicyGateKey.TERMINAL,
 )
 
 private fun resolveBool(value: JsonElement?, fallback: Boolean): Boolean {
@@ -232,13 +254,21 @@ fun resolveCapturePolicy(block: JsonElement?): CapturePolicy {
 /**
  * Is [kind] captured under [policy]?
  *
- * Floor kinds always return `true` — there is no key that could turn them off.
+ * An UNKNOWN EVENT KIND returns `true` (the `null` branch): a kind with no entry in
+ * [POLICY_GATED_EVENT_KINDS] is on the floor, and a kind this build has never heard of
+ * is treated the same way, matching log-core. Failing open is correct here — for an
+ * integrity tool, silently not recording is the worse failure.
+ *
+ * An unknown GATE KEY is a different question and gets the opposite answer: it cannot
+ * occur. The `when` is exhaustive over [PolicyGateKey] and has NO `else`, so a new gate
+ * key that nobody wired up is a compile error rather than an event that quietly records
+ * against the course's wishes. Do not reintroduce an `else` branch here, and do not add
+ * a runtime throw either — dropping recording is worse than the bug this shape prevents.
  */
 fun isEventKindCaptured(kind: String, policy: CapturePolicy): Boolean =
     when (POLICY_GATED_EVENT_KINDS[kind]) {
         null -> true
-        "selection_change" -> policy.selectionChange
-        "focus_change" -> policy.focusChange
-        "terminal" -> policy.terminal
-        else -> true
+        PolicyGateKey.SELECTION_CHANGE -> policy.selectionChange
+        PolicyGateKey.FOCUS_CHANGE -> policy.focusChange
+        PolicyGateKey.TERMINAL -> policy.terminal
     }

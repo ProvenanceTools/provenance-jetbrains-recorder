@@ -294,9 +294,20 @@ class ConformanceTest {
                 v["floor_event_kinds"]!!.jsonArray.map { it.jsonPrimitive.content },
                 FLOOR_EVENT_KINDS,
             )
+            // Compared through `wireName`: the vector pins the on-the-wire JSON keys,
+            // which is exactly what PolicyGateKey.wireName carries. The Kotlin constant
+            // names are local and deliberately not part of the contract.
             assertEquals(
                 v["policy_gated_event_kinds"]!!.jsonObject.mapValues { it.value.jsonPrimitive.content },
-                POLICY_GATED_EVENT_KINDS,
+                POLICY_GATED_EVENT_KINDS.mapValues { it.value.wireName },
+            )
+            // The gate keys are a CLOSED set, and it is the set the vector names. A key
+            // the vector does not know, or one no event kind uses, is a contract break —
+            // and since PolicyGateKey is a type, a typo cannot even be written.
+            assertEquals(
+                v["policy_gated_event_kinds"]!!.jsonObject.values
+                    .map { it.jsonPrimitive.content }.toSortedSet(),
+                PolicyGateKey.entries.map { it.wireName }.toSortedSet(),
             )
             assertTrue(FLOOR_EVENT_KINDS.none { it in POLICY_GATED_EVENT_KINDS })
         }
@@ -357,8 +368,8 @@ class ConformanceTest {
                 }
             }
             // The retired keys are gone from the gate map entirely.
-            assertFalse(POLICY_GATED_EVENT_KINDS.values.contains("doc_open_close"))
-            assertFalse(POLICY_GATED_EVENT_KINDS.values.contains("inline_content"))
+            assertFalse(POLICY_GATED_EVENT_KINDS.values.any { it.wireName == "doc_open_close" })
+            assertFalse(POLICY_GATED_EVENT_KINDS.values.any { it.wireName == "inline_content" })
             for (kind in listOf("doc.open", "doc.close", "paste", "fs.external_change")) {
                 assertTrue(kind in FLOOR_EVENT_KINDS, "$kind must be on the floor")
             }
