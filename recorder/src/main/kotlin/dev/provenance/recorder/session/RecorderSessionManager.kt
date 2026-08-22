@@ -15,12 +15,14 @@ import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SystemClock
 import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
+import com.intellij.openapi.diagnostic.Logger
 import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.commands.sealBundle
 import dev.provenance.recorder.events.ExplanationTagger
 import dev.provenance.recorder.identity.CourseKeyCache
+import dev.provenance.recorder.activation.RecorderState
 import dev.provenance.recorder.identity.IdentityOutcome
 import dev.provenance.recorder.identity.PasswordSafeSecretStore
 import dev.provenance.recorder.identity.buildSessionIdentity
@@ -272,6 +274,13 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         )
         val ownStudentRef = (identityOutcome as? IdentityOutcome.Emitted)?.verified?.studentRef
 
+        // Kept, not just logged: this is the only place that knows whether the student is
+        // enrolled, and the status bar + the one-time nudge both read it back out of
+        // RecorderState. Recorded before `start()` so the widget refresh that follows
+        // activation already sees it.
+        runCatching { project.service<RecorderState>().recordIdentity(root, identityOutcome) }
+            .onFailure { LOG.warn("could not record the identity outcome for the status bar", it) }
+
         val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString(), ownStudentRef))
         val descriptor = ownPluginDescriptor()
         start(
@@ -479,4 +488,8 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
     }
 
     override fun dispose() = stop()
+
+    companion object {
+        private val LOG = Logger.getInstance(RecorderSessionManager::class.java)
+    }
 }

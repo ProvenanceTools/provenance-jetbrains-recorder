@@ -10,6 +10,7 @@ import com.intellij.openapi.ui.Messages
 import dev.provenance.core.deriveCourseKeypair
 import dev.provenance.core.deriveStudentKeypair
 import dev.provenance.recorder.identity.CourseKeyCache
+import dev.provenance.recorder.identity.ENROLL_URL
 import dev.provenance.recorder.identity.IdentityImportOk
 import dev.provenance.recorder.identity.IdentityStoreError
 import dev.provenance.recorder.identity.PasswordSafeSecretStore
@@ -124,8 +125,9 @@ class ShowEnrollmentKeyAction : AnAction() {
                 Messages.showInfoMessage(
                     project,
                     "Your Provenance enrollment key:\n\n${global.publicKeyHex}\n\n" +
-                        "Send this to your institution's Provenance enrolment page. You " +
-                        "will get back a credential, which you import with \"Provenance: " +
+                        "Paste it into your institution's Provenance enrolment page:\n\n" +
+                        "    $ENROLL_URL\n\n" +
+                        "You will get back a credential, which you import with \"Provenance: " +
                         "Import Enrollment Token\"." + legacy,
                     "Provenance: Enrollment Key",
                 )
