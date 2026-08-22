@@ -1,10 +1,28 @@
 package dev.provenance.recorder.session
 
+import dev.provenance.core.CourseCert
+import dev.provenance.core.GitCaptureCapability
 import dev.provenance.core.Manifest
+import dev.provenance.core.ManifestCollaboration
+import dev.provenance.core.ManifestParse
+import dev.provenance.core.ManifestScope
+import dev.provenance.core.ManifestSubmission
+import dev.provenance.core.SessionFileScope
 import dev.provenance.core.Sha256
+import dev.provenance.core.WitnessCaptureCapability
+import dev.provenance.core.parseManifestValue
+import dev.provenance.core.toJsonObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecorderContextTest {
@@ -70,5 +88,268 @@ class RecorderContextTest {
         )
         assertEquals("prev", p.prevSessionId)
         assertEquals(Sha256.hex("unknown:bob:sess-2"), p.machineId)
+    }
+
+    // -----------------------------------------------------------------------
+    // session.start 2.0 (program spec §5)
+    // -----------------------------------------------------------------------
+
+    private fun v2Manifest() = Manifest(
+        assignmentId = "proj2",
+        semester = "fa26",
+        issuedAt = "2026-09-15T00:00:00Z",
+        filesUnderReview = listOf("src/Main.java"),
+        sig = "ab".repeat(64),
+        formatVersion = "2.0",
+        courseId = "berkeley-cs61b",
+        collaboration = ManifestCollaboration.SOLO,
+        submission = ManifestSubmission.BUNDLE,
+        scope = ManifestScope.DIRECTORY,
+        policy = Json.parseToJsonElement("""{"capture":{"terminal":false}}""").jsonObject,
+        courseCert = CourseCert(
+            courseId = "berkeley-cs61b",
+            coursePubkey = "cd".repeat(32),
+            validFrom = "2026-08-20",
+            validUntil = "2027-01-15",
+            rootSig = "ef".repeat(64),
+        ),
+    )
+
+    private fun contextFor(manifest: Manifest) = buildRecorderContext(
+        manifest = manifest,
+        prevSessionId = null,
+        sessionId = "sess-1",
+        sessionPubkeyHex = "d".repeat(64),
+        ideVersion = "2026.1.4",
+        platform = "darwin-arm64",
+        recorderVersion = "0.1.0",
+        recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+        hostnameProvider = { "host-1" },
+        usernameProvider = { "alice" },
+    )
+
+    /** `host` is the un-warped replacement for the VS Code-shaped `vscode` block. */
+    @Test
+    fun `host block identifies jetbrains and mirrors the ide version and platform`() {
+        val json = contextFor(v2Manifest()).toJsonObject()
+        val host = json["host"]!!.jsonObject
+        assertEquals("jetbrains", host["editor"]!!.jsonPrimitive.content)
+        assertEquals("2026.1.4", host["editor_version"]!!.jsonPrimitive.content)
+        assertEquals("darwin-arm64", host["platform"]!!.jsonPrimitive.content)
+        // Present-and-empty, never absent: '' is permitted for editor_build.
+        assertNotNull(host["editor_build"])
+        assertEquals("", host["editor_build"]!!.jsonPrimitive.content)
+    }
+
+    /**
+     * `vscode` is retained alongside `host` through the reader-before-writer migration
+     * (program spec §9), so an analyzer that has not yet learned `host` keeps working.
+     */
+    @Test
+    fun `vscode block is retained alongside host`() {
+        val json = contextFor(v2Manifest()).toJsonObject()
+        val vscode = json["vscode"]!!.jsonObject
+        assertEquals("2026.1.4", vscode["version"]!!.jsonPrimitive.content)
+        assertEquals("", vscode["commit"]!!.jsonPrimitive.content)
+        assertEquals("darwin-arm64", vscode["platform"]!!.jsonPrimitive.content)
+        // manifest_sig is retained too — it is what the session-key KDF binds to.
+        assertEquals("ab".repeat(64), json["manifest_sig"]!!.jsonPrimitive.content)
+        // The LOG format version is unchanged; 2.0 additions are additive optional fields.
+        assertEquals("1.0", json["format_version"]!!.jsonPrimitive.content)
+    }
+
+    /**
+     * The full manifest travels into the bundle and must survive the round trip — that is
+     * what lets the analyzer walk root -> course -> manifest -> session offline instead of
+     * only comparing manifest_sig across sessions for equality.
+     */
+    @Test
+    fun `the full 2_0 manifest round-trips through session start`() {
+        val original = v2Manifest()
+        val emitted = contextFor(original).toJsonObject()["manifest"]!!
+        val reparsed = parseManifestValue(emitted)
+        assertTrue("emitted manifest must re-parse", reparsed is ManifestParse.Ok)
+        assertEquals(original, (reparsed as ManifestParse.Ok).manifest)
+        // The certificate and its window reach the analyzer intact: an expired cert does not
+        // stop the recorder, so these are what let the analyzer re-run checkCertWindow.
+        val cert = emitted.jsonObject["course_cert"]!!.jsonObject
+        assertEquals("berkeley-cs61b", cert["course_id"]!!.jsonPrimitive.content)
+        assertEquals("2027-01-15", cert["valid_until"]!!.jsonPrimitive.content)
+        assertEquals("ef".repeat(64), cert["root_sig"]!!.jsonPrimitive.content)
+    }
+
+    /**
+     * Emitted for 1.x manifests too. Additive, and a 1.x manifest's parsed form carries no
+     * 2.0-only fields, so nothing unsigned can ride along.
+     */
+    @Test
+    fun `a 1_x manifest is emitted too and carries no 2_0 fields`() {
+        val emitted = contextFor(manifest()).toJsonObject()["manifest"]!!.jsonObject
+        assertEquals("hw03", emitted["assignment_id"]!!.jsonPrimitive.content)
+        assertEquals("ab".repeat(64), emitted["sig"]!!.jsonPrimitive.content)
+        for (key in listOf("course_id", "collaboration", "submission", "scope", "policy", "course_cert")) {
+            assertFalse("a 1.x manifest must not carry $key", key in emitted)
+        }
+    }
+
+    /**
+     * `identity` is OMITTED, never present-and-empty, when there is none to emit.
+     *
+     * This assertion changed meaning at S2: it used to say "enrollment does not exist yet".
+     * It now states the real rule — an unenrolled student, which is the ordinary
+     * pre-enrollment state, produces a payload with no `identity` key at all. The
+     * enrolled case is covered in SessionIdentityBuilderTest, which can mint a real chain.
+     */
+    @Test
+    fun `identity is omitted when there is none to emit`() {
+        assertFalse("identity" in contextFor(v2Manifest()).toJsonObject())
+        assertFalse("identity" in contextFor(manifest()).toJsonObject())
+    }
+
+    /** ...and present, verbatim, when one was assembled and chain-verified. */
+    @Test
+    fun `a supplied identity is emitted verbatim`() {
+        val identity = dev.provenance.core.SessionIdentity(
+            enrollment = dev.provenance.recorder.identity.EnrollmentFixtures.token(),
+            enrollmentCert = dev.provenance.recorder.identity.EnrollmentFixtures.cert(),
+            sessionPubkeySig = "ab".repeat(64),
+        )
+        val json = buildRecorderContext(
+            manifest = v2Manifest(),
+            prevSessionId = null,
+            sessionId = "sess-1",
+            sessionPubkeyHex = "d".repeat(64),
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            hostnameProvider = { "host-1" },
+            usernameProvider = { "alice" },
+            identity = identity,
+        ).toJsonObject()
+
+        assertEquals(identity.toJsonObject(), json["identity"])
+        assertEquals(
+            setOf("enrollment", "enrollment_cert", "session_pubkey_sig"),
+            json["identity"]!!.jsonObject.keys,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // §5.6 capability reports — omitted (never null) when not supplied, present verbatim
+    // when supplied. The DERIVATION of each value (probeGitCapture, probeWitnessCapture,
+    // resolveFileScope) is tested independently below and in the wiring/ test package; this
+    // section is only about buildRecorderContext's OWN contract: null in, absent key out;
+    // a value in, that exact value out.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `all three capability reports are omitted, never null, when not supplied`() {
+        val json = contextFor(v2Manifest()).toJsonObject()
+        for (key in listOf("git_capture", "witness_capture", "file_scope")) {
+            assertFalse("$key must be absent, not present-and-null", key in json)
+        }
+    }
+
+    @Test
+    fun `a supplied git_capture is emitted verbatim`() {
+        for (capture in GitCaptureCapability.entries) {
+            val json = buildRecorderContext(
+                manifest = v2Manifest(),
+                prevSessionId = null,
+                sessionId = "sess-1",
+                sessionPubkeyHex = "d".repeat(64),
+                ideVersion = "2026.1.4",
+                platform = "darwin-arm64",
+                recorderVersion = "0.1.0",
+                recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+                hostnameProvider = { "host-1" },
+                usernameProvider = { "alice" },
+                gitCapture = capture,
+            ).toJsonObject()
+            assertEquals(capture.name, capture.wire, json["git_capture"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `a supplied witness_capture is emitted verbatim`() {
+        for (capture in WitnessCaptureCapability.entries) {
+            val json = buildRecorderContext(
+                manifest = v2Manifest(),
+                prevSessionId = null,
+                sessionId = "sess-1",
+                sessionPubkeyHex = "d".repeat(64),
+                ideVersion = "2026.1.4",
+                platform = "darwin-arm64",
+                recorderVersion = "0.1.0",
+                recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+                hostnameProvider = { "host-1" },
+                usernameProvider = { "alice" },
+                witnessCapture = capture,
+            ).toJsonObject()
+            assertEquals(capture.name, capture.wire, json["witness_capture"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `a supplied file_scope is emitted with both watched and complete`() {
+        val scope = SessionFileScope(watched = listOf("Solver.java", "src/Board.java"), complete = false)
+        val json = buildRecorderContext(
+            manifest = v2Manifest(),
+            prevSessionId = null,
+            sessionId = "sess-1",
+            sessionPubkeyHex = "d".repeat(64),
+            ideVersion = "2026.1.4",
+            platform = "darwin-arm64",
+            recorderVersion = "0.1.0",
+            recorderExtensionId = "com.aaryanmehta.provenance.recorder",
+            hostnameProvider = { "host-1" },
+            usernameProvider = { "alice" },
+            fileScope = scope,
+        ).toJsonObject()
+        val fs = json["file_scope"]!!.jsonObject
+        assertEquals(false, fs["complete"]!!.jsonPrimitive.boolean)
+        assertEquals(listOf("Solver.java", "src/Board.java"), fs["watched"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    // -----------------------------------------------------------------------
+    // resolveFileScope (§5.6 item 1, S25) — direct port of recorder-context.ts's
+    // resolveFileScope/FILE_SCOPE_MAX_ENTRIES.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `resolveFileScope reports the full list as complete when under the cap`() {
+        val scope = resolveFileScope(listOf("Solver.java", "src/Board.java"))
+        assertNotNull(scope)
+        assertTrue(scope!!.complete)
+        assertEquals(listOf("Solver.java", "src/Board.java"), scope.watched)
+    }
+
+    @Test
+    fun `resolveFileScope reports an empty list as complete, not absent`() {
+        val scope = resolveFileScope(emptyList())
+        assertNotNull(scope)
+        assertTrue(scope!!.complete)
+        assertTrue(scope.watched.isEmpty())
+    }
+
+    @Test
+    fun `resolveFileScope caps at FILE_SCOPE_MAX_ENTRIES and reports complete false`() {
+        val many = (0 until FILE_SCOPE_MAX_ENTRIES + 10).map { "file$it.py" }
+        val scope = resolveFileScope(many)
+        assertNotNull(scope)
+        assertFalse(scope!!.complete)
+        assertEquals(FILE_SCOPE_MAX_ENTRIES, scope.watched.size)
+        assertEquals(many.take(FILE_SCOPE_MAX_ENTRIES), scope.watched)
+    }
+
+    @Test
+    fun `resolveFileScope omits the field rather than write an unsafe path into a signed log`() {
+        // S14(b): an absolute path, a colon (remote URL), or a ".." segment in the manifest's
+        // files_under_review must never reach the signed chain. A course that authored one gets
+        // the whole field omitted, not a partially-scrubbed list.
+        assertNull(resolveFileScope(listOf("Solver.java", "/etc/passwd")))
+        assertNull(resolveFileScope(listOf("Solver.java", "../other-course/Solver.java")))
+        assertNull(resolveFileScope(listOf("git@github.com:someone/proj2.git")))
     }
 }

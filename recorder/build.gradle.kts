@@ -113,66 +113,133 @@ java {
 // Plan 9: production build — course-key embedding, extension_hash, publishing
 // ---------------------------------------------------------------------------
 
-// Course public key embed/revert. Mirrors the VS Code recorder's tools/embed-course-key.ts
-// + `build:prod` git-checkout-revert flow: substitute the real course public key from an env
-// var, build, then restore the checked-in dev key so a real key is never committed.
-val coursePublicKeyFile = file("src/main/kotlin/dev/provenance/recorder/activation/CoursePublicKey.kt")
-val hex64 = Regex("^[0-9a-f]{64}$")
-// Matches the (possibly multi-line) `const val COURSE_PUBLIC_KEY_HEX: String = "<64 hex>"`.
-val coursePublicKeyPattern = Regex("""const val COURSE_PUBLIC_KEY_HEX: String\s*=\s*"([0-9a-f]{64})"""")
+// Trust-anchor embed/revert. Mirrors the VS Code recorder's tools/embed-root-key.ts
+// + `build:prod` git-checkout-revert flow: substitute the real public keys from env vars,
+// build, then restore the checked-in dev keys so a real key is never committed.
+//
+// Manifest 2.0 made this TWO constants rather than one:
+//
+//   ROOT_PUBLIC_KEY_HEX          the trust anchor for 2.0 chain verification. Required —
+//                                without it the plugin verifies nothing at 2.0.
+//   LEGACY_COURSE_PUBLIC_KEY_HEX the grandfathered pre-2.0 course key, used only for 1.x
+//                                manifests. OPTIONAL, and optional on purpose: omitting the
+//                                variable is how the constant eventually retires. A build
+//                                with no 1.x manifests left in the field simply ships the
+//                                dev value, which no real manifest can satisfy.
+//
+// Each constant keeps the same single-line 64-hex literal shape, so one regex per constant
+// name applies to each independently.
+data class TrustAnchor(
+    /** Human-readable name for log lines and error messages. */
+    val label: String,
+    val file: File,
+    val constantName: String,
+    val envVar: String,
+    /** Name of the Kotlin file-facade class the constant compiles into. */
+    val facadeClassName: String,
+    /** A build without this variable set is a build error. */
+    val required: Boolean,
+)
 
-tasks.register("embedCourseKey") {
+val hex64 = Regex("^[0-9a-f]{64}$")
+
+/** Matches the (possibly multi-line) `const val <NAME>: String = "<64 hex>"`. */
+fun trustAnchorPattern(constantName: String): Regex =
+    Regex("""const val $constantName: String\s*=\s*"([0-9a-f]{64})"""")
+
+val activationSourceDir = file("src/main/kotlin/dev/provenance/recorder/activation")
+
+val trustAnchors = listOf(
+    TrustAnchor(
+        label = "root public key",
+        file = activationSourceDir.resolve("RootPublicKey.kt"),
+        constantName = "ROOT_PUBLIC_KEY_HEX",
+        envVar = "PROVENANCE_ROOT_PUBLIC_KEY_HEX",
+        facadeClassName = "RootPublicKeyKt",
+        required = true,
+    ),
+    TrustAnchor(
+        label = "legacy course public key",
+        file = activationSourceDir.resolve("LegacyCoursePublicKey.kt"),
+        constantName = "LEGACY_COURSE_PUBLIC_KEY_HEX",
+        envVar = "PROVENANCE_LEGACY_COURSE_PUBLIC_KEY_HEX",
+        facadeClassName = "LegacyCoursePublicKeyKt",
+        required = false,
+    ),
+)
+
+/** The dev key currently checked into [anchor]'s source file. Single source of truth. */
+fun devKeyOf(anchor: TrustAnchor): String =
+    trustAnchorPattern(anchor.constantName).find(anchor.file.readText())?.groupValues?.get(1)
+        ?: throw GradleException(
+            "Could not locate ${anchor.constantName} in ${anchor.file}. The file shape may have " +
+                "drifted — update trustAnchorPattern or restore the file from git.",
+        )
+
+tasks.register("embedTrustAnchors") {
     group = "provenance"
-    description = "Embeds PROVENANCE_COURSE_PUBLIC_KEY_HEX into CoursePublicKey.kt for a production build."
-    // Declaring the rewritten source as an output is load-bearing, not bookkeeping. Without it
-    // Gradle does not know this task writes CoursePublicKey.kt, so compileKotlin's up-to-date
+    description = "Embeds PROVENANCE_ROOT_PUBLIC_KEY_HEX (and optionally " +
+        "PROVENANCE_LEGACY_COURSE_PUBLIC_KEY_HEX) into the activation key constants."
+    // Declaring the rewritten sources as outputs is load-bearing, not bookkeeping. Without it
+    // Gradle does not know this task writes those files, so compileKotlin's up-to-date
     // check can be answered from a file snapshot taken before the rewrite — it then skips
     // recompiling and the DEV key survives into a "production" build. Observed for real: two
     // consecutive buildProd runs produced different artifacts, and only the second contained the
     // course key. mustRunAfter alone does not fix this; it orders execution but does not
     // invalidate the snapshot.
-    outputs.file(coursePublicKeyFile)
-    // The embedded value comes from the environment, which Gradle cannot fingerprint — never
+    outputs.files(trustAnchors.map { it.file })
+    // The embedded values come from the environment, which Gradle cannot fingerprint — never
     // let this task be considered up-to-date.
     outputs.upToDateWhen { false }
     doLast {
-        val hex = System.getenv("PROVENANCE_COURSE_PUBLIC_KEY_HEX")
-            ?: throw GradleException(
-                "PROVENANCE_COURSE_PUBLIC_KEY_HEX is not set. Set it to the production course " +
-                    "public key (64 lowercase hex chars) and re-run.",
-            )
-        if (!hex64.matches(hex)) {
-            throw GradleException(
-                "PROVENANCE_COURSE_PUBLIC_KEY_HEX is malformed: expected 64 lowercase hex chars, " +
-                    "got ${hex.length} chars.",
-            )
+        for (anchor in trustAnchors) {
+            val hex = System.getenv(anchor.envVar)
+            if (hex == null) {
+                if (anchor.required) {
+                    throw GradleException(
+                        "${anchor.envVar} is not set. Set it to the production ${anchor.label} " +
+                            "(64 lowercase hex chars) and re-run.",
+                    )
+                }
+                // Optional and absent: leave the checked-in dev value in place. This is the
+                // documented retirement path for the legacy key, not an oversight — say so
+                // loudly rather than passing over it in silence.
+                logger.lifecycle(
+                    "[embedTrustAnchors] ${anchor.envVar} not set — shipping the checked-in dev " +
+                        "${anchor.label}. Manifest 1.x files signed by a real course key will NOT " +
+                        "activate in this build.",
+                )
+                continue
+            }
+            if (!hex64.matches(hex)) {
+                throw GradleException(
+                    "${anchor.envVar} is malformed: expected 64 lowercase hex chars, " +
+                        "got ${hex.length} chars.",
+                )
+            }
+            val devKeyHex = devKeyOf(anchor)
+            // Read the dev key from the file itself and refuse to "embed" it, so a misconfigured
+            // release can never silently ship a dev key.
+            if (hex == devKeyHex) {
+                throw GradleException(
+                    "${anchor.envVar} equals the dev ${anchor.label} checked into the repo. " +
+                        "Production builds must use a different key.",
+                )
+            }
+            val original = anchor.file.readText()
+            val pattern = trustAnchorPattern(anchor.constantName)
+            // Swap only the 64-hex constant; preserve all surrounding text (indentation, newlines).
+            val rewritten = pattern.replace(original) { m -> m.value.replace(m.groupValues[1], hex) }
+            anchor.file.writeText(rewritten)
+            logger.lifecycle("[embedTrustAnchors] Embedded production ${anchor.label} (public, hex): $hex")
         }
-        val original = coursePublicKeyFile.readText()
-        val match = coursePublicKeyPattern.find(original)
-            ?: throw GradleException(
-                "Could not locate COURSE_PUBLIC_KEY_HEX in $coursePublicKeyFile. The file shape may " +
-                    "have drifted — update coursePublicKeyPattern or restore the file from git.",
-            )
-        val devKeyHex = match.groupValues[1]
-        // Read the dev key from the file itself (single source of truth) and refuse to "embed"
-        // it, so a misconfigured release can never silently ship the dev key.
-        if (hex == devKeyHex) {
-            throw GradleException(
-                "PROVENANCE_COURSE_PUBLIC_KEY_HEX equals the dev key checked into the repo. " +
-                    "Production builds must use a different key.",
-            )
-        }
-        // Swap only the 64-hex constant; preserve all surrounding text (indentation, newlines).
-        val rewritten = coursePublicKeyPattern.replace(original) { m -> m.value.replace(m.groupValues[1], hex) }
-        coursePublicKeyFile.writeText(rewritten)
-        logger.lifecycle("[embedCourseKey] Embedded production public key (public, hex): $hex")
     }
 }
 
-tasks.register<Exec>("revertCourseKey") {
+tasks.register<Exec>("revertTrustAnchors") {
     group = "provenance"
-    description = "Restores CoursePublicKey.kt to its checked-in (dev-key) state via git checkout."
-    commandLine("git", "checkout", "--", coursePublicKeyFile.absolutePath)
+    description = "Restores the activation key constants to their checked-in (dev-key) state via git checkout."
+    commandLine(listOf("git", "checkout", "--") + trustAnchors.map { it.file.absolutePath })
 }
 
 // extension_hash precompute. Extracts the built plugin distribution and runs core/'s
@@ -229,66 +296,82 @@ val computeExtensionHash = tasks.register<JavaExec>("computeExtensionHash") {
     }
 }
 
-// compileKotlin must run *after* the key is embedded, so signPlugin/buildPlugin compile source
-// that already contains the production key.
-tasks.named("compileKotlin") { mustRunAfter("embedCourseKey") }
+// compileKotlin must run *after* the keys are embedded, so signPlugin/buildPlugin compile source
+// that already contains the production keys.
+tasks.named("compileKotlin") { mustRunAfter("embedTrustAnchors") }
 
-// Never sign an artifact that has not been proven to carry the right key: a signed dev-key zip
+// Never sign an artifact that has not been proven to carry the right keys: a signed dev-key zip
 // is exactly the thing that must not exist, since it is the one that looks ready to upload.
-tasks.named("signPlugin") { mustRunAfter("verifyEmbeddedCourseKey") }
+tasks.named("signPlugin") { mustRunAfter("verifyEmbeddedTrustAnchors") }
 
-// Last line of defence for the release: assert the *built artifact* actually carries the course
-// key. Everything upstream (task ordering, up-to-date checks) is a means to that end, and when it
+// Last line of defence for the release: assert the *built artifact* actually carries the keys.
+// Everything upstream (task ordering, up-to-date checks) is a means to that end, and when it
 // silently failed the result was a signed, publishable plugin trusting the repo's public dev key —
 // which would refuse every real course-signed manifest and so record nothing, for every student.
 // A key that is wrong here is not recoverable after publication, so fail the build instead.
-val verifyEmbeddedCourseKey = tasks.register("verifyEmbeddedCourseKey") {
+//
+// The check runs per anchor and is scoped to whichever anchors were actually supplied: the legacy
+// course key is optional, so a build that omitted it is verified only for the root key. What is
+// NOT optional is that a *supplied* key must be present and its dev counterpart absent — an
+// anchor silently dropping out of coverage is how a dev-key build ships.
+val verifyEmbeddedTrustAnchors = tasks.register("verifyEmbeddedTrustAnchors") {
     group = "provenance"
-    description = "Fails the build unless the compiled plugin distribution embeds PROVENANCE_COURSE_PUBLIC_KEY_HEX."
+    description = "Fails the build unless the compiled plugin distribution embeds every supplied trust anchor."
     dependsOn(unpackDistributionForHash)
     outputs.upToDateWhen { false }
     doLast {
-        val expected = System.getenv("PROVENANCE_COURSE_PUBLIC_KEY_HEX")
-            ?: throw GradleException("PROVENANCE_COURSE_PUBLIC_KEY_HEX is not set.")
         val staging = extensionHashStaging.get().asFile
-        val classFile = staging.walkTopDown().firstOrNull {
-            it.isFile && it.name == "CoursePublicKeyKt.class"
-        } ?: run {
-            // The constant is compiled into the plugin jar inside the distribution.
-            val jar = staging.walkTopDown().firstOrNull {
-                it.isFile && it.name.startsWith("recorder-") && it.extension == "jar"
-            } ?: throw GradleException("Could not find the recorder jar under $staging to verify the embedded key.")
-            val entry = zipTree(jar).matching { include("**/CoursePublicKeyKt.class") }.singleOrNull()
-                ?: throw GradleException("Could not find CoursePublicKeyKt.class inside $jar.")
-            entry
+        for (anchor in trustAnchors) {
+            val expected = System.getenv(anchor.envVar)
+            if (expected == null) {
+                if (anchor.required) throw GradleException("${anchor.envVar} is not set.")
+                logger.lifecycle(
+                    "[verifyEmbeddedTrustAnchors] ${anchor.envVar} not set — skipping the " +
+                        "${anchor.label} check; this build intentionally ships its dev value.",
+                )
+                continue
+            }
+            val classFileName = "${anchor.facadeClassName}.class"
+            val classFile = staging.walkTopDown().firstOrNull {
+                it.isFile && it.name == classFileName
+            } ?: run {
+                // The constant is compiled into the plugin jar inside the distribution.
+                val jar = staging.walkTopDown().firstOrNull {
+                    it.isFile && it.name.startsWith("recorder-") && it.extension == "jar"
+                } ?: throw GradleException("Could not find the recorder jar under $staging to verify the embedded keys.")
+                zipTree(jar).matching { include("**/$classFileName") }.singleOrNull()
+                    ?: throw GradleException("Could not find $classFileName inside $jar.")
+            }
+            val bytes = classFile.readBytes().toString(Charsets.ISO_8859_1)
+            if (!bytes.contains(expected)) {
+                throw GradleException(
+                    "The built plugin does NOT embed the expected ${anchor.label} ($expected). The " +
+                        "build may have reused stale compiled output — run `./gradlew :recorder:clean` " +
+                        "and rebuild. Refusing to produce a release artifact with the wrong key.",
+                )
+            }
+            val devKeyHex = devKeyOf(anchor)
+            if (bytes.contains(devKeyHex) && devKeyHex != expected) {
+                throw GradleException(
+                    "The built plugin embeds the DEV ${anchor.label} ($devKeyHex). Refusing to release it.",
+                )
+            }
+            logger.lifecycle("[verifyEmbeddedTrustAnchors] Verified: distribution embeds ${anchor.label} $expected")
         }
-        val bytes = classFile.readBytes().toString(Charsets.ISO_8859_1)
-        if (!bytes.contains(expected)) {
-            throw GradleException(
-                "The built plugin does NOT embed the expected course key ($expected). The build " +
-                    "may have reused stale compiled output — run `./gradlew :recorder:clean` and " +
-                    "rebuild. Refusing to produce a release artifact with the wrong key.",
-            )
-        }
-        val devKeyHex = coursePublicKeyPattern.find(coursePublicKeyFile.readText())?.groupValues?.get(1)
-        if (devKeyHex != null && bytes.contains(devKeyHex) && devKeyHex != expected) {
-            throw GradleException("The built plugin embeds the DEV key ($devKeyHex). Refusing to release it.")
-        }
-        logger.lifecycle("[verifyEmbeddedCourseKey] Verified: distribution embeds $expected")
     }
 }
 
 tasks.register("buildProd") {
     group = "provenance"
-    description = "Production build: embeds the course public key, builds+signs the plugin, computes extension_hash, then ALWAYS reverts the embedded key."
-    dependsOn("embedCourseKey")
+    description = "Production build: embeds the trust anchors, builds+signs the plugin, computes extension_hash, then ALWAYS reverts the embedded keys."
+    dependsOn("embedTrustAnchors")
     dependsOn(tasks.named("signPlugin"))
     dependsOn(computeExtensionHash)
-    dependsOn(verifyEmbeddedCourseKey)
+    dependsOn(verifyEmbeddedTrustAnchors)
     // finalizedBy (not a plain shell `&&` chain) runs the revert even if an earlier step fails,
-    // so a failed prod build can never leave the real course key sitting in the working tree —
+    // so a failed prod build can never leave a real key sitting in the working tree —
     // a deliberate robustness improvement over the VS Code recorder's sequential build:prod.
-    finalizedBy("revertCourseKey")
+    finalizedBy("revertTrustAnchors")
 }
 
 tasks.register("publishProd") {

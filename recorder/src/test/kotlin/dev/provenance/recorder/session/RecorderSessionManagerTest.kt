@@ -147,6 +147,93 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         assertEquals("session B must see exactly its own terminal.open", 1, bKinds.count { it == "terminal.open" })
     }
 
+    // -------------------------------------------------------------------------------------
+    // git.event routing across the repo-root/assignment-root relationship (decision-log bug 3:
+    // "Every git.event was silently discarded on nested layouts. The ownership gate used a
+    // containment predicate written for files, handed a git repo root that sits ABOVE the
+    // assignment root." — the standard shared-class-repo layout, assignment as a subdirectory.)
+    // -------------------------------------------------------------------------------------
+
+    fun testGitEventFromRepoRootAboveTheAssignmentRootIsRecorded() {
+        // The shared-class-repo shape: one git repository at the course root, the assignment
+        // (and its .provenance-manifest) one directory down. Before the fix this was dropped:
+        // sessionOwning's plain containment check can never match an ancestor.
+        val repoRoot = Files.createTempDirectory("mgr-repo-above").toRealPath()
+        val assignRoot = Files.createDirectories(repoRoot.resolve("hw1"))
+        try {
+            val m = manager()
+            val session = start(m, root = assignRoot, provDir = assignRoot.resolve(".provenance"), assignmentId = "hw1")
+
+            project.service<RecorderGitState>().emit!!.invoke(
+                repoRoot,
+                GitEventPayload(operation = "state_change", commitSha = "deadbeef"),
+            )
+
+            assertTrue(
+                "a git.event from a repository root ABOVE the assignment root must be recorded",
+                kinds(session).contains("git.event"),
+            )
+        } finally {
+            repoRoot.toFile().deleteRecursively()
+        }
+    }
+
+    fun testGitEventFromRepoRootAboveTwoConcurrentAssignmentsReachesBoth() {
+        // Two sibling assignments recording concurrently under the same shared class repo (e.g.
+        // course/hw1/ and course/hw2/) both independently own a commit on that shared repo — the
+        // recorder fails toward more evidence; deduplicating is the analyzer's job.
+        val repoRoot = Files.createTempDirectory("mgr-repo-above-multi").toRealPath()
+        val hw1Root = Files.createDirectories(repoRoot.resolve("hw1"))
+        val hw2Root = Files.createDirectories(repoRoot.resolve("hw2"))
+        try {
+            val m = manager()
+            val sessionA = start(m, root = hw1Root, provDir = hw1Root.resolve(".provenance"), assignmentId = "hw1")
+            val sessionB = start(m, root = hw2Root, provDir = hw2Root.resolve(".provenance"), assignmentId = "hw2")
+
+            project.service<RecorderGitState>().emit!!.invoke(
+                repoRoot,
+                GitEventPayload(operation = "state_change", commitSha = "cafebabe"),
+            )
+
+            assertTrue("session A must see the shared repo's git.event", kinds(sessionA).contains("git.event"))
+            assertTrue("session B must see the shared repo's git.event", kinds(sessionB).contains("git.event"))
+        } finally {
+            repoRoot.toFile().deleteRecursively()
+        }
+    }
+
+    fun testGitEventFromRepoNestedBelowOneOfTwoSiblingsRoutesOnlyToThatSession() {
+        // Unchanged, at-or-below behavior (a submodule, or the ordinary non-nested case): the
+        // nearest-ancestor rule still picks exactly one owner and does not fan the event out to
+        // an unrelated sibling session.
+        val m = manager()
+        val sessionA = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        val sessionB = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        val submoduleRoot = Files.createDirectories(wsRoot.resolve("vendor").resolve("lib"))
+
+        project.service<RecorderGitState>().emit!!.invoke(
+            submoduleRoot,
+            GitEventPayload(operation = "state_change", commitSha = "beadfeed"),
+        )
+
+        assertTrue("session A must see its own submodule's git.event", kinds(sessionA).contains("git.event"))
+        assertFalse(
+            "session B must not see a submodule git.event that belongs to session A",
+            kinds(sessionB).contains("git.event"),
+        )
+    }
+
+    fun testGitEventWithNoOwningRootIsDropped() {
+        val m = manager()
+        val session = start(m)
+        project.service<RecorderGitState>().emit!!.invoke(
+            Files.createTempDirectory("no-owner"),
+            GitEventPayload(operation = "state_change", commitSha = "deadbeef"),
+        )
+        assertFalse("a git.event with no owning session must be dropped", kinds(session).contains("git.event"))
+    }
+
     fun testNoDoubleEmissionOnASingleDocChange() {
         installFsSeams(manager())
         myFixture.configureByText("hw.py", "print(1)\n")

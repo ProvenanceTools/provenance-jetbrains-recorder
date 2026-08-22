@@ -59,7 +59,7 @@ class NioRecoveryDepsTest {
         unsupportedSignals.forEachIndexed { i, signal ->
             val f = tmp.newFile("session-atomic-$i.slog")
             f.writeText("payload-$i")
-            val deps = NioRecoveryDeps(tmp.root.absolutePath, { from, to -> signal(from, to) })
+            val deps = NioRecoveryDeps(tmp.root.absolutePath, atomicMove = { from, to -> signal(from, to) })
             val to = "${f.absolutePath}.corrupt-x"
 
             deps.rename(f.absolutePath, to)

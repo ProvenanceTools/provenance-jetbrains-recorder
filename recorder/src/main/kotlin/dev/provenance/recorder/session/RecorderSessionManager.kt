@@ -11,12 +11,19 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import dev.provenance.core.Clock
 import dev.provenance.core.Manifest
+import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SystemClock
+import dev.provenance.core.generateSessionKeypair
 import dev.provenance.core.toJsonObject
+import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.commands.sealBundle
 import dev.provenance.recorder.events.ExplanationTagger
+import dev.provenance.recorder.identity.CourseKeyCache
+import dev.provenance.recorder.identity.IdentityOutcome
+import dev.provenance.recorder.identity.PasswordSafeSecretStore
+import dev.provenance.recorder.identity.buildSessionIdentity
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.plugin.ownPluginDescriptor
 import dev.provenance.recorder.startup.NioRecoveryDeps
@@ -32,6 +39,7 @@ import dev.provenance.recorder.wiring.SelectionWiring
 import dev.provenance.recorder.wiring.SessionRouter
 import dev.provenance.recorder.wiring.isRecordablePath
 import dev.provenance.recorder.wiring.runOnEdtAndWait
+import dev.provenance.recorder.wiring.sameAncestryLine
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
 import org.jetbrains.annotations.TestOnly
@@ -110,7 +118,14 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         val terminalState = project.service<RecorderTerminalState>()
         terminalState.emitTerminalOpen = { cwd, payload -> routeTerminalOpen(cwd, payload) }
         terminalState.emitTerminalCommand = { cwd, payload -> routeTerminalCommand(cwd, payload) }
-        project.service<RecorderGitState>().emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
+        project.service<RecorderGitState>().apply {
+            emit = { repoRoot, payload -> routeGitEvent(repoRoot, payload) }
+            // Separate seam so the tag lands at the state change, not after the async
+            // commit-graph read the emit path now performs. See RecorderGitState.markGit.
+            // Marks EVERY owning session (see sessionsOwningRepo) — a repository above the
+            // assignment root can own more than one concurrently-recording session at once.
+            markGit = { repoRoot -> repoRoot?.let(::sessionsOwningRepo)?.forEach { it.explanationTagger.markGit() } }
+        }
         // Paste signal 2 (the EditorPaste action wrapper) is routed by path the same way, so
         // concurrent sessions don't clobber a shared slot: the nearest-enclosing session's own
         // pasteCorrelator, or null when no session owns the pasted-into file (privacy gate).
@@ -124,7 +139,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         routedWiring = null
         Disposer.dispose(rw.disposable)
         project.service<RecorderTerminalState>().apply { emitTerminalOpen = null; emitTerminalCommand = null }
-        project.service<RecorderGitState>().emit = null
+        project.service<RecorderGitState>().apply { emit = null; markGit = null }
         project.service<RecorderPasteState>().resolveCorrelator = null
     }
 
@@ -151,6 +166,46 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         return nearestEntry { root, _ -> normalized.startsWith(root) }?.value
     }
 
+    /**
+     * Every currently-active session that owns a `git.event` from a repository rooted at
+     * [repoRoot] — decision-log bug 3's fix (`docs/superpowers/specs/2026-08-19-program-decision-
+     * log.md`), ported from the monorepo VS Code recorder's `isRepoOwnedByRoot`
+     * (`session-router.ts`). Unlike [sessionOwning] (a single-file containment lookup used for
+     * terminal cwd routing, where "nearest enclosing root" is the only sensible answer), a git
+     * repository root can be related to an assignment root in TWO directions:
+     *
+     *  - **repo AT-OR-BELOW a session root** (a submodule, or the ordinary non-nested case):
+     *    [sessionOwning]'s containment rule already gets this right — only the NEAREST such root
+     *    wins, so a repository nested inside a *nested* assignment root still routes to the
+     *    nearest root rather than to its parent.
+     *  - **repo ABOVE a session root** (one shared class repository, each assignment a
+     *    subdirectory beneath it — the standard multi-course layout `ManifestDiscovery` is built
+     *    to find). A plain containment check can never match this direction — the repo root does
+     *    not descend from any assignment root, so [sessionOwning] returns null and every
+     *    `git.event` for the session is silently dropped. This is EXACTLY decision-log bug 3's
+     *    shape. Here every concurrently-recording session whose root descends from [repoRoot]
+     *    owns it, not only the nearest: two sibling assignments in the same shared repo (say
+     *    `course/hw1/` and `course/hw2/`, both actively recording) both see the same commit as
+     *    their own — fail toward more evidence, per the monorepo fix; deduplicating across
+     *    sessions is the analyzer's job, not the recorder's.
+     *
+     * [dev.provenance.recorder.wiring.git.GitCapabilityProbe.decideGitCapture] mirrors this same
+     * two-direction relationship (via the shared [sameAncestryLine]) for the
+     * `session.start.git_capture` capability report, so the two never disagree about which
+     * direction counts as "owned" — it just cannot see sibling session roots to apply the
+     * nearest-wins refinement below, so it answers the coarser question of whether ANY visible
+     * repository lies on this session's ancestry line.
+     */
+    private fun sessionsOwningRepo(repoRoot: Path): List<ActiveSession> {
+        val normalized = runCatching { repoRoot.toRealPath() }.getOrDefault(repoRoot.normalize())
+        val nearestBelow = nearestEntry { root, _ -> normalized.startsWith(root) }?.key
+        return sessions.entries
+            .filter { (root, _) ->
+                sameAncestryLine(normalized, root) && (root == nearestBelow || root.startsWith(normalized))
+            }
+            .map { it.value }
+    }
+
     private fun routeTerminalOpen(cwd: Path?, payload: dev.provenance.core.TerminalOpenPayload) {
         val session = cwd?.let(::sessionOwning) ?: return
         session.controller.append("terminal.open", payload.toJsonObject())
@@ -162,17 +217,62 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
     }
 
     private fun routeGitEvent(repoRoot: Path?, payload: dev.provenance.core.GitEventPayload) {
-        val session = repoRoot?.let(::sessionOwning) ?: return
-        session.explanationTagger.markGit()
-        session.controller.append("git.event", payload.toJsonObject())
+        val owners = repoRoot?.let(::sessionsOwningRepo) ?: return
+        for (session in owners) {
+            session.explanationTagger.markGit()
+            session.controller.append("git.event", payload.toJsonObject())
+        }
     }
 
-    /** Production entry point, called from activation once a discovered manifest verifies.
-     * No-op (logs) if a session for this root is already active. */
+    /**
+     * Production entry point, called from activation once a discovered manifest verifies.
+     * No-op if a session for this root is already active.
+     *
+     * ORDER MATTERS, and it is the whole point of this method's shape:
+     *
+     *  1. session keypair — the student key countersigns exactly this public key;
+     *  2. session identity — chain-verified, and the ONLY source of `student_ref`;
+     *  3. chain recovery, handed that `student_ref`;
+     *  4. the controller, handed all three.
+     *
+     * Recovery used to run FIRST, with no identity in existence and therefore no way to
+     * tell this student's `.slog` files from a partner's in a shared, committed
+     * `.provenance/`. It selected whichever file sorted last and quarantined it (renamed to
+     * `<slog>.corrupt-<ts>`) if it failed to read, parse or chain-validate — deleting a
+     * partner's evidence from the submission, with git history showing the innocent student
+     * doing it. Moving identity ahead of recovery is what closes that; see `SlogOwnership.kt`.
+     *
+     * Nothing between steps 1 and 3 consumes the recovery result, and `prev_session_id` is
+     * not read until `session.start` is built, so the move is behaviour-preserving apart
+     * from the ownership gate itself.
+     *
+     * `ownStudentRef` is null whenever the identity was not emitted — not enrolled, no
+     * keyring, a lapsed cert. That is the common case today, it is handled explicitly inside
+     * `recoverPreviousSession`, and it must never throw or block recording.
+     */
     suspend fun startFromActivation(root: Path, manifest: Manifest) {
         if (sessions.containsKey(root.normalize())) return
         val provenanceDir = root.resolve(".provenance")
-        val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString()))
+        val clock = SystemClock()
+
+        val keypair = generateSessionKeypair()
+        val identityOutcome = buildSessionIdentity(
+            manifest = manifest,
+            sessionPubkeyHex = keypair.publicKeyHex,
+            // Windows are judged against the session's own start instant, never wall-clock
+            // now, so an archived bundle still reads correctly years later.
+            sessionStartedAt = clock.wall(),
+            secrets = PasswordSafeSecretStore(),
+            // Resolved defensively for the same reason the controller does: a missing cache
+            // must degrade to direct derivation, never fail session start.
+            keyCache = runCatching {
+                ApplicationManager.getApplication()?.getService(CourseKeyCache::class.java)
+            }.getOrNull(),
+            rootPubkeyHex = ROOT_PUBLIC_KEY_HEX,
+        )
+        val ownStudentRef = (identityOutcome as? IdentityOutcome.Emitted)?.verified?.studentRef
+
+        val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString(), ownStudentRef))
         val descriptor = ownPluginDescriptor()
         start(
             activated = ActivatedWorkspace(manifest, provenanceDir, root),
@@ -181,6 +281,9 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             platform = System.getProperty("os.name") ?: "unknown",
             recorderVersion = descriptor?.version ?: "0.0.0",
             recorderExtensionId = RECORDER_PLUGIN_ID,
+            clock = clock,
+            preparedKeypair = keypair,
+            preparedIdentity = identityOutcome,
         )
     }
 
@@ -198,6 +301,20 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         clock: Clock = SystemClock(),
         scheduler: FlushScheduler = RecordingSessionController.DEFAULT_SCHEDULER,
         vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
+        /**
+         * S3 rolling seal: how the session resolves its own `extension_hash`. Threaded through
+         * the same [extensionHashOverride] the seal command uses, so a test that can make the
+         * classic seal work can make the rolling seal work too, with one override.
+         */
+        computeExtensionHash: () -> String = extensionHashOverride ?: { computeInstalledExtensionHash(RECORDER_PLUGIN_ID) },
+        /**
+         * The keypair and identity [startFromActivation] already had to build so that chain
+         * recovery could be handed a real `student_ref`. Null for the many tests that inject
+         * a [RecoveryDecision] directly — those do not go through the ownership path, so the
+         * controller makes its own, exactly as before.
+         */
+        preparedKeypair: SessionKeypair? = null,
+        preparedIdentity: IdentityOutcome? = null,
     ): ActiveSession {
         val root = activated.workspaceRoot.normalize()
         check(sessions[root] == null) { "a recording session is already active for root $root" }
@@ -215,6 +332,9 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             clock = clock,
             scheduler = scheduler,
             recovery = recovery,
+            computeExtensionHash = computeExtensionHash,
+            preparedKeypair = preparedKeypair,
+            preparedIdentity = preparedIdentity,
         )
 
         // Shared explanation tagger, one PER SESSION: git wiring marks THIS session's tagger on

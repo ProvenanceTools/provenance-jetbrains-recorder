@@ -1,0 +1,274 @@
+package dev.provenance.core
+
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
+/**
+ * Capture policy — the professor-facing control over what a recorder records.
+ * The Kotlin twin of log-core's `policy.ts`; program spec §4.
+ *
+ * The block lives INSIDE the course-signed manifest payload, which is the whole
+ * point: **a professor can turn capture down, a student cannot turn it off.**
+ *
+ * ```jsonc
+ * "policy": {
+ *   "capture": {
+ *     "selection_change":      true,
+ *     "focus_change":          true,
+ *     "terminal":              true,
+ *     "heartbeat_interval_ms": 30000   // clamped to [5000, 120000]
+ *   }
+ * }
+ * ```
+ *
+ * Two knobs were briefly defined here and have been RETIRED — see
+ * [FLOOR_EVENT_KINDS] for why. A manifest still carrying `doc_open_close` or
+ * `inline_content` is inert: they are treated as unknown keys, ignored rather than
+ * rejected, because forward and backward compatibility both depend on unknown keys
+ * being ignored. Pinned by conformance vectors.
+ *
+ * ## Why this type lives in `core/` and not `recorder/`
+ *
+ * The terminal and git listeners are plugin-gated behind optional `<depends>`
+ * declarations (Git4Idea, the terminal plugin) and are structured so their
+ * classes are never loaded when the optional plugin is absent. A policy type
+ * imported *there* from a main-path package would be reachable from both sides of
+ * that boundary and risks exactly the `NoClassDefFoundError` those classes are
+ * shaped to avoid. `core/` has no IntelliJ Platform dependency at all, so it is
+ * safe from every gated call site — and the policy is part of the signed format
+ * contract anyway, which is what `core/` owns.
+ *
+ * ## The hard floor
+ *
+ * Most event kinds cannot be disabled at all. The floor is enforced **by the schema
+ * itself**: a floor event simply has no key in `policy.capture`, so there is no
+ * way to express "off" for it. [FLOOR_EVENT_KINDS] is that set written out so an
+ * implementation can assert it, and [POLICY_GATED_EVENT_KINDS] is its complement —
+ * the only kinds a policy can reach.
+ *
+ * ## The absence-vs-disabled rule
+ *
+ * The effective policy MUST travel into the bundle (it does, inside the manifest
+ * carried by `session.start`). Without it the analyzer cannot tell "this student
+ * produced no `selection.change` events" from "this course disabled
+ * `selection.change`", and heuristics mis-fire on the difference.
+ *
+ * ## Permanent constraint: no user-derived object keys
+ *
+ * Every key in `policy.capture` is a fixed ASCII identifier chosen by us, and
+ * every future addition must be too. See `CourseCert.kt` for the full statement of
+ * the rule.
+ */
+data class CapturePolicy(
+    /** Capture `selection.change` events. */
+    val selectionChange: Boolean,
+    /** Capture `focus.change` events. */
+    val focusChange: Boolean,
+    /** Capture `terminal.open` and `terminal.command` events. */
+    val terminal: Boolean,
+    /** Heartbeat cadence in milliseconds, always within the clamp range. */
+    val heartbeatIntervalMs: Long,
+)
+
+/**
+ * Applied when the manifest carries no `policy` block at all, and per-key when a
+ * key is absent or malformed. Everything on, 30s heartbeat — i.e. exactly the
+ * v1.x recorder behaviour, so a 1.x manifest resolves to today's capture set.
+ */
+val DEFAULT_CAPTURE_POLICY = CapturePolicy(
+    selectionChange = true,
+    focusChange = true,
+    terminal = true,
+    heartbeatIntervalMs = 30_000L,
+)
+
+/** Inclusive lower clamp for `heartbeat_interval_ms` (program spec §4). */
+const val HEARTBEAT_INTERVAL_MIN_MS: Long = 5_000L
+
+/** Inclusive upper clamp for `heartbeat_interval_ms` (program spec §4). */
+const val HEARTBEAT_INTERVAL_MAX_MS: Long = 120_000L
+
+/**
+ * Event kinds that can NEVER be disabled.
+ *
+ * These have no key in `policy.capture` **by design** — the schema is the
+ * enforcement mechanism, this list is only the assertable statement of it. Do not
+ * add a `policy.capture` key for anything on this list.
+ *
+ * ## The test for every future knob
+ *
+ * **The floor is defined by what reconstruction and validation depend on, not by
+ * privacy sensitivity.** Sensitivity is an argument FOR a knob; being load-bearing
+ * is a VETO on one. A signal whose absence degrades CORRECTNESS — rather than
+ * merely detail — must not be configurable, because a course cannot be allowed to
+ * silently break the analyzer's ability to reason about its own students' work.
+ * Apply that test before adding any key to [CapturePolicy].
+ *
+ * Two knobs failed it and were retired:
+ *
+ *  - **`doc_open_close`** — `DocOpenPayload.content` is the reconstruction SEED.
+ *    Switching `doc.open` off breaks file reconstruction, replay, and the Source
+ *    tab for a whole cohort, with nothing warning the course. `doc.close` carries
+ *    `{ path }` only, so a knob governing it was surface for nothing.
+ *  - **`inline_content`** — it stripped the content fields from `paste` and
+ *    `fs.external_change` without removing the events. But `internal_move` reads a
+ *    paste's inline content to match it against the student's own prior typed code,
+ *    and a match DOWNGRADES `large_paste`. Strip the content and that exculpatory
+ *    check cannot run, so a genuine self-relocation keeps full severity on a flag
+ *    used in academic-integrity proceedings. A course must not be able to configure
+ *    the system into being MORE likely to falsely accuse its own students.
+ *
+ * Note the 64 KB inline size cap in the recorder's payload builders is a separate,
+ * unaffected mechanism: over-cap content is still truncated to head/tail.
+ *
+ * `session.heartbeat` is here because bundle-level Active/Idle and the
+ * `gap_in_heartbeats` heuristic depend on it; only its *interval* is tunable.
+ * `paste.anomaly` is on the floor by the schema rule (it has no `policy.capture`
+ * key) even though program spec §4's prose list omits it — it is a paste-integrity
+ * signal, so floor is the correct and safe reading.
+ */
+val FLOOR_EVENT_KINDS: List<String> = listOf(
+    "session.start",
+    "session.end",
+    "session.resumed",
+    "session.heartbeat",
+    "doc.open",
+    "doc.close",
+    "doc.change",
+    "doc.save",
+    "paste",
+    "paste.anomaly",
+    "fs.external_change",
+    "git.event",
+    "clock.skew",
+    "chain.broken",
+    "ext.snapshot",
+    "ext.activate",
+    "recorder.degraded",
+    "recorder.recovered_from_corruption",
+    // Peer witnessing (program spec §7 mechanism 2). On the FLOOR — it has no key in
+    // `policy.capture`, so "off" is not expressible. That placement is provisional and is
+    // recorded as such in the monorepo's decision log: the collaboration spec §5.6 assigns
+    // "was witnessing AVAILABLE?" to a `session.start` capability report rather than to a
+    // capture knob, and adding a `policy.capture` key here would publish a course-SIGNED
+    // manifest field ahead of the decision that gives it meaning. If a per-course off switch
+    // is ever required, the entry moves to POLICY_GATED_EVENT_KINDS under a
+    // `peer_observation` key — in the same change across all three recorders.
+    "peer.observed",
+)
+
+/**
+ * The three boolean keys `policy.capture` can carry — a CLOSED set, as a type.
+ *
+ * This exists so that [isEventKindCaptured] can dispatch on an exhaustible subject and
+ * therefore need no `else` branch. It used to be a plain `String`, and the `when` needed
+ * an `else -> true` the compiler could not remove: a typo in a
+ * [POLICY_GATED_EVENT_KINDS] VALUE (`"termnial"`) fell into that branch and silently
+ * CAPTURED an event a course had switched off. There is no possible typo now — a
+ * misspelling is not a constant — and adding a member without handling it in
+ * [isEventKindCaptured] fails the build. That is this port's answer to log-core's
+ * `satisfies` check in `policy.ts`.
+ *
+ * [wireName] is the on-the-wire JSON key inside `policy.capture`, and it is the part
+ * that is signed and pinned by the `capture_policy` conformance vector. The Kotlin
+ * constant names are local; [wireName] is the contract.
+ */
+enum class PolicyGateKey(val wireName: String) {
+    SELECTION_CHANGE("selection_change"),
+    FOCUS_CHANGE("focus_change"),
+    TERMINAL("terminal"),
+}
+
+/**
+ * The complement of [FLOOR_EVENT_KINDS]: every event kind a policy can switch off,
+ * mapped to the `policy.capture` key that switches it.
+ *
+ * log-core asserts at compile time that `FLOOR_EVENT_KINDS ∪ keys(...)` is exactly its
+ * `EventKind` union. This port has no `EventKind` enum — kinds are plain strings here —
+ * so THAT half is still not expressible and the conformance vector pins both lists
+ * instead. The VALUE half is expressible and is now typed: see [PolicyGateKey].
+ */
+val POLICY_GATED_EVENT_KINDS: Map<String, PolicyGateKey> = mapOf(
+    "selection.change" to PolicyGateKey.SELECTION_CHANGE,
+    "focus.change" to PolicyGateKey.FOCUS_CHANGE,
+    "terminal.open" to PolicyGateKey.TERMINAL,
+    "terminal.command" to PolicyGateKey.TERMINAL,
+)
+
+private fun resolveBool(value: JsonElement?, fallback: Boolean): Boolean {
+    val p = value as? JsonPrimitive ?: return fallback
+    if (p.isString) return fallback
+    return when (p.content) {
+        "true" -> true
+        "false" -> false
+        else -> fallback
+    }
+}
+
+/**
+ * Clamp `heartbeat_interval_ms` into `[HEARTBEAT_INTERVAL_MIN_MS,
+ * HEARTBEAT_INTERVAL_MAX_MS]`.
+ *
+ * A non-number, `NaN`, or non-finite value falls back to the DEFAULT rather than
+ * clamping — clamping a non-number is meaningless, and a course that wrote garbage
+ * here should get the safe cadence, not the floor.
+ */
+private fun resolveHeartbeatInterval(value: JsonElement?): Long {
+    val p = value as? JsonPrimitive ?: return DEFAULT_CAPTURE_POLICY.heartbeatIntervalMs
+    if (p.isString) return DEFAULT_CAPTURE_POLICY.heartbeatIntervalMs
+    val d = p.content.toDoubleOrNull() ?: return DEFAULT_CAPTURE_POLICY.heartbeatIntervalMs
+    if (!d.isFinite()) return DEFAULT_CAPTURE_POLICY.heartbeatIntervalMs
+    if (d < HEARTBEAT_INTERVAL_MIN_MS) return HEARTBEAT_INTERVAL_MIN_MS
+    if (d > HEARTBEAT_INTERVAL_MAX_MS) return HEARTBEAT_INTERVAL_MAX_MS
+    // log-core carries the raw JS number through; a millisecond cadence is an
+    // integer everywhere it is used, so this port truncates a fractional value
+    // rather than widening the field to a Double.
+    return d.toLong()
+}
+
+/**
+ * Resolve a manifest `policy` block into the effective [CapturePolicy].
+ *
+ * Total by construction: any absent, malformed, or out-of-range input resolves to
+ * a well-defined value, so this never fails and returns no error type. A missing
+ * block (a 1.x manifest, or a 2.0 manifest whose course specified nothing)
+ * resolves to [DEFAULT_CAPTURE_POLICY].
+ *
+ * Takes a [JsonElement] so it can be applied directly to untrusted parsed JSON.
+ */
+fun resolveCapturePolicy(block: JsonElement?): CapturePolicy {
+    val obj = block as? JsonObject ?: return DEFAULT_CAPTURE_POLICY
+    val capture = obj["capture"] as? JsonObject ?: return DEFAULT_CAPTURE_POLICY
+
+    return CapturePolicy(
+        selectionChange = resolveBool(capture["selection_change"], DEFAULT_CAPTURE_POLICY.selectionChange),
+        focusChange = resolveBool(capture["focus_change"], DEFAULT_CAPTURE_POLICY.focusChange),
+        terminal = resolveBool(capture["terminal"], DEFAULT_CAPTURE_POLICY.terminal),
+        // `doc_open_close` and `inline_content` are deliberately NOT read: they are
+        // retired keys and must be inert, exactly like any other unknown key.
+        heartbeatIntervalMs = resolveHeartbeatInterval(capture["heartbeat_interval_ms"]),
+    )
+}
+
+/**
+ * Is [kind] captured under [policy]?
+ *
+ * An UNKNOWN EVENT KIND returns `true` (the `null` branch): a kind with no entry in
+ * [POLICY_GATED_EVENT_KINDS] is on the floor, and a kind this build has never heard of
+ * is treated the same way, matching log-core. Failing open is correct here — for an
+ * integrity tool, silently not recording is the worse failure.
+ *
+ * An unknown GATE KEY is a different question and gets the opposite answer: it cannot
+ * occur. The `when` is exhaustive over [PolicyGateKey] and has NO `else`, so a new gate
+ * key that nobody wired up is a compile error rather than an event that quietly records
+ * against the course's wishes. Do not reintroduce an `else` branch here, and do not add
+ * a runtime throw either — dropping recording is worse than the bug this shape prevents.
+ */
+fun isEventKindCaptured(kind: String, policy: CapturePolicy): Boolean =
+    when (POLICY_GATED_EVENT_KINDS[kind]) {
+        null -> true
+        PolicyGateKey.SELECTION_CHANGE -> policy.selectionChange
+        PolicyGateKey.FOCUS_CHANGE -> policy.focusChange
+        PolicyGateKey.TERMINAL -> policy.terminal
+    }
