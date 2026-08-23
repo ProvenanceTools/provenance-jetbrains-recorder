@@ -166,6 +166,133 @@ class SealBundleTest {
         assertNull(null) // present file check covered in end-to-end task
     }
 
+    // --- WorkspaceFileRead: `missing` is reachable from exactly one condition -------------
+    //
+    // A `status: "missing"` entry is baked into a SIGNED manifest and read by course staff as
+    // "this file was listed for review and was not on disk at seal time" -- used in
+    // academic-integrity proceedings. Every case below is a file that WAS there in some sense
+    // (a directory at that path, a file staff/OS permissions blocked, a symlink to real bytes
+    // elsewhere) and must never be reported as absent.
+
+    /**
+     * THE likeliest recurrence of this bug class: course staff write `files_under_review`
+     * as `"src"` instead of `"src/"`, naming the directory itself. Before the fix,
+     * `Files.readAllBytes` on a directory throws `IOException: Is a directory`, an
+     * `Exception`, which the old narrow catch folded straight into `status: "missing"` --
+     * falsely telling staff the student's entire `src/` submission does not exist.
+     */
+    @Test
+    fun `an entry naming a directory -- the ordinary src vs src-slash staff typo -- is dropped, never missing`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        Files.write(ws.resolve("src").resolve("main.py"), "print(1)\n".toByteArray())
+
+        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("src"), priv, { "e".repeat(64) })
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        assertTrue("a directory entry must be disclosed as non-regular", ok.nonRegularFile)
+        assertFalse(ok.unreadableFile)
+        assertFalse(ok.outOfWorkspaceFile)
+
+        val entries = readZipEntries(ok.bundlePath)
+        assertFalse(entries.containsKey("src"))
+        val manifestJson = String(entries["manifest.json"]!!, Charsets.UTF_8)
+        assertFalse(
+            "a directory-named entry must never be sealed as status:missing -- that is a " +
+                "false 'this file does not exist' claim about a file the student did submit",
+            manifestJson.contains("\"path\":\"src\""),
+        )
+    }
+
+    /** A permission error must never be folded into "this file does not exist". */
+    @Test
+    fun `an unreadable reviewed file -- permission denied -- is dropped, never missing`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val target = ws.resolve("secret.py")
+        Files.write(target, "print(1)\n".toByteArray())
+        val perms = Files.getPosixFilePermissions(target)
+        Files.setPosixFilePermissions(target, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable file is actually unreadable",
+                runCatching { Files.readAllBytes(target) }.isFailure,
+            )
+            val result = sealBundle(prov, ws, "hw03", "fa26", listOf("secret.py"), priv, { "e".repeat(64) })
+            assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+            val ok = result as SealResult.Ok
+            assertTrue("an unreadable file must be disclosed", ok.unreadableFile)
+            assertFalse(ok.nonRegularFile)
+            assertFalse(ok.outOfWorkspaceFile)
+
+            val manifestJson = String(readZipEntries(ok.bundlePath)["manifest.json"]!!, Charsets.UTF_8)
+            assertFalse(
+                "a permission failure must never be sealed as status:missing",
+                manifestJson.contains("\"path\":\"secret.py\""),
+            )
+        } finally {
+            Files.setPosixFilePermissions(target, perms)
+        }
+    }
+
+    /**
+     * Overwhelmingly a student's innocent `ln -s ~/shared/data.csv data.csv`, not an attack --
+     * but we cannot vouch for where it points, so it is dropped and its bytes are never read
+     * into the bundle at all.
+     */
+    @Test
+    fun `a symlink resolving outside the workspace is dropped and disclosed, its bytes never sealed`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        // A genuinely SEPARATE temp tree, not `tmp.newFolder(...)` -- that nests inside
+        // `tmp.root`, which here IS `ws`, so it would land INSIDE the workspace and defeat
+        // the point of the test.
+        val outside = Files.createTempDirectory("provenance-seal-test-outside")
+        try {
+            val secretBytes = "not the student's to submit".toByteArray()
+            val outsideFile = outside.resolve("data.csv")
+            Files.write(outsideFile, secretBytes)
+            Files.createSymbolicLink(ws.resolve("data.csv"), outsideFile)
+
+            val result = sealBundle(prov, ws, "hw03", "fa26", listOf("data.csv"), priv, { "e".repeat(64) })
+            assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+            val ok = result as SealResult.Ok
+            assertTrue("a symlink pointing outside the workspace must be disclosed", ok.outOfWorkspaceFile)
+            assertFalse(ok.unreadableFile)
+            assertFalse(ok.nonRegularFile)
+
+            val entries = readZipEntries(ok.bundlePath)
+            assertFalse("the pointed-to bytes must never be sealed into the bundle", entries.containsKey("data.csv"))
+            val manifestJson = String(entries["manifest.json"]!!, Charsets.UTF_8)
+            assertFalse(
+                "an out-of-workspace symlink must never be sealed as status:missing",
+                manifestJson.contains("\"path\":\"data.csv\""),
+            )
+        } finally {
+            outside.toFile().deleteRecursively()
+        }
+    }
+
+    /** The invariant must not over-correct: genuine absence is still reported. */
+    @Test
+    fun `a genuinely absent reviewed file is still recorded missing, and only that -- not the other disclosure flags`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("ghost.py"), priv, { "e".repeat(64) })
+        assertTrue(result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        assertFalse(ok.unreadableFile)
+        assertFalse(ok.outOfWorkspaceFile)
+        assertFalse(ok.nonRegularFile)
+        val manifestJson = String(readZipEntries(ok.bundlePath)["manifest.json"]!!, Charsets.UTF_8)
+        assertTrue(manifestJson.contains("\"status\":\"missing\""))
+    }
+
     private fun assertArrayEqualsHelper(a: ByteArray, b: ByteArray) {
         assertEquals(a.toList(), b.toList())
     }
