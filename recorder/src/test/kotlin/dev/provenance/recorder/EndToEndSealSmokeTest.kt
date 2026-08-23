@@ -7,6 +7,7 @@ import dev.provenance.core.Canonical
 import dev.provenance.core.Ed25519
 import dev.provenance.core.FixedClock
 import dev.provenance.core.Manifest
+import dev.provenance.core.ResolvedScope
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.commands.sealBundle
 import dev.provenance.recorder.io.FlushScheduler
@@ -89,7 +90,7 @@ class EndToEndSealSmokeTest : BasePlatformTestCase() {
             workspaceRoot = wsRoot,
             assignmentId = "hw03",
             semester = "fa26",
-            filesUnderReview = listOf("hw.py"),
+            scope = ResolvedScope(listOf("hw.py"), emptyList(), emptyList()),
             sessionPrivkey = controller.sessionPrivkey,
             computeExtensionHash = { dev.provenance.core.Sha256.hex("provjet-dev-extension") },
             outputDir = outDir,

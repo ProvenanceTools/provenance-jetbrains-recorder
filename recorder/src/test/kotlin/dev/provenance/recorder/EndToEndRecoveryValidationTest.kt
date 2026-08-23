@@ -10,6 +10,7 @@ import dev.provenance.core.FixedClock
 import dev.provenance.core.HashedEnvelope
 import dev.provenance.core.Manifest
 import dev.provenance.core.ParseResult
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.parseEntries
 import dev.provenance.core.serializeEntry
 import dev.provenance.core.validateChain
@@ -169,7 +170,7 @@ class EndToEndRecoveryValidationTest : BasePlatformTestCase() {
             workspaceRoot = wsRoot,
             assignmentId = "hw03",
             semester = "fa26",
-            filesUnderReview = listOf("hw.py"),
+            scope = ResolvedScope(listOf("hw.py"), emptyList(), emptyList()),
             sessionPrivkey = controller.sessionPrivkey,
             computeExtensionHash = { dev.provenance.core.Sha256.hex("provjet-dev-extension") },
             outputDir = outDir,

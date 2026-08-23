@@ -5,10 +5,15 @@ import dev.provenance.core.Ed25519
 import dev.provenance.core.Envelope
 import dev.provenance.core.GENESIS_PREV_HASH
 import dev.provenance.core.HashedEnvelope
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.Sha256
 import dev.provenance.core.chainEntry
 import dev.provenance.core.serializeEntry
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -89,6 +94,12 @@ class SealBundleTest {
         }
     }
 
+    /** An exact-path-only [ResolvedScope] — the pre-path-scope shape most tests still want. */
+    private fun exact(vararg paths: String): ResolvedScope = ResolvedScope(paths.toList(), emptyList(), emptyList())
+
+    private fun manifestJsonOf(entries: Map<String, ByteArray>): kotlinx.serialization.json.JsonObject =
+        Json.parseToJsonElement(String(entries["manifest.json"]!!, Charsets.UTF_8)).jsonObject
+
     private fun readZipEntries(zip: Path): Map<String, ByteArray> {
         val out = LinkedHashMap<String, ByteArray>()
         ZipInputStream(Files.newInputStream(zip)).use { zin ->
@@ -104,7 +115,7 @@ class SealBundleTest {
     @Test
     fun `no slog files yields NoSessions`() {
         val prov = Files.createDirectory(tmp.root.toPath().resolve(".provenance"))
-        val result = sealBundle(prov, tmp.root.toPath(), "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, tmp.root.toPath(), "hw03", "fa26", exact(), priv, { "e".repeat(64) })
         assertTrue(result is SealResult.NoSessions)
     }
 
@@ -116,7 +127,7 @@ class SealBundleTest {
         val slogBytesBefore = Files.readAllBytes(prov.resolve("session-1.slog"))
 
         val result = sealBundle(
-            prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+            prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) },
             outputDir = ws, now = { Instant.parse("2026-07-14T12:00:00Z") },
         )
         assertTrue(result is SealResult.Ok)
@@ -146,7 +157,7 @@ class SealBundleTest {
         val ws = tmp.root.toPath()
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), corrupt = true)
-        val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) })
         assertTrue(result is SealResult.Ok)
         assertTrue((result as SealResult.Ok).unreadableSession)
     }
@@ -156,7 +167,7 @@ class SealBundleTest {
         val ws = tmp.root.toPath()
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
-        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("ghost.py"), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact("ghost.py"), priv, { "e".repeat(64) })
         assertTrue(result is SealResult.Ok)
         val entries = readZipEntries((result as SealResult.Ok).bundlePath)
         assertFalse(entries.containsKey("ghost.py"))
@@ -189,7 +200,7 @@ class SealBundleTest {
         Files.createDirectory(ws.resolve("src"))
         Files.write(ws.resolve("src").resolve("main.py"), "print(1)\n".toByteArray())
 
-        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("src"), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact("src"), priv, { "e".repeat(64) })
         assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
         val ok = result as SealResult.Ok
         assertTrue("a directory entry must be disclosed as non-regular", ok.nonRegularFile)
@@ -221,7 +232,7 @@ class SealBundleTest {
                 "needs a filesystem/user for which an unreadable file is actually unreadable",
                 runCatching { Files.readAllBytes(target) }.isFailure,
             )
-            val result = sealBundle(prov, ws, "hw03", "fa26", listOf("secret.py"), priv, { "e".repeat(64) })
+            val result = sealBundle(prov, ws, "hw03", "fa26", exact("secret.py"), priv, { "e".repeat(64) })
             assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
             val ok = result as SealResult.Ok
             assertTrue("an unreadable file must be disclosed", ok.unreadableFile)
@@ -258,7 +269,7 @@ class SealBundleTest {
             Files.write(outsideFile, secretBytes)
             Files.createSymbolicLink(ws.resolve("data.csv"), outsideFile)
 
-            val result = sealBundle(prov, ws, "hw03", "fa26", listOf("data.csv"), priv, { "e".repeat(64) })
+            val result = sealBundle(prov, ws, "hw03", "fa26", exact("data.csv"), priv, { "e".repeat(64) })
             assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
             val ok = result as SealResult.Ok
             assertTrue("a symlink pointing outside the workspace must be disclosed", ok.outOfWorkspaceFile)
@@ -283,7 +294,7 @@ class SealBundleTest {
         val ws = tmp.root.toPath()
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
-        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("ghost.py"), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact("ghost.py"), priv, { "e".repeat(64) })
         assertTrue(result is SealResult.Ok)
         val ok = result as SealResult.Ok
         assertFalse(ok.unreadableFile)
@@ -322,7 +333,7 @@ class SealBundleTest {
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(Ed25519.publicKeyOf(fixedPriv)))
 
         val result = sealBundle(
-            prov, ws, "hw03", "fa26", emptyList(), fixedPriv, { "e".repeat(64) },
+            prov, ws, "hw03", "fa26", exact(), fixedPriv, { "e".repeat(64) },
             outputDir = ws, now = { Instant.parse("2026-07-14T12:00:00Z") },
         )
         assertTrue("seal failed: $result", result is SealResult.Ok)
@@ -364,8 +375,8 @@ class SealBundleTest {
         Files.writeString(provDir.resolve("manifest-$sessionId.sig"), "00".repeat(64))
     }
 
-    private fun sealOk(prov: Path, ws: Path, filesUnderReview: List<String> = emptyList()): SealResult.Ok {
-        val result = sealBundle(prov, ws, "hw03", "fa26", filesUnderReview, priv, { "e".repeat(64) })
+    private fun sealOk(prov: Path, ws: Path, scope: ResolvedScope = exact()): SealResult.Ok {
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
         assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
         return result as SealResult.Ok
     }
@@ -535,7 +546,7 @@ class SealBundleTest {
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), empty = true)
         writeRollingSeal(prov, GHOST_ID)
 
-        assertTrue(sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) }) is SealResult.NoSessions)
+        assertTrue(sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }) is SealResult.NoSessions)
     }
 
     private companion object {
@@ -565,7 +576,7 @@ class SealBundleTest {
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
         val result = sealBundle(
-            prov, ws, "hw03", "fa26", emptyList(), priv,
+            prov, ws, "hw03", "fa26", exact(), priv,
             { throw NotImplementedError("An operation is not implemented: FILE_READ") },
         )
         assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
@@ -578,7 +589,7 @@ class SealBundleTest {
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
         val result = sealBundle(
-            prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+            prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) },
             writeFile = { _, _ -> throw NotImplementedError("An operation is not implemented: FILE_FORCE") },
         )
         assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
@@ -596,7 +607,7 @@ class SealBundleTest {
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
         val result = sealBundle(
-            prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+            prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) },
             signManifest = { _, _ -> throw NoClassDefFoundError("com/google/crypto/tink/subtle/Ed25519Sign") },
         )
         assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
@@ -612,7 +623,7 @@ class SealBundleTest {
         var caught: Throwable? = null
         try {
             sealBundle(
-                prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) },
+                prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) },
                 signManifest = { _, _ -> throw boom },
             )
         } catch (t: Throwable) {
@@ -631,7 +642,7 @@ class SealBundleTest {
         val boom = OutOfMemoryError("heap")
         var caught: Throwable? = null
         try {
-            sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { throw boom })
+            sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { throw boom })
         } catch (t: Throwable) {
             caught = t
         }
@@ -662,7 +673,7 @@ class SealBundleTest {
         Files.delete(prov.resolve("session-1.slog.meta"))
         Files.createDirectory(prov.resolve("session-1.slog.meta"))
 
-        val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) })
 
         assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
         assertTrue((result as SealResult.WriteError).message.contains("session-1.slog"))
@@ -679,7 +690,7 @@ class SealBundleTest {
         val boom = OutOfMemoryError("heap")
         var caught: Throwable? = null
         try {
-            sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { throw boom })
+            sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { throw boom })
         } catch (t: Throwable) {
             caught = t
         }
@@ -702,7 +713,7 @@ class SealBundleTest {
                 "needs a filesystem/user for which an unreadable dir is actually unreadable",
                 runCatching { Files.list(prov).use { it.toList() } }.isFailure,
             )
-            val result = sealBundle(prov, ws, "hw03", "fa26", emptyList(), priv, { "e".repeat(64) })
+            val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) })
             assertTrue("expected a typed WriteError, got $result", result is SealResult.WriteError)
             assertTrue((result as SealResult.WriteError).message.contains("session files"))
         } finally {
@@ -719,9 +730,282 @@ class SealBundleTest {
         val ws = tmp.root.toPath()
         val prov = Files.createDirectory(ws.resolve(".provenance"))
         writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
-        val result = sealBundle(prov, ws, "hw03", "fa26", listOf("ghost.py"), priv, { "e".repeat(64) })
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact("ghost.py"), priv, { "e".repeat(64) })
         assertTrue(result is SealResult.Ok)
         val manifestJson = String(readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!, Charsets.UTF_8)
         assertTrue(manifestJson.contains("\"status\":\"missing\""))
+    }
+
+    // --- path scope at seal time -------------------------------------------------------------
+    //
+    // A rule entry (`src/`, `*.java`) cannot be enumerated from the manifest, so the seal WALKS
+    // the workspace and assigns each discovered path a role. This block mirrors the upstream
+    // VS Code recorder's "path scope at seal time" suite (design spec §4, plan Task 5b).
+
+    @Test
+    fun `walks and seals every rule-matched file with its role`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        Files.write(ws.resolve("src").resolve("Main.java"), "class Main {}".toByteArray())
+        Files.write(ws.resolve("src").resolve("Util.java"), "class Util {}".toByteArray())
+        Files.write(ws.resolve("readme.md"), "notes".toByteArray())
+
+        val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = listOf("readme.md"))
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        assertFalse(ok.anythingDropped)
+
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue(entries.containsKey("src/Main.java"))
+        assertTrue(entries.containsKey("src/Util.java"))
+        assertTrue("an attachment is sealed too", entries.containsKey("readme.md"))
+
+        val files = manifestJsonOf(entries)["submission_files"]!!.jsonArray
+        val byPath = files.associate { it.jsonObject["path"]!!.jsonPrimitive.content to it.jsonObject }
+        assertEquals("reviewed", byPath.getValue("src/Main.java")["role"]!!.jsonPrimitive.content)
+        assertEquals("reviewed", byPath.getValue("src/Util.java")["role"]!!.jsonPrimitive.content)
+        assertEquals("attachment", byPath.getValue("readme.md")["role"]!!.jsonPrimitive.content)
+    }
+
+    /** A rule entry claims nothing about any one file's existence (R2) — only an EXACT entry can. */
+    @Test
+    fun `an absent EXACT entry is missing, but a rule entry says nothing about files that do not exist`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        Files.write(ws.resolve("src").resolve("Main.java"), "class Main {}".toByteArray())
+
+        // "src/" matches nothing that does not exist (no file named literally "src" ever
+        // reaches the walk); "ghost.py" is an EXACT entry naming a file that never existed.
+        val scope = ResolvedScope(track = listOf("src/", "ghost.py"), ignore = emptyList(), attachments = emptyList())
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+        assertTrue(result is SealResult.Ok)
+        val files = manifestJsonOf(readZipEntries((result as SealResult.Ok).bundlePath))["submission_files"]!!.jsonArray
+
+        assertEquals(
+            "exactly one file must be reported: the real one present, and the one EXACT absence",
+            2,
+            files.size,
+        )
+        val byPath = files.associate { it.jsonObject["path"]!!.jsonPrimitive.content to it.jsonObject }
+        assertEquals("present", byPath.getValue("src/Main.java")["status"]!!.jsonPrimitive.content)
+        assertEquals("missing", byPath.getValue("ghost.py")["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `scope_capped is present when true, and absent from the serialized JSON entirely when false`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+
+        val cappedResult = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = true)
+        assertTrue(cappedResult is SealResult.Ok)
+        val cappedJson = String(
+            readZipEntries((cappedResult as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertTrue("scope_capped must be present and true", cappedJson.contains("\"scope_capped\":true"))
+
+        val uncappedResult = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = false)
+        assertTrue(uncappedResult is SealResult.Ok)
+        val uncappedJson = String(
+            readZipEntries((uncappedResult as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertFalse(
+            "scope_capped must be OMITTED entirely, not written as false -- the canonical bytes are the signed message",
+            uncappedJson.contains("scope_capped"),
+        )
+    }
+
+    /**
+     * A rule entry like `*.json` reading through the workspace must not walk into a SIBLING
+     * assignment's `.provenance/` under this repo's nested/concurrent multi-assignment
+     * recording -- that would seal one student's provenance into another's evidence bundle.
+     */
+    @Test
+    fun `hard-exclusion pruning protects a nested sibling assignment's provenance directory`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val siblingProv = Files.createDirectories(ws.resolve("hw3").resolve(".provenance"))
+        Files.write(siblingProv.resolve("manifest.json"), "{\"leaked\":true}".toByteArray())
+        Files.write(ws.resolve("hw03.json"), "{\"mine\":true}".toByteArray())
+
+        // The EXACT entry below reads directly by string and never passes through the walk's
+        // own directory-level pruning, so the exact-entry loop must apply the same
+        // hard-excluded-segment check independently -- otherwise naming the leak exactly would
+        // still seal it even with the rule-entry hole above closed.
+        val scope = ResolvedScope(
+            track = listOf("*.json", "hw3/.provenance/manifest.json"),
+            ignore = emptyList(),
+            attachments = emptyList(),
+        )
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+        assertTrue(result is SealResult.Ok)
+        val entries = readZipEntries((result as SealResult.Ok).bundlePath)
+        assertFalse("a sibling assignment's provenance must never be sealed", entries.containsKey("hw3/.provenance/manifest.json"))
+        assertTrue("the student's own matching file is still sealed", entries.containsKey("hw03.json"))
+        val manifestJson = String(entries["manifest.json"]!!, Charsets.UTF_8)
+        assertFalse(manifestJson.contains("leaked"))
+        assertFalse(
+            "the EXACT entry naming the nested provenance path must never be sealed as status:missing either",
+            manifestJson.contains("\"path\":\"hw3/.provenance/manifest.json\""),
+        )
+    }
+
+    @Test
+    fun `an unreadable walk-discovered file is dropped and disclosed, never missing`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        val secret = ws.resolve("src").resolve("Secret.java")
+        Files.write(secret, "class Secret {}".toByteArray())
+        val perms = Files.getPosixFilePermissions(secret)
+        Files.setPosixFilePermissions(secret, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable file is actually unreadable",
+                runCatching { Files.readAllBytes(secret) }.isFailure,
+            )
+            val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = emptyList())
+            val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+            assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+            val ok = result as SealResult.Ok
+            assertTrue("an unreadable walk-discovered file must be disclosed", ok.unreadableFile)
+
+            val entries = readZipEntries(ok.bundlePath)
+            assertFalse(entries.containsKey("src/Secret.java"))
+            val manifestJson = String(entries["manifest.json"]!!, Charsets.UTF_8)
+            assertFalse(
+                "a walk-discovered file's read failure must never be sealed as status:missing -- a " +
+                    "rule entry asserts nothing about any one file's existence",
+                manifestJson.contains("Secret.java"),
+            )
+        } finally {
+            Files.setPosixFilePermissions(secret, perms)
+        }
+    }
+
+    @Test
+    fun `an unreadable directory is disclosed rather than silently sealing nothing from it`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        val src = Files.createDirectory(ws.resolve("src"))
+        Files.write(src.resolve("Main.java"), "class Main {}".toByteArray())
+        val perms = Files.getPosixFilePermissions(src)
+        Files.setPosixFilePermissions(src, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable dir is actually unreadable",
+                runCatching { Files.newDirectoryStream(src).use { it.iterator().hasNext() } }.isFailure,
+            )
+            val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = emptyList())
+            val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+            assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+            val ok = result as SealResult.Ok
+            assertTrue("an unlistable in-scope directory must be disclosed", ok.unreadableScopeDirectory)
+        } finally {
+            Files.setPosixFilePermissions(src, perms)
+        }
+    }
+
+    /**
+     * The walk classifies dirents lstat-style, so a symlinked file is never `isFile()` and
+     * never reaches the walk's output. Not following it is deliberate (cycles, workspace
+     * escape); the drop must still be disclosed rather than silently vanishing.
+     */
+    @Test
+    fun `an in-scope symlink is dropped and disclosed`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        val real = ws.resolve("src").resolve("real.py")
+        Files.write(real, "print(1)\n".toByteArray())
+        // Points INSIDE the workspace -- an ordinary innocent alias, not an exfiltration
+        // attempt -- so this pins the "dropped and disclosed" fact, not outOfWorkspaceFile.
+        Files.createSymbolicLink(ws.resolve("src").resolve("alias.py"), real)
+
+        val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = emptyList())
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        assertTrue("an in-scope symlink must be disclosed", ok.inScopeSymlinkSkipped)
+        assertFalse(ok.outOfWorkspaceFile)
+
+        val entries = readZipEntries(ok.bundlePath)
+        assertTrue("the real file is still sealed under its own path", entries.containsKey("src/real.py"))
+        assertFalse("the symlink itself is never sealed", entries.containsKey("src/alias.py"))
+    }
+
+    /**
+     * Round 2's actual upstream regression: the exact-entry loop's skip-set has to be built
+     * from what the WALK SAW, not from what it successfully READ -- otherwise a file the walk
+     * sighted but could not reopen falls through to the exact-entry loop and mints a false
+     * `missing` there. chmod pins the "sighted, read failed" state deterministically (a true
+     * listing-then-vanishing race is not reproducible in a unit test).
+     */
+    @Test
+    fun `an EXACT entry the walk sighted but could not read is dropped, never missing`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.createDirectory(ws.resolve("src"))
+        val locked = ws.resolve("src").resolve("Main.java")
+        Files.write(locked, "class Main {}".toByteArray())
+        val perms = Files.getPosixFilePermissions(locked)
+        Files.setPosixFilePermissions(locked, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable file is actually unreadable",
+                runCatching { Files.readAllBytes(locked) }.isFailure,
+            )
+            val scope = ResolvedScope(track = listOf("src/Main.java"), ignore = emptyList(), attachments = emptyList())
+            val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+            assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+            val ok = result as SealResult.Ok
+            assertTrue(ok.unreadableFile)
+            val manifestJson = String(readZipEntries(ok.bundlePath)["manifest.json"]!!, Charsets.UTF_8)
+            assertFalse(
+                "the walk-sighted-but-unreadable exact entry must never be sealed as status:missing",
+                manifestJson.contains("Main.java"),
+            )
+        } finally {
+            Files.setPosixFilePermissions(locked, perms)
+        }
+    }
+
+    /**
+     * A case-insensitive filesystem can make an EXACT entry read successfully while pointing
+     * at the SAME underlying bytes the walk already sealed under a different spelling.
+     */
+    @Test
+    fun `a duplicate exact entry -- same real file, different spelling -- is dropped and disclosed`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-1.slog", "ab".repeat(64), Ed25519.bytesToHex(pub))
+        Files.write(ws.resolve("Data.csv"), "a,b,c\n".toByteArray())
+
+        // "*.csv" walks and seals "Data.csv" (its real on-disk spelling); the EXACT entry
+        // "data.csv" reads the SAME file on a case-insensitive filesystem.
+        val scope = ResolvedScope(track = listOf("*.csv", "data.csv"), ignore = emptyList(), attachments = emptyList())
+        val result = sealBundle(prov, ws, "hw03", "fa26", scope, priv, { "e".repeat(64) })
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val ok = result as SealResult.Ok
+        assumeTrue(
+            "needs a filesystem where toRealPath() case-folds -- verified separately for macOS/APFS",
+            ok.duplicateEntryDropped,
+        )
+
+        val files = manifestJsonOf(readZipEntries(ok.bundlePath))["submission_files"]!!.jsonArray
+        assertEquals("the same bytes must not be sealed twice under two paths", 1, files.size)
+        assertEquals("Data.csv", files.single().jsonObject["path"]!!.jsonPrimitive.content)
     }
 }

@@ -3,16 +3,15 @@ package dev.provenance.recorder.commands
 import dev.provenance.core.BundleManifest
 import dev.provenance.core.ChainCheck
 import dev.provenance.core.ParseResult
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.SessionEntry
 import dev.provenance.core.Sha256
 import dev.provenance.core.SignedBundleManifest
-import dev.provenance.core.SubmissionFileEntry
 import dev.provenance.core.parseEntries
 import dev.provenance.core.signBundleManifest
 import dev.provenance.core.validateChain
-import dev.provenance.recorder.io.WorkspaceFileRead
 import dev.provenance.recorder.io.atomicWriteFile
-import dev.provenance.recorder.io.readWorkspaceFile
+import dev.provenance.recorder.io.collectSubmissionFiles
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -36,7 +35,7 @@ sealed interface SealResult {
         val chainBroken: Boolean,
         val unreadableSession: Boolean,
         /**
-         * Disclosure for `files_under_review` entries the read-and-classify step in
+         * Disclosure for in-scope entries the read-and-classify step in
          * `WorkspaceFileRead.kt` had to DROP rather than seal — see that file for the
          * invariant. Distinct facts on purpose (never collapsed into one "something was
          * dropped" bit): [unreadableFile] means bytes could not be read at all;
@@ -51,6 +50,18 @@ sealed interface SealResult {
         val outOfWorkspaceFile: Boolean = false,
         val nonRegularFile: Boolean = false,
         /**
+         * Disclosure introduced by the workspace WALK (`io/WorkspaceWalk.kt`), needed
+         * because a rule entry (`src/`, `*.java`) is discovered rather than asserted —
+         * see design spec §3.4 and §4. Kept distinct from the three flags above for the
+         * same reason they are distinct from each other: staff need to tell "a whole
+         * directory could not be listed" apart from "one file could not be read", and
+         * "the bytes are sealed under a different spelling" apart from "the bytes are not
+         * in the bundle at all".
+         */
+        val unreadableScopeDirectory: Boolean = false,
+        val duplicateEntryDropped: Boolean = false,
+        val inScopeSymlinkSkipped: Boolean = false,
+        /**
          * Artifacts the ORPHAN GUARD (`BundleOrphanGuard.kt`) had to leave out so the archive
          * stays openable. Defaulted so every existing construction and call site is unaffected;
          * [anythingDropped] is what the seal UI reads.
@@ -62,7 +73,9 @@ sealed interface SealResult {
     ) : SealResult {
         /** True when the bundle is missing something that was on disk. Never silent. */
         val anythingDropped: Boolean
-            get() = orphanedSlog || orphanedMeta || emptySession || orphanedRollingSeal
+            get() = orphanedSlog || orphanedMeta || emptySession || orphanedRollingSeal ||
+                unreadableFile || outOfWorkspaceFile || nonRegularFile ||
+                unreadableScopeDirectory || duplicateEntryDropped || inScopeSymlinkSkipped
 
         /** Human-readable list of what was left out, for the seal notification. */
         fun droppedDescriptions(): List<String> = buildList {
@@ -70,6 +83,12 @@ sealed interface SealResult {
             if (orphanedSlog) add("a session log with no metadata file beside it")
             if (orphanedMeta) add("a session metadata file with no log beside it")
             if (orphanedRollingSeal) add("a signed receipt for a session that is not in the bundle")
+            if (unreadableFile) add("a tracked file that could not be read at seal time")
+            if (outOfWorkspaceFile) add("a tracked path that resolves outside the workspace")
+            if (nonRegularFile) add("a tracked path that names a directory or other non-file item, not a file")
+            if (unreadableScopeDirectory) add("a directory under the workspace that could not be listed")
+            if (duplicateEntryDropped) add("a tracked file already sealed under a different path spelling")
+            if (inScopeSymlinkSkipped) add("a symlink in scope that the seal declined to follow")
         }
     }
 
@@ -111,9 +130,17 @@ fun sealBundle(
     workspaceRoot: Path,
     assignmentId: String,
     semester: String,
-    filesUnderReview: List<String>,
+    scope: ResolvedScope,
     sessionPrivkey: ByteArray,
     computeExtensionHash: () -> String,
+    /**
+     * Whether the LIVE session's expected-content registry reported its cap bit
+     * ([dev.provenance.recorder.state.ExpectedContentRegistry.capHit]). Threaded from
+     * the call site ([dev.provenance.recorder.session.RecorderSessionManager.sealSession])
+     * rather than recomputed here — the registry is a live, in-memory structure that
+     * does not survive a session's end, so this function has no way to reconstruct it.
+     */
+    scopeCapped: Boolean = false,
     outputDir: Path = workspaceRoot,
     now: () -> Instant = Instant::now,
     /** Test seam for the manifest/sig write, alongside the existing now/computeExtensionHash seams. */
@@ -198,42 +225,13 @@ fun sealBundle(
         }
     }
 
-    // Step 3: read reviewed files from disk, through the shared classify-and-drop logic in
-    // WorkspaceFileRead.kt — see that file for why `missing` may only mean genuine absence.
-    val workspaceRootReal = try {
-        workspaceRoot.toRealPath()
-    } catch (e: Throwable) {
-        // The containment check inside readWorkspaceFile compares against the workspace
-        // root's REAL path; if the root itself does not resolve, nothing past this point can
-        // be trusted enough to seal.
-        rethrowIfFatal(e)
-        return SealResult.WriteError("Failed to resolve workspace root $workspaceRoot: ${e.message}")
-    }
-    data class Reviewed(val path: String, val present: Boolean, val sha256: String?, val bytes: ByteArray?)
-    var unreadableFile = false
-    var outOfWorkspaceFile = false
-    var nonRegularFile = false
-    val reviewed = filesUnderReview.mapNotNull { rel ->
-        when (val read = readWorkspaceFile(workspaceRoot, workspaceRootReal, rel, includeBytes = true)) {
-            is WorkspaceFileRead.Present -> Reviewed(rel, true, read.sha256, read.bytes)
-            WorkspaceFileRead.Missing -> Reviewed(rel, false, null, null)
-            WorkspaceFileRead.Unreadable -> {
-                unreadableFile = true
-                null
-            }
-            WorkspaceFileRead.OutOfWorkspace -> {
-                outOfWorkspaceFile = true
-                null
-            }
-            WorkspaceFileRead.NonRegular -> {
-                nonRegularFile = true
-                null
-            }
-        }
-    }
-    val submissionFiles = reviewed.map {
-        if (it.present) SubmissionFileEntry(it.path, "present", it.sha256) else SubmissionFileEntry(it.path, "missing", null)
-    }
+    // Step 3: walk the workspace and assign each file its role, through the shared
+    // collect-and-classify logic in WorkspaceWalk.kt — a rule entry (`src/`, `*.java`)
+    // cannot be enumerated from the manifest, so the file set is DISCOVERED here rather
+    // than read off a list. See that file for why `missing` may only mean genuine
+    // absence, and for the full partition of drop facts.
+    val collected = collectSubmissionFiles(workspaceRoot, scope, includeBytes = true)
+    val submissionFiles = collected.files.map { it.entry }
 
     // Step 4: build the 1.1 manifest.
     val extensionHash = try {
@@ -249,6 +247,7 @@ fun sealBundle(
         extensionHash = extensionHash,
         sessions = sessions,
         submissionFiles = submissionFiles,
+        scopeCapped = scopeCapped,
     )
 
     // Step 5: sign + atomic-write manifest.json (the exact signed bytes) and manifest.sig.
@@ -302,10 +301,10 @@ fun sealBundle(
                 zip.write(bytes)
                 zip.closeEntry()
             }
-            for (r in reviewed) {
-                if (r.present && r.bytes != null) {
-                    zip.putNextEntry(ZipEntry(r.path))
-                    zip.write(r.bytes)
+            for (f in collected.files) {
+                if (f.entry.status == "present" && f.bytes != null) {
+                    zip.putNextEntry(ZipEntry(f.entry.path))
+                    zip.write(f.bytes)
                     zip.closeEntry()
                 }
             }
@@ -320,9 +319,12 @@ fun sealBundle(
         manifestSha256 = manifestSha256,
         chainBroken = chainBroken,
         unreadableSession = unreadableSession,
-        unreadableFile = unreadableFile,
-        outOfWorkspaceFile = outOfWorkspaceFile,
-        nonRegularFile = nonRegularFile,
+        unreadableFile = collected.unreadableFile,
+        outOfWorkspaceFile = collected.outOfWorkspaceFile,
+        nonRegularFile = collected.nonRegularFile,
+        unreadableScopeDirectory = collected.unreadableDirectory,
+        duplicateEntryDropped = collected.duplicateEntryDropped,
+        inScopeSymlinkSkipped = collected.inScopeSymlinkSkipped,
         orphanedSlog = packable.orphanedSlog,
         orphanedMeta = packable.orphanedMeta,
         emptySession = packable.emptySession,

@@ -146,6 +146,10 @@ fun parseRollingManifestFilename(filename: String): RollingManifestFile? {
  *   about to keep growing is finished, and a reader would then read the student's own next
  *   keystroke as an append past a final seal — a manufactured finding against someone who
  *   is still working.
+ * @param scopeCapped Whether THIS session's expected-content registry reported its cap bit
+ *   (see [BundleManifest.scopeCapped]). Additive-optional, **emitted only when true** — see
+ *   [toJsonText]'s `if (scopeCapped) put(...)` idiom, which this function relies on rather
+ *   than duplicates.
  */
 fun buildRollingSessionManifest(
     sessionId: String,
@@ -157,6 +161,7 @@ fun buildRollingSessionManifest(
     extensionHash: String,
     submissionFiles: List<SubmissionFileEntry>,
     isFinal: Boolean = false,
+    scopeCapped: Boolean = false,
 ): BundleManifest {
     require(sessionId.isNotEmpty()) { "a rolling manifest's session_id must be non-empty" }
     return BundleManifest(
@@ -167,5 +172,6 @@ fun buildRollingSessionManifest(
         sessions = listOf(SessionEntry(sessionId, prevSessionId, slogSha256, metaSha256)),
         submissionFiles = submissionFiles,
         isFinal = isFinal,
+        scopeCapped = scopeCapped,
     )
 }

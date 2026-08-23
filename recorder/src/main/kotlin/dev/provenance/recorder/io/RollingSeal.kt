@@ -1,9 +1,9 @@
 package dev.provenance.recorder.io
 
 import dev.provenance.core.BundleManifest
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.Sha256
 import dev.provenance.core.SignedBundleManifest
-import dev.provenance.core.SubmissionFileEntry
 import dev.provenance.core.buildRollingSessionManifest
 import dev.provenance.core.rollingManifestFilenames
 import dev.provenance.core.signBundleManifest
@@ -59,6 +59,27 @@ import java.nio.file.Path
  * comes back as [RollingSealResult.WriteError] (CLAUDE.md: errors are values when expected).
  * Nothing here throws except a [VirtualMachineError], so a checkpoint's sign-and-write cannot
  * be aborted by the seal and the session records on.
+ *
+ * ## Path scope, and the deliberate absence of a drop-disclosure surface
+ *
+ * `submission_files` is resolved the same way the classic seal resolves it — walk the
+ * workspace, assign each discovered path a role, read the ones the scope puts under
+ * review (see [dev.provenance.recorder.io.collectSubmissionFiles], shared by both
+ * seals so their collection logic cannot drift). The same drop facts the classic seal
+ * can produce (an unreadable file, a path outside the workspace, a directory that could
+ * not be listed, a duplicate spelling, a skipped symlink) can happen here too — but
+ * unlike [dev.provenance.recorder.commands.SealResult.Ok], [RollingSealResult] has no
+ * warning surface to carry them on, and this module deliberately does NOT invent one.
+ *
+ * The rolling seal has no user-facing "seal now" action for a notification to attach
+ * to — it runs silently on every checkpoint of a git-submitted assignment, so there is
+ * no moment to show a student anything even if a flag existed. The `missing`-only
+ * invariant (see [WorkspaceFileRead]) holds regardless of whether the drop is
+ * disclosed: a dropped file is never sealed under `status: "missing"` here either, so
+ * the one property that matters for R2 — never manufacturing a false absence claim —
+ * is unaffected by the absent warning surface. What is lost is visibility into WHY a
+ * file is missing from a git-submitted repo's rolling seal; that is a real, accepted
+ * gap, not an oversight, mirroring the upstream VS Code recorder's `writeRollingSeal`.
  */
 sealed interface RollingSealResult {
     data class Written(
@@ -95,10 +116,11 @@ internal fun rollingSha256OfFile(path: Path): String =
  *
  * Steps:
  *   1. Hash the `.slog` and `.slog.meta` as they currently stand on disk.
- *   2. Hash every `files_under_review` entry; a genuinely absent one is recorded
- *      `status: "missing"`, exactly as the classic seal records it. Anything else that
- *      keeps a read from succeeding (unreadable, outside the workspace, not a regular file)
- *      is DROPPED rather than sealed under either status — see `WorkspaceFileRead.kt`.
+ *   2. Walk the workspace and resolve every in-scope file's on-disk state, through the
+ *      same shared collection logic ([collectSubmissionFiles]) the classic seal uses —
+ *      see that file for why `missing` may only mean genuine absence, and see this
+ *      module's "Path scope" doc section above for why the drop facts it can also
+ *      report go undisclosed here.
  *   3. Build a 1.2 manifest covering this one session.
  *   4. Canonicalize + sign with this session's own private key, through the same
  *      [signBundleManifest] the classic seal uses — so both shapes are produced identically.
@@ -108,6 +130,7 @@ internal fun rollingSha256OfFile(path: Path): String =
  * write failure is a wrong diagnosis, and continuing after one is unsound).
  *
  * @param isFinal see [buildRollingSessionManifest]; only the teardown roll may pass true.
+ * @param scopeCapped see [buildRollingSessionManifest]; THIS session's live cap bit.
  */
 fun writeRollingSeal(
     provenanceDir: Path,
@@ -117,10 +140,11 @@ fun writeRollingSeal(
     workspaceRoot: Path,
     assignmentId: String,
     semester: String,
-    filesUnderReview: List<String>,
+    scope: ResolvedScope,
     sessionPrivkey: ByteArray,
     extensionHash: String,
     isFinal: Boolean = false,
+    scopeCapped: Boolean = false,
     /** Test seam for the file digests, so a test can drive the real writer with fixed hashes. */
     sha256OfFile: (Path) -> String = ::rollingSha256OfFile,
     /** Test seam for the signing step; production uses the real [signBundleManifest]. */
@@ -133,29 +157,12 @@ fun writeRollingSeal(
         val slogSha256 = sha256OfFile(slogPath)
         val metaSha256 = sha256OfFile(slogPath.resolveSibling("${slogPath.fileName}.meta"))
 
-        // Step 2: on-disk state of the reviewed files. An ordered loop, deliberately: the
-        // manifest's submission_files order must be stable across checkpoints, otherwise the
-        // canonical bytes churn for no reason.
-        //
-        // The workspace root's real path is resolved once per roll (never per file) and fed
-        // into the shared classify-and-drop logic in WorkspaceFileRead.kt, which SealBundle.kt
-        // also goes through — see that file for why `missing` may only mean genuine absence.
-        // A failure to resolve the root itself falls through to the enclosing catch below,
-        // which is exactly the existing "failure is never fatal, comes back as WriteError"
-        // policy this function already has.
-        val workspaceRootReal = workspaceRoot.toRealPath()
-        val submissionFiles = ArrayList<SubmissionFileEntry>(filesUnderReview.size)
-        for (rel in filesUnderReview) {
-            when (val read = readWorkspaceFile(workspaceRoot, workspaceRootReal, rel, includeBytes = false)) {
-                is WorkspaceFileRead.Present -> submissionFiles.add(SubmissionFileEntry(rel, "present", read.sha256))
-                WorkspaceFileRead.Missing -> submissionFiles.add(SubmissionFileEntry(rel, "missing", null))
-                // Dropped, not sealed as either status. No disclosure surface on the rolling
-                // seal's result type today (only the classic seal's SealResult.Ok carries
-                // the unreadable/outOfWorkspace/nonRegular booleans); the invariant that
-                // matters here — this path can never mint a false `missing` — holds either way.
-                WorkspaceFileRead.Unreadable, WorkspaceFileRead.OutOfWorkspace, WorkspaceFileRead.NonRegular -> Unit
-            }
-        }
+        // Step 2: walk the workspace and resolve every in-scope file — see
+        // WorkspaceWalk.kt's collectSubmissionFiles for the full three-part shape (walk +
+        // role assignment, the exact-entry loop, symlink disclosure) shared with the
+        // classic seal. `includeBytes = false`: a rolling seal only ever needs the hash.
+        val submissionFiles = collectSubmissionFiles(workspaceRoot, scope, includeBytes = false)
+            .files.map { it.entry }
 
         // Step 3: exactly one session, non-null id, matching the filename built below from
         // the same `sessionId`.
@@ -169,6 +176,7 @@ fun writeRollingSeal(
             extensionHash = extensionHash,
             submissionFiles = submissionFiles,
             isFinal = isFinal,
+            scopeCapped = scopeCapped,
         )
 
         // Step 4: sign with THIS session's key.

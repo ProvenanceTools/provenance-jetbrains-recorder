@@ -4,6 +4,7 @@ import dev.provenance.core.BundleManifest
 import dev.provenance.core.Ed25519
 import dev.provenance.core.Envelope
 import dev.provenance.core.GENESIS_PREV_HASH
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.RollingManifestPart
 import dev.provenance.core.Sha256
 import dev.provenance.core.SignedBundleManifest
@@ -77,6 +78,7 @@ class RollingSealTest {
     private fun roll(
         isFinal: Boolean = false,
         filesUnderReview: List<String> = listOf("hw.py", "missing.py"),
+        scopeCapped: Boolean = false,
         signManifest: ((BundleManifest, ByteArray) -> SignedBundleManifest)? = null,
         writeFiles: ((List<Pair<Path, String>>) -> Unit)? = null,
     ): RollingSealResult = writeRollingSeal(
@@ -87,12 +89,33 @@ class RollingSealTest {
         workspaceRoot = wsRoot,
         assignmentId = "hw03",
         semester = "fa26",
-        filesUnderReview = filesUnderReview,
+        scope = ResolvedScope(filesUnderReview, emptyList(), emptyList()),
         sessionPrivkey = priv,
         extensionHash = "1".repeat(64),
         isFinal = isFinal,
+        scopeCapped = scopeCapped,
         signManifest = signManifest ?: ::signBundleManifest,
         writeFiles = writeFiles ?: ::atomicWriteFilePair,
+    )
+
+    /** Full-scope variant of [roll], for tests exercising rule entries (`ignore`/`attachments`). */
+    private fun rollScope(
+        scope: ResolvedScope,
+        isFinal: Boolean = false,
+        scopeCapped: Boolean = false,
+    ): RollingSealResult = writeRollingSeal(
+        provenanceDir = provDir,
+        sessionId = sessionId,
+        prevSessionId = null,
+        slogPath = slogPath,
+        workspaceRoot = wsRoot,
+        assignmentId = "hw03",
+        semester = "fa26",
+        scope = scope,
+        sessionPrivkey = priv,
+        extensionHash = "1".repeat(64),
+        isFinal = isFinal,
+        scopeCapped = scopeCapped,
     )
 
     private fun manifestJson(): kotlinx.serialization.json.JsonObject =
@@ -421,6 +444,130 @@ class RollingSealTest {
     fun `a VirtualMachineError is not swallowed`() {
         setUpWorkspace()
         roll(writeFiles = { throw OutOfMemoryError("heap") })
+    }
+
+    // -----------------------------------------------------------------------
+    // Path scope at roll time -- mirrors SealBundleTest's block, minus the disclosure-flag
+    // assertions: RollingSealResult deliberately has no warning surface (see this module's
+    // "Path scope" doc section). The `missing`-only invariant and the walk still hold.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `walks and rolls every rule-matched file with its role`() {
+        setUpWorkspace()
+        Files.createDirectory(wsRoot.resolve("src"))
+        Files.write(wsRoot.resolve("src").resolve("Main.java"), "class Main {}".toByteArray())
+        Files.write(wsRoot.resolve("readme.md"), "notes".toByteArray())
+
+        val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = listOf("readme.md"))
+        assertTrue(rollScope(scope) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        val byPath = files.associate { it.jsonObject["path"]!!.jsonPrimitive.content to it.jsonObject }
+        assertEquals("reviewed", byPath.getValue("src/Main.java")["role"]!!.jsonPrimitive.content)
+        assertEquals("attachment", byPath.getValue("readme.md")["role"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an absent EXACT entry is missing, a rule entry says nothing about files that do not exist`() {
+        setUpWorkspace()
+        Files.createDirectory(wsRoot.resolve("src"))
+        Files.write(wsRoot.resolve("src").resolve("Main.java"), "class Main {}".toByteArray())
+
+        val scope = ResolvedScope(track = listOf("src/", "ghost.py"), ignore = emptyList(), attachments = emptyList())
+        assertTrue(rollScope(scope) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertEquals(2, files.size)
+        val byPath = files.associate { it.jsonObject["path"]!!.jsonPrimitive.content to it.jsonObject }
+        assertEquals("present", byPath.getValue("src/Main.java")["status"]!!.jsonPrimitive.content)
+        assertEquals("missing", byPath.getValue("ghost.py")["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `scope_capped is present when true, and absent from the serialized JSON entirely when false`() {
+        setUpWorkspace()
+        val cappedWritten = rollScope(ResolvedScope(listOf("hw.py"), emptyList(), emptyList()), scopeCapped = true) as RollingSealResult.Written
+        assertTrue("scope_capped must be present and true", cappedWritten.canonicalJson.contains("\"scope_capped\":true"))
+
+        val uncappedWritten = rollScope(ResolvedScope(listOf("hw.py"), emptyList(), emptyList()), scopeCapped = false) as RollingSealResult.Written
+        assertFalse(
+            "scope_capped must be OMITTED entirely, not written as false",
+            uncappedWritten.canonicalJson.contains("scope_capped"),
+        )
+    }
+
+    @Test
+    fun `hard-exclusion pruning protects a nested sibling assignment's provenance directory`() {
+        setUpWorkspace()
+        val siblingProv = Files.createDirectories(wsRoot.resolve("hw3").resolve(".provenance"))
+        Files.write(siblingProv.resolve("manifest.json"), "{\"leaked\":true}".toByteArray())
+        Files.write(wsRoot.resolve("hw03.json"), "{\"mine\":true}".toByteArray())
+
+        // The EXACT entry reads directly by string, bypassing the walk's own pruning -- the
+        // exact-entry loop must apply the same hard-excluded-segment check itself.
+        val scope = ResolvedScope(
+            track = listOf("*.json", "hw3/.provenance/manifest.json"),
+            ignore = emptyList(),
+            attachments = emptyList(),
+        )
+        assertTrue(rollScope(scope) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertFalse(
+            "a sibling assignment's provenance must never be rolled into this seal, by rule OR by exact entry",
+            files.any { it.jsonObject["path"]!!.jsonPrimitive.content.contains(".provenance") },
+        )
+        assertTrue(files.any { it.jsonObject["path"]!!.jsonPrimitive.content == "hw03.json" })
+    }
+
+    @Test
+    fun `an unreadable walk-discovered file is dropped, never missing`() {
+        setUpWorkspace()
+        Files.createDirectory(wsRoot.resolve("src"))
+        val secret = wsRoot.resolve("src").resolve("Secret.java")
+        Files.write(secret, "class Secret {}".toByteArray())
+        val perms = Files.getPosixFilePermissions(secret)
+        Files.setPosixFilePermissions(secret, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable file is actually unreadable",
+                runCatching { Files.readAllBytes(secret) }.isFailure,
+            )
+            val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = emptyList())
+            assertTrue(rollScope(scope) is RollingSealResult.Written)
+            val files = manifestJson()["submission_files"]!!.jsonArray
+            assertTrue(
+                "an unreadable walk-discovered file must never be sealed under any status",
+                files.none { it.jsonObject["path"]!!.jsonPrimitive.content == "src/Secret.java" },
+            )
+        } finally {
+            Files.setPosixFilePermissions(secret, perms)
+        }
+    }
+
+    @Test
+    fun `an in-scope symlink is dropped, not sealed under any path`() {
+        setUpWorkspace()
+        Files.createDirectory(wsRoot.resolve("src"))
+        val real = wsRoot.resolve("src").resolve("real.py")
+        Files.write(real, "print(1)\n".toByteArray())
+        Files.createSymbolicLink(wsRoot.resolve("src").resolve("alias.py"), real)
+
+        val scope = ResolvedScope(track = listOf("src/"), ignore = emptyList(), attachments = emptyList())
+        assertTrue(rollScope(scope) is RollingSealResult.Written)
+        val paths = manifestJson()["submission_files"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }
+        assertTrue(paths.contains("src/real.py"))
+        assertFalse(paths.contains("src/alias.py"))
+    }
+
+    @Test
+    fun `a duplicate exact entry -- same real file, different spelling -- is not double-sealed`() {
+        setUpWorkspace()
+        Files.write(wsRoot.resolve("Data.csv"), "a,b,c\n".toByteArray())
+
+        val scope = ResolvedScope(track = listOf("*.csv", "data.csv"), ignore = emptyList(), attachments = emptyList())
+        assertTrue(rollScope(scope) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertEquals("the same bytes must not be sealed twice under two paths", 1, files.size)
+        assertEquals("Data.csv", files.single().jsonObject["path"]!!.jsonPrimitive.content)
     }
 
     private fun listing(): Set<String> =
