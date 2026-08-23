@@ -189,6 +189,8 @@ class CrossImplementationBundleTest : BasePlatformTestCase() {
             sig = "",
             formatVersion = "2.0",
             courseId = COURSE_ID,
+            ignore = emptyList(),
+            attachments = emptyList(),
             collaboration = ManifestCollaboration.SOLO,
             submission = submission,
             scope = if (submission == ManifestSubmission.GIT) {

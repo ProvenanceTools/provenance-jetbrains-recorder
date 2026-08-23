@@ -102,6 +102,8 @@ class ManifestActivationTest {
             sig = "",
             formatVersion = "2.0",
             courseId = courseId,
+            ignore = emptyList(),
+            attachments = emptyList(),
             collaboration = ManifestCollaboration.SOLO,
             submission = ManifestSubmission.BUNDLE,
             scope = ManifestScope.DIRECTORY,
@@ -116,6 +118,8 @@ class ManifestActivationTest {
             put("semester", "fa26")
             put("issued_at", issuedAt)
             putJsonArray("files_under_review") { add("hw03.py") }
+            putJsonArray("ignore") {}
+            putJsonArray("attachments") {}
             put("collaboration", "solo")
             put("submission", "bundle")
             put("scope", "directory")

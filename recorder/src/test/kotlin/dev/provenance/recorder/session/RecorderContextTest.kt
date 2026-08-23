@@ -102,6 +102,8 @@ class RecorderContextTest {
         sig = "ab".repeat(64),
         formatVersion = "2.0",
         courseId = "berkeley-cs61b",
+        ignore = emptyList(),
+        attachments = emptyList(),
         collaboration = ManifestCollaboration.SOLO,
         submission = ManifestSubmission.BUNDLE,
         scope = ManifestScope.DIRECTORY,
