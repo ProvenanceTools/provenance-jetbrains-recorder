@@ -369,9 +369,23 @@ class SealBundleTest {
     // `manifest-sess-1.json` is not a rolling manifest at all and every assertion about one
     // would pass vacuously.
 
-    /** Write a rolling seal pair for [sessionId]. Only the NAMES matter to the guard. */
-    private fun writeRollingSeal(provDir: Path, sessionId: String) {
-        Files.writeString(provDir.resolve("manifest-$sessionId.json"), """{"format_version":"1.2"}""")
+    /**
+     * Write a rolling seal pair for [sessionId]. Only the NAMES matter to the orphan guard;
+     * [scopeCapped] additionally exercises `readRolledScopeCapped`'s content read.
+     */
+    private fun writeRollingSeal(provDir: Path, sessionId: String, scopeCapped: Boolean = false) {
+        val json = if (scopeCapped) {
+            """{"format_version":"1.2","scope_capped":true}"""
+        } else {
+            """{"format_version":"1.2"}"""
+        }
+        Files.writeString(provDir.resolve("manifest-$sessionId.json"), json)
+        Files.writeString(provDir.resolve("manifest-$sessionId.sig"), "00".repeat(64))
+    }
+
+    /** Write a rolling seal `.json` that is not valid JSON at all, with its `.sig` beside it. */
+    private fun writeMalformedRollingSeal(provDir: Path, sessionId: String) {
+        Files.writeString(provDir.resolve("manifest-$sessionId.json"), "not json at all")
         Files.writeString(provDir.resolve("manifest-$sessionId.sig"), "00".repeat(64))
     }
 
@@ -819,6 +833,108 @@ class SealBundleTest {
         assertFalse(
             "scope_capped must be OMITTED entirely, not written as false -- the canonical bytes are the signed message",
             uncappedJson.contains("scope_capped"),
+        )
+    }
+
+    // --- scope_capped is a WHOLE-BUNDLE fact, recovered from every packed session's own
+    // rolling seal -- not just the live session's bit ------------------------------------------
+    //
+    // `BundleManifest.scope_capped` is documented as "ANY session's recorder reported its
+    // expected-content registry filled up". A classic bundle packs every `.slog` in
+    // `.provenance/`, including sessions from editor runs that ended days ago, whose in-memory
+    // registries no longer exist. Passing the LIVE session's bit straight through therefore
+    // seals the key ABSENT whenever an EARLIER session capped and the current one did not --
+    // and absence is exactly what lets the analyzer's most confident tier answer "in scope, no
+    // activity" about a student whose recorder silently stopped watching a file. Mirrors the VS
+    // Code recorder's `readRolledScopeCapped` suite in `commands/seal.test.ts`.
+
+    @Test
+    fun `a packed prior session's rolling seal reporting capped makes the whole bundle scope_capped, even though the live session's registry did not cap`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        val priorId = "11111111-1111-4111-8111-111111111111"
+        val liveId = "22222222-2222-4222-8222-222222222222"
+        writeSession(prov, "session-$priorId.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = priorId)
+        writeSession(prov, "session-$liveId.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = liveId)
+        // The prior session's editor run ended; its in-memory registry is long gone. Its
+        // rolling seal is the only durable record of its cap bit.
+        writeRollingSeal(prov, priorId, scopeCapped = true)
+
+        // The LIVE session -- the only one sealBundle's `scopeCapped` argument can see directly
+        // -- did NOT cap.
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = false)
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val manifestJson = String(
+            readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertTrue(
+            "THE REGRESSION TEST for the false-accusation bug: scope_capped must OR across every " +
+                "packed session's own rolling seal, not just the live session's bit -- an absent " +
+                "key here is a false 'in scope, no activity' claim about a student whose recorder " +
+                "silently stopped watching a file",
+            manifestJson.contains("\"scope_capped\":true"),
+        )
+    }
+
+    @Test
+    fun `a rolling seal for a session this bundle does not pack is ignored for scope_capped`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        // GHOST_ID has no .slog in this bundle -- its rolling seal describes a recording this
+        // bundle makes no claim about, matching the orphan guard's own rule at the zip step.
+        writeRollingSeal(prov, GHOST_ID, scopeCapped = true)
+
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = false)
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val manifestJson = String(
+            readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertFalse(
+            "a rolling seal naming a session this bundle does not pack must not contribute its bit",
+            manifestJson.contains("scope_capped"),
+        )
+    }
+
+    @Test
+    fun `an unreadable or malformed rolling seal never mints scope_capped true`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        writeMalformedRollingSeal(prov, LIVE_ID)
+
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = false)
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val manifestJson = String(
+            readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertFalse(
+            "a malformed rolling seal must never mint a true report -- absent stays absent, " +
+                "the same as a session with no rolling seal at all",
+            manifestJson.contains("scope_capped"),
+        )
+    }
+
+    @Test
+    fun `nothing capped anywhere -- live or any packed session's rolling seal -- omits scope_capped entirely`() {
+        val ws = tmp.root.toPath()
+        val prov = Files.createDirectory(ws.resolve(".provenance"))
+        writeSession(prov, "session-$LIVE_ID.slog", "ab".repeat(64), Ed25519.bytesToHex(pub), sessionId = LIVE_ID)
+        writeRollingSeal(prov, LIVE_ID, scopeCapped = false)
+
+        val result = sealBundle(prov, ws, "hw03", "fa26", exact(), priv, { "e".repeat(64) }, scopeCapped = false)
+        assertTrue("expected a sealed bundle, got $result", result is SealResult.Ok)
+        val manifestJson = String(
+            readZipEntries((result as SealResult.Ok).bundlePath)["manifest.json"]!!,
+            Charsets.UTF_8,
+        )
+        assertFalse(
+            "scope_capped must be OMITTED entirely when nothing capped anywhere -- the canonical " +
+                "bytes are the signed message",
+            manifestJson.contains("scope_capped"),
         )
     }
 

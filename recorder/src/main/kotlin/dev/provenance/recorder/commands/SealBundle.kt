@@ -4,14 +4,19 @@ import dev.provenance.core.BundleManifest
 import dev.provenance.core.ChainCheck
 import dev.provenance.core.ParseResult
 import dev.provenance.core.ResolvedScope
+import dev.provenance.core.RollingManifestPart
 import dev.provenance.core.SessionEntry
 import dev.provenance.core.Sha256
 import dev.provenance.core.SignedBundleManifest
 import dev.provenance.core.parseEntries
+import dev.provenance.core.parseRollingManifestFilename
 import dev.provenance.core.signBundleManifest
 import dev.provenance.core.validateChain
 import dev.provenance.recorder.io.atomicWriteFile
 import dev.provenance.recorder.io.collectSubmissionFiles
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -125,6 +130,66 @@ internal fun rethrowIfFatal(t: Throwable) {
 /** ISO timestamp with colons replaced by dashes, for use in filenames. */
 private fun filenameTimestamp(instant: Instant): String = instant.toString().replace(":", "-")
 
+/**
+ * Did ANY session this bundle carries report a capped expected-content registry?
+ *
+ * [BundleManifest.scopeCapped] is documented as a WHOLE-BUNDLE fact — "ANY session's
+ * recorder reported…" — but the LIVE session's `capHit()` answers only for itself. A classic
+ * bundle packs every `.slog` in `.provenance/`, including sessions from editor runs that
+ * ended days ago and whose registries no longer exist. A student whose session 1 capped and
+ * whose session 3 (the live one) did not would therefore seal the key ABSENT, and absence is
+ * what lets the analyzer's most confident tier answer "in scope, no activity" with no
+ * recorded activity — exactly the inference this field exists to block, landing on a student
+ * who did nothing wrong.
+ *
+ * The durable per-session record of that bit is each session's own rolling seal, which every
+ * session writes (at session start, at checkpoints, and once more at teardown) and which
+ * carries `scope_capped` inside its signed bytes. Only seals for sessions the bundle
+ * actually PACKS are consulted, matching the orphan guard at the zip step: a seal naming a
+ * session that is not here describes a recording this bundle makes no claim about.
+ *
+ * A session with no rolling seal at all (a roll that failed, a `.provenance/` a `git
+ * checkout` swept) contributes nothing — an ABSENT report, not a `false` one. That is the
+ * same "absent means this recorder does not report" contract the field itself carries, and
+ * it is the honest answer: we cannot recover a bit nobody wrote down.
+ *
+ * Reads only; never trusts the seal for anything but this one boolean, and never mints
+ * `true` from a malformed or unreadable file. Mirrors the VS Code recorder's
+ * `readRolledScopeCapped` in `commands/seal.ts`.
+ */
+internal fun readRolledScopeCapped(
+    provenanceDir: Path,
+    dirEntries: Collection<String>,
+    packedSessionIds: Set<String>,
+): Boolean {
+    for (filename in dirEntries) {
+        val rolling = parseRollingManifestFilename(filename) ?: continue
+        if (rolling.part != RollingManifestPart.JSON) continue
+        if (!packedSessionIds.contains(rolling.sessionId)) continue
+
+        val text = try {
+            String(Files.readAllBytes(provenanceDir.resolve(filename)), Charsets.UTF_8)
+        } catch (e: Throwable) {
+            // Unreadable: no report, not a `false` report.
+            rethrowIfFatal(e)
+            continue
+        }
+        val parsed = try {
+            Json.parseToJsonElement(text)
+        } catch (e: Throwable) {
+            // Unparseable: same as unreadable — no report.
+            rethrowIfFatal(e)
+            continue
+        }
+        val obj = parsed as? JsonObject ?: continue
+        val elem = obj["scope_capped"] as? JsonPrimitive ?: continue
+        // Strictly the boolean `true`, never the string "true" — mirrors the TS reader's
+        // `=== true`, and never mints a report from a malformed value.
+        if (!elem.isString && elem.content == "true") return true
+    }
+    return false
+}
+
 fun sealBundle(
     provenanceDir: Path,
     workspaceRoot: Path,
@@ -139,6 +204,10 @@ fun sealBundle(
      * the call site ([dev.provenance.recorder.session.RecorderSessionManager.sealSession])
      * rather than recomputed here — the registry is a live, in-memory structure that
      * does not survive a session's end, so this function has no way to reconstruct it.
+     *
+     * This is only ONE session's answer, not the bundle's: [BundleManifest.scopeCapped] is a
+     * whole-bundle fact, so [sealBundle] ORs this with every packed session's own rolling
+     * seal via [readRolledScopeCapped] before signing.
      */
     scopeCapped: Boolean = false,
     outputDir: Path = workspaceRoot,
@@ -240,6 +309,10 @@ fun sealBundle(
         rethrowIfFatal(e)
         return SealResult.WriteError("Failed to compute extension hash: ${e.message}")
     }
+    // The live session's registry answers for THIS session only; every other session this
+    // bundle packs answers through its own rolling seal. See readRolledScopeCapped.
+    val bundleScopeCapped = scopeCapped || readRolledScopeCapped(provenanceDir, dirEntryNames, packedSessionIds)
+
     val manifest = BundleManifest(
         formatVersion = "1.1",
         assignmentId = assignmentId,
@@ -247,7 +320,7 @@ fun sealBundle(
         extensionHash = extensionHash,
         sessions = sessions,
         submissionFiles = submissionFiles,
-        scopeCapped = scopeCapped,
+        scopeCapped = bundleScopeCapped,
     )
 
     // Step 5: sign + atomic-write manifest.json (the exact signed bytes) and manifest.sig.
