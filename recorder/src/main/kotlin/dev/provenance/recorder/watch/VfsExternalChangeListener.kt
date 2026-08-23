@@ -8,6 +8,7 @@ import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import dev.provenance.core.FsExternalChangePayload
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -41,6 +42,14 @@ class VfsExternalChangeListener(
     private val isRecentEditorChange: (String) -> Boolean = { false },
     private val readDisk: (VirtualFile) -> String = ::readVfsText,
     private val dispatch: (() -> Unit) -> Unit = DEFAULT_DISPATCH,
+    /**
+     * Confirms a path is really gone before a delete is emitted (see
+     * [ExternalChangeEngine.onExternalDelete]). `notExists`, not `!exists`: the two are not
+     * complements, and a path whose status cannot be determined must NOT be reported deleted.
+     * Injectable for the same reason [readDisk] is — so a plain JUnit test can pin the
+     * behaviour without a filesystem.
+     */
+    private val confirmedAbsent: (String) -> Boolean = { rel -> Files.notExists(workspaceRoot.resolve(rel)) },
 ) : BulkFileListener {
 
     private enum class Kind { MODIFY, CREATE, DELETE }
@@ -80,7 +89,9 @@ class VfsExternalChangeListener(
                 val content = runCatching { readDisk(item.file!!) }.getOrNull() ?: return
                 engine.onExternalCreate(item.relPath, content)?.let(emit)
             }
-            Kind.DELETE -> engine.onExternalDelete(item.relPath)?.let(emit)
+            // The VFS event kind is a claim; absence on disk is the observation. Every
+            // emitted fs.external_change now reflects observed state on all three paths.
+            Kind.DELETE -> engine.onExternalDelete(item.relPath, confirmedAbsent(item.relPath))?.let(emit)
         }
     }
 

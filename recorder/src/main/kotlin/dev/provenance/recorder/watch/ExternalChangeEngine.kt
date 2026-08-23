@@ -128,9 +128,36 @@ class ExternalChangeEngine(val registry: ExpectedContentRegistry) {
      * A watched file was deleted from disk. Emits operation = "delete" with old_hash from
      * the registry (or "" if never opened) and new_hash = "". Drops the registry entry so
      * a re-create starts clean. Mirrors fs-watcher.ts handleDelete.
+     *
+     * ## Why [confirmedAbsent] is required, and not an optional check
+     *
+     * The other two external paths already derive their verdict from OBSERVED STATE: a
+     * mislabelled create self-corrects to a modify by consulting the registry baseline, and
+     * a modify with no baseline returns null rather than inventing one. Both fail toward
+     * SILENCE. Delete was the one path that failed toward ASSERTION — it took the platform's
+     * event kind on trust and emitted unconditionally.
+     *
+     * That asymmetry was the defect, more than any specific platform behaviour. A missing
+     * fact degrades the record; a WRONG fact enters a hash-chained, signed log as an
+     * affirmative claim about a student and survives into adjudication. "This file was
+     * deleted" about a file sitting on disk is exactly that claim.
+     *
+     * Path scope is why this moved now rather than later: before it, [ExpectedContentRegistry]
+     * membership covered only exactly-named files, so a spurious delete needed an event on a
+     * specific declared path. A folder rule means any file under `src/` can produce one.
+     *
+     * The parameter is REQUIRED rather than defaulted so a future caller cannot reintroduce
+     * the unverified path by omission — the signature asks the question. The engine stays
+     * pure (no I/O, no platform types, per this class's contract): the caller observes, this
+     * decides. When absence cannot be CONFIRMED — an unreadable parent directory leaves both
+     * `exists` and `notExists` false — the caller passes false and nothing is emitted, which
+     * is the same fail-toward-silence direction the other two paths already take.
      */
-    fun onExternalDelete(relativePath: String): FsExternalChangePayload? {
+    fun onExternalDelete(relativePath: String, confirmedAbsent: Boolean): FsExternalChangePayload? {
         if (!registry.isWatched(relativePath)) return null
+        // Observed state, never the claimed event kind. The registry entry is deliberately
+        // NOT dropped here: the file is still on disk, so its baseline is still correct.
+        if (!confirmedAbsent) return null
         val expected = registry.get(relativePath)
         if (expected == null) {
             return FsExternalChangePayload(
