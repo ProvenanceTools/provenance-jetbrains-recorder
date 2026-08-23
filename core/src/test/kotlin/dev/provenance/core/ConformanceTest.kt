@@ -157,6 +157,8 @@ class ConformanceTest {
             sig = str("sig") ?: "",
             formatVersion = str("format_version"),
             courseId = str("course_id"),
+            ignore = (o["ignore"] as? JsonArray)?.map { it.jsonPrimitive.content },
+            attachments = (o["attachments"] as? JsonArray)?.map { it.jsonPrimitive.content },
             collaboration = str("collaboration")?.let { ManifestCollaboration.fromWire(it) },
             submission = str("submission")?.let { ManifestSubmission.fromWire(it) },
             scope = str("scope")?.let { ManifestScope.fromWire(it) },
@@ -2541,6 +2543,63 @@ class ConformanceTest {
             assertEquals(ManifestSubmission.BUNDLE, parsed.submission)
             assertEquals(ManifestScope.DIRECTORY, parsed.scope)
             assertEquals(DEFAULT_CAPTURE_POLICY, resolveCapturePolicy(parsed.policy))
+            assertEquals(v["scope_lists"]!!.jsonObject["ignore"]!!.jsonArray.map { it.jsonPrimitive.content }, parsed.ignore)
+            assertEquals(
+                v["scope_lists"]!!.jsonObject["attachments"]!!.jsonArray.map { it.jsonPrimitive.content },
+                parsed.attachments,
+            )
+        }
+
+        /**
+         * `scope_lists` deliberately overlaps: `src/Scratch.java` is matched by the
+         * REVIEWED `src/` prefix AND by the REVIEWED `*.java` suffix, and is still
+         * IGNORED, because `ignore` outranks `files_under_review` in the precedence
+         * chain (design spec §3.4). A resolver that resolved this path to anything
+         * but `ignored` has its precedence order wrong.
+         */
+        @Test
+        fun `scope_lists precedence resolves the overlap to ignored`() {
+            val lists = v["scope_lists"]!!.jsonObject
+            val scope = ResolvedScope(
+                track = lists["files_under_review"]!!.jsonArray.map { it.jsonPrimitive.content },
+                ignore = lists["ignore"]!!.jsonArray.map { it.jsonPrimitive.content },
+                attachments = lists["attachments"]!!.jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertTrue("src/" in scope.track && "*.java" in scope.track)
+            assertTrue("src/Scratch.java" in scope.ignore)
+            assertEquals(PathRole.IGNORED, resolvePathRole("src/Scratch.java", scope))
+        }
+
+        /**
+         * MANDATORY. `ignore` and `attachments` are REQUIRED at 2.0, and every
+         * entry in all three lists must satisfy [validateScopeEntry]. Each of these
+         * five cases must fail to parse; the sixth assertion below is a
+         * name-completeness guard so a truncated fixture fails loudly rather than
+         * silently shrinking the reachable test space.
+         */
+        @Test
+        fun `scope_rejects cases all fail to parse`() {
+            val cases = v["scope_rejects"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val name = o["name"]!!.jsonPrimitive.content
+                val parsed = parseManifest(o["manifest_json"]!!.jsonPrimitive.content)
+                assertInstanceOf(ManifestParse.Err::class.java, parsed, name)
+                assertFalse(o["expected"]!!.jsonObject["parses"]!!.jsonPrimitive.boolean, name)
+            }
+            val names = cases.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet()
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "missing_ignore",
+                        "missing_attachments",
+                        "ignore_entry_is_a_glob",
+                        "attachment_escapes_the_assignment",
+                        "ignore_is_not_an_array",
+                    ),
+                ),
+                "manifest-v2.json lost a scope_rejects case",
+            )
         }
 
         /**
@@ -2690,7 +2749,10 @@ class ConformanceTest {
             ).manifest
 
             val emitted = original.toJsonObject()
-            for (key in listOf("course_id", "collaboration", "submission", "scope", "policy", "course_cert")) {
+            for (key in listOf(
+                "course_id", "ignore", "attachments", "collaboration", "submission", "scope", "policy",
+                "course_cert",
+            )) {
                 assertFalse(key in emitted, "a 1.x manifest must not gain $key")
             }
             val reparsed = assertInstanceOf(

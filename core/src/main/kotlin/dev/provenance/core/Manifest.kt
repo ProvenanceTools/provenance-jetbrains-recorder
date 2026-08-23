@@ -26,7 +26,8 @@ import kotlinx.serialization.json.putJsonArray
  * course key. Signed payload:
  *
  *   JCS({format_version, course_id, assignment_id, semester, issued_at,
- *        files_under_review, collaboration, submission, scope, policy})
+ *        files_under_review, ignore, attachments, collaboration, submission,
+ *        scope, policy})
  *
  * `buildSignedPayload` excludes `sig` in both versions, and excludes `course_cert`
  * in 2.0 — the course does not sign its own certificate.
@@ -88,6 +89,28 @@ data class Manifest(
      * OUTSIDE the course-signed payload.
      */
     val courseCert: CourseCert? = null,
+    /**
+     * Paths the recorder must NOT capture at all (design spec §3, §3.4). Required
+     * at 2.0 — see [parseManifestValue].
+     *
+     * Inside the signed payload for the same reason `policy` is: a professor can
+     * narrow capture, a student cannot. An entry here means no events are
+     * produced for those paths — INCLUDING exculpatory ones.
+     *
+     * Nullable so 1.x manifests, which have no such list, stay representable.
+     * Use [scopeFromManifest] rather than reading this directly.
+     */
+    val ignore: List<String>? = null,
+    /**
+     * Paths sealed into the bundle and hashed, but never captured (design spec
+     * §3). Required at 2.0 — see [parseManifestValue].
+     *
+     * An attachment has no event provenance by definition.
+     *
+     * Nullable so 1.x manifests, which have no such list, stay representable.
+     * Use [scopeFromManifest] rather than reading this directly.
+     */
+    val attachments: List<String>? = null,
 )
 
 /** Whether the assignment is worked on alone or by a group (program spec §3). */
@@ -260,6 +283,12 @@ internal fun buildSignedPayload(m: Manifest): ByteArray {
             putJsonArray("files_under_review") {
                 for (f in m.filesUnderReview) add(JsonPrimitive(f))
             }
+            m.ignore?.let { list ->
+                putJsonArray("ignore") { for (e in list) add(JsonPrimitive(e)) }
+            }
+            m.attachments?.let { list ->
+                putJsonArray("attachments") { for (e in list) add(JsonPrimitive(e)) }
+            }
             m.collaboration?.let { put("collaboration", it.wire) }
             m.submission?.let { put("submission", it.wire) }
             m.scope?.let { put("scope", it.wire) }
@@ -335,6 +364,45 @@ private fun validateSignedSubtree(value: JsonElement, path: String): String? {
 }
 
 /**
+ * Validate one already-typed scope list — every entry through [validateScopeEntry].
+ * Used by [validateManifestShape] for all three lists at 2.0.
+ *
+ * At 1.x this is NOT called: 1.x parsing must never reject, and a 1.x manifest's
+ * entries carry exact-path meaning regardless of how they are spelled.
+ */
+private fun checkScopeEntries(entries: List<String>, field: String): String? {
+    for (entry in entries) {
+        val problem = validateScopeEntry(entry)
+        if (problem != null) {
+            return "invalid_shape: $field: \"$entry\": ${problem.detail}"
+        }
+    }
+    return null
+}
+
+/**
+ * Validate one raw JSON scope list. Used by [parseManifestValue] for all three
+ * lists at 2.0: the value must be an array, every element a string, and every
+ * element must pass [validateScopeEntry].
+ *
+ * At 1.x this is NOT called: 1.x parsing must never reject (see the module
+ * docstring), and a 1.x manifest's entries carry exact-path meaning regardless of
+ * how they are spelled.
+ */
+private fun checkScopeList(value: JsonElement?, field: String): String? {
+    if (value !is JsonArray) {
+        return "invalid_shape: $field must be an array"
+    }
+    for (entry in value) {
+        val p = entry as? JsonPrimitive
+        if (p == null || !p.isString) {
+            return "invalid_shape: $field all elements must be strings"
+        }
+    }
+    return checkScopeEntries(value.map { (it as JsonPrimitive).content }, field)
+}
+
+/**
  * The invariants a [Manifest] must satisfy, checked on the data class itself so a
  * single implementation serves both [parseManifestValue] and [verifyManifestChain].
  *
@@ -358,6 +426,11 @@ private fun validateManifestShape(m: Manifest): String? {
     // --- ports canonicalize without needing a "which optionals were present"
     // --- rule, which would be a divergence risk across three implementations.
     if (m.courseId.isNullOrEmpty()) return "invalid_shape: course_id must be a non-empty string"
+    checkScopeEntries(m.filesUnderReview, "files_under_review")?.let { return it }
+    val ignore = m.ignore ?: return "invalid_shape: ignore must be an array"
+    checkScopeEntries(ignore, "ignore")?.let { return it }
+    val attachments = m.attachments ?: return "invalid_shape: attachments must be an array"
+    checkScopeEntries(attachments, "attachments")?.let { return it }
     if (m.collaboration == null) return "invalid_shape: collaboration must be one of solo | group"
     if (m.submission == null) return "invalid_shape: submission must be one of bundle | git"
     if (m.scope == null) return "invalid_shape: scope must be one of directory | repo"
@@ -465,6 +538,16 @@ fun parseManifestValue(value: JsonElement?): ManifestParse {
     val courseId = obj.nonEmptyString("course_id")
         ?: return ManifestParse.Err("invalid_shape: course_id must be a non-empty string")
 
+    // files_under_review already passed the array/string check in the shared
+    // section above; at 2.0 its entries must also satisfy the entry grammar.
+    checkScopeList(filesElem, "files_under_review")?.let { return ManifestParse.Err(it) }
+    val ignoreElem = obj["ignore"]
+    checkScopeList(ignoreElem, "ignore")?.let { return ManifestParse.Err(it) }
+    val ignore = (ignoreElem as JsonArray).map { (it as JsonPrimitive).content }
+    val attachmentsElem = obj["attachments"]
+    checkScopeList(attachmentsElem, "attachments")?.let { return ManifestParse.Err(it) }
+    val attachments = (attachmentsElem as JsonArray).map { (it as JsonPrimitive).content }
+
     val collaboration = obj.nonEmptyString("collaboration")?.let { ManifestCollaboration.fromWire(it) }
         ?: return ManifestParse.Err("invalid_shape: collaboration must be one of solo | group")
     val submission = obj.nonEmptyString("submission")?.let { ManifestSubmission.fromWire(it) }
@@ -487,6 +570,8 @@ fun parseManifestValue(value: JsonElement?): ManifestParse {
 
     val manifest = base.copy(
         courseId = courseId,
+        ignore = ignore,
+        attachments = attachments,
         collaboration = collaboration,
         submission = submission,
         scope = scope,
@@ -638,6 +723,12 @@ fun Manifest.toJsonObject(): JsonObject = buildJsonObject {
     putJsonArray("files_under_review") {
         for (f in filesUnderReview) add(JsonPrimitive(f))
     }
+    ignore?.let { list ->
+        putJsonArray("ignore") { for (e in list) add(JsonPrimitive(e)) }
+    }
+    attachments?.let { list ->
+        putJsonArray("attachments") { for (e in list) add(JsonPrimitive(e)) }
+    }
     collaboration?.let { put("collaboration", it.wire) }
     submission?.let { put("submission", it.wire) }
     scope?.let { put("scope", it.wire) }
@@ -645,3 +736,16 @@ fun Manifest.toJsonObject(): JsonObject = buildJsonObject {
     courseCert?.let { put("course_cert", it.toJsonObject()) }
     put("sig", sig)
 }
+
+/**
+ * The three scope lists as a [ResolvedScope]. The ONLY supported way to build one.
+ *
+ * A 1.x manifest has no `ignore` or `attachments`, so both default to empty —
+ * which resolves every path to [PathRole.REVIEWED] or [PathRole.UNSCOPED] exactly
+ * as 1.x always behaved.
+ */
+fun scopeFromManifest(manifest: Manifest): ResolvedScope = ResolvedScope(
+    track = manifest.filesUnderReview,
+    ignore = manifest.ignore ?: emptyList(),
+    attachments = manifest.attachments ?: emptyList(),
+)
