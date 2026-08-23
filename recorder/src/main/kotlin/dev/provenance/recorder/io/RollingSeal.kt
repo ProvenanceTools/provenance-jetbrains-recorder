@@ -95,8 +95,10 @@ internal fun rollingSha256OfFile(path: Path): String =
  *
  * Steps:
  *   1. Hash the `.slog` and `.slog.meta` as they currently stand on disk.
- *   2. Hash every `files_under_review` entry; absent ones are recorded `status: "missing"`,
- *      exactly as the classic seal records them.
+ *   2. Hash every `files_under_review` entry; a genuinely absent one is recorded
+ *      `status: "missing"`, exactly as the classic seal records it. Anything else that
+ *      keeps a read from succeeding (unreadable, outside the workspace, not a regular file)
+ *      is DROPPED rather than sealed under either status — see `WorkspaceFileRead.kt`.
  *   3. Build a 1.2 manifest covering this one session.
  *   4. Canonicalize + sign with this session's own private key, through the same
  *      [signBundleManifest] the classic seal uses — so both shapes are produced identically.
@@ -134,9 +136,25 @@ fun writeRollingSeal(
         // Step 2: on-disk state of the reviewed files. An ordered loop, deliberately: the
         // manifest's submission_files order must be stable across checkpoints, otherwise the
         // canonical bytes churn for no reason.
+        //
+        // The workspace root's real path is resolved once per roll (never per file) and fed
+        // into the shared classify-and-drop logic in WorkspaceFileRead.kt, which SealBundle.kt
+        // also goes through — see that file for why `missing` may only mean genuine absence.
+        // A failure to resolve the root itself falls through to the enclosing catch below,
+        // which is exactly the existing "failure is never fatal, comes back as WriteError"
+        // policy this function already has.
+        val workspaceRootReal = workspaceRoot.toRealPath()
         val submissionFiles = ArrayList<SubmissionFileEntry>(filesUnderReview.size)
         for (rel in filesUnderReview) {
-            submissionFiles.add(readSubmissionFile(workspaceRoot, rel))
+            when (val read = readWorkspaceFile(workspaceRoot, workspaceRootReal, rel, includeBytes = false)) {
+                is WorkspaceFileRead.Present -> submissionFiles.add(SubmissionFileEntry(rel, "present", read.sha256))
+                WorkspaceFileRead.Missing -> submissionFiles.add(SubmissionFileEntry(rel, "missing", null))
+                // Dropped, not sealed as either status. No disclosure surface on the rolling
+                // seal's result type today (only the classic seal's SealResult.Ok carries
+                // the unreadable/outOfWorkspace/nonRegular booleans); the invariant that
+                // matters here — this path can never mint a false `missing` — holds either way.
+                WorkspaceFileRead.Unreadable, WorkspaceFileRead.OutOfWorkspace, WorkspaceFileRead.NonRegular -> Unit
+            }
         }
 
         // Step 3: exactly one session, non-null id, matching the filename built below from
@@ -182,16 +200,3 @@ fun writeRollingSeal(
         return RollingSealResult.WriteError(e.message ?: e.toString())
     }
 }
-
-/** Read one `files_under_review` entry's on-disk state, or mark it missing. */
-private fun readSubmissionFile(workspaceRoot: Path, relPath: String): SubmissionFileEntry =
-    try {
-        SubmissionFileEntry(relPath, "present", Sha256.hex(Files.readAllBytes(workspaceRoot.resolve(relPath))))
-    } catch (_: Exception) {
-        // Deliberately NOT widened to Throwable, matching the classic seal's reviewed-file
-        // read: this catch's meaning is "record this file as missing", and that verdict goes
-        // into a signed manifest. Letting a filesystem Error land here would sign a claim
-        // that a file the student does have does not exist; the enclosing handler turns it
-        // into a WriteError instead, which is a blameless coverage gap.
-        SubmissionFileEntry(relPath, "missing", null)
-    }

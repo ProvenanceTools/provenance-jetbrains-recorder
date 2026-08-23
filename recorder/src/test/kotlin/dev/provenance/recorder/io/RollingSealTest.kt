@@ -25,6 +25,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -220,6 +221,81 @@ class RollingSealTest {
         assertEquals("missing.py", files[1].jsonObject["path"]!!.jsonPrimitive.content)
         assertEquals("missing", files[1].jsonObject["status"]!!.jsonPrimitive.content)
         assertEquals(JsonNull, files[1].jsonObject["sha256"])
+    }
+
+    // --- WorkspaceFileRead: `missing` is reachable from exactly one condition -------------
+    //
+    // Same invariant as the classic seal (SealBundle.kt / SealBundleTest.kt): a
+    // `status: "missing"` entry is baked into a SIGNED manifest and is an affirmative
+    // "this file does not exist" claim about a student, used in academic-integrity
+    // proceedings. These pin that the rolling seal goes through the same shared
+    // read-and-classify logic (`WorkspaceFileRead.kt`) as the classic seal and cannot mint
+    // a false one.
+
+    /**
+     * THE likeliest recurrence of this bug class: course staff write `files_under_review`
+     * as `"src"` instead of `"src/"`, naming the directory itself.
+     */
+    @Test
+    fun `an entry naming a directory is dropped from submission_files, never missing`() {
+        setUpWorkspace()
+        Files.createDirectory(wsRoot.resolve("src"))
+        Files.write(wsRoot.resolve("src").resolve("main.py"), "print(1)\n".toByteArray())
+
+        assertTrue(roll(filesUnderReview = listOf("hw.py", "src")) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertEquals("a directory entry must be dropped, not sealed under any status", 1, files.size)
+        assertEquals("hw.py", files.single().jsonObject["path"]!!.jsonPrimitive.content)
+    }
+
+    /** A permission error must never be folded into "this file does not exist". */
+    @Test
+    fun `an unreadable file is dropped from submission_files, never missing`() {
+        setUpWorkspace()
+        val target = wsRoot.resolve("secret.py")
+        Files.write(target, "print(1)\n".toByteArray())
+        val perms = Files.getPosixFilePermissions(target)
+        Files.setPosixFilePermissions(target, emptySet())
+        try {
+            assumeTrue(
+                "needs a filesystem/user for which an unreadable file is actually unreadable",
+                runCatching { Files.readAllBytes(target) }.isFailure,
+            )
+            assertTrue(roll(filesUnderReview = listOf("hw.py", "secret.py")) is RollingSealResult.Written)
+            val files = manifestJson()["submission_files"]!!.jsonArray
+            assertEquals("an unreadable entry must be dropped, not sealed under any status", 1, files.size)
+            assertEquals("hw.py", files.single().jsonObject["path"]!!.jsonPrimitive.content)
+        } finally {
+            Files.setPosixFilePermissions(target, perms)
+        }
+    }
+
+    /**
+     * Overwhelmingly a student's innocent `ln -s ~/shared/data.csv data.csv`, not an attack --
+     * dropped, and its bytes are never hashed into a manifest that would vouch for them.
+     */
+    @Test
+    fun `a symlink resolving outside the workspace is dropped from submission_files, never missing`() {
+        setUpWorkspace()
+        val outside = tmp.newFolder("outside").toPath()
+        Files.write(outside.resolve("data.csv"), "not the student's to submit".toByteArray())
+        Files.createSymbolicLink(wsRoot.resolve("data.csv"), outside.resolve("data.csv"))
+
+        assertTrue(roll(filesUnderReview = listOf("hw.py", "data.csv")) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertEquals("an out-of-workspace entry must be dropped, not sealed under any status", 1, files.size)
+        assertEquals("hw.py", files.single().jsonObject["path"]!!.jsonPrimitive.content)
+    }
+
+    /** The invariant must not over-correct: genuine absence is still reported missing. */
+    @Test
+    fun `a genuinely absent reviewed file is still recorded missing`() {
+        setUpWorkspace()
+        assertTrue(roll(filesUnderReview = listOf("hw.py", "ghost.py")) is RollingSealResult.Written)
+        val files = manifestJson()["submission_files"]!!.jsonArray
+        assertEquals(2, files.size)
+        assertEquals("ghost.py", files[1].jsonObject["path"]!!.jsonPrimitive.content)
+        assertEquals("missing", files[1].jsonObject["status"]!!.jsonPrimitive.content)
     }
 
     /**

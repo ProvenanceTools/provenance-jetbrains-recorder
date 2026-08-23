@@ -10,7 +10,9 @@ import dev.provenance.core.SubmissionFileEntry
 import dev.provenance.core.parseEntries
 import dev.provenance.core.signBundleManifest
 import dev.provenance.core.validateChain
+import dev.provenance.recorder.io.WorkspaceFileRead
 import dev.provenance.recorder.io.atomicWriteFile
+import dev.provenance.recorder.io.readWorkspaceFile
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -33,6 +35,21 @@ sealed interface SealResult {
         val manifestSha256: String,
         val chainBroken: Boolean,
         val unreadableSession: Boolean,
+        /**
+         * Disclosure for `files_under_review` entries the read-and-classify step in
+         * `WorkspaceFileRead.kt` had to DROP rather than seal — see that file for the
+         * invariant. Distinct facts on purpose (never collapsed into one "something was
+         * dropped" bit): [unreadableFile] means bytes could not be read at all;
+         * [outOfWorkspaceFile] means a path (almost always an innocent symlink) resolved
+         * outside the workspace root; [nonRegularFile] means a directory, FIFO, socket, or
+         * device sat where a file was expected — the ordinary staff typo `src` instead of
+         * `src/`. None of these may ever seal as `status: "missing"`, which is reserved for
+         * a path that genuinely does not exist. Defaulted so every existing construction and
+         * call site is unaffected.
+         */
+        val unreadableFile: Boolean = false,
+        val outOfWorkspaceFile: Boolean = false,
+        val nonRegularFile: Boolean = false,
         /**
          * Artifacts the ORPHAN GUARD (`BundleOrphanGuard.kt`) had to leave out so the archive
          * stays openable. Defaulted so every existing construction and call site is unaffected;
@@ -181,19 +198,37 @@ fun sealBundle(
         }
     }
 
-    // Step 3: read reviewed files from disk.
+    // Step 3: read reviewed files from disk, through the shared classify-and-drop logic in
+    // WorkspaceFileRead.kt — see that file for why `missing` may only mean genuine absence.
+    val workspaceRootReal = try {
+        workspaceRoot.toRealPath()
+    } catch (e: Throwable) {
+        // The containment check inside readWorkspaceFile compares against the workspace
+        // root's REAL path; if the root itself does not resolve, nothing past this point can
+        // be trusted enough to seal.
+        rethrowIfFatal(e)
+        return SealResult.WriteError("Failed to resolve workspace root $workspaceRoot: ${e.message}")
+    }
     data class Reviewed(val path: String, val present: Boolean, val sha256: String?, val bytes: ByteArray?)
-    val reviewed = filesUnderReview.map { rel ->
-        val abs = workspaceRoot.resolve(rel)
-        try {
-            val bytes = Files.readAllBytes(abs)
-            Reviewed(rel, true, Sha256.hex(bytes), bytes)
-        } catch (_: Exception) {
-            // Deliberately NOT widened to Throwable. This catch's meaning is "record this
-            // file as missing", and that verdict is baked into a signed manifest. Letting a
-            // filesystem Error land here would sign a claim that a file the student did
-            // submit does not exist; failing the seal loudly is the better outcome.
-            Reviewed(rel, false, null, null)
+    var unreadableFile = false
+    var outOfWorkspaceFile = false
+    var nonRegularFile = false
+    val reviewed = filesUnderReview.mapNotNull { rel ->
+        when (val read = readWorkspaceFile(workspaceRoot, workspaceRootReal, rel, includeBytes = true)) {
+            is WorkspaceFileRead.Present -> Reviewed(rel, true, read.sha256, read.bytes)
+            WorkspaceFileRead.Missing -> Reviewed(rel, false, null, null)
+            WorkspaceFileRead.Unreadable -> {
+                unreadableFile = true
+                null
+            }
+            WorkspaceFileRead.OutOfWorkspace -> {
+                outOfWorkspaceFile = true
+                null
+            }
+            WorkspaceFileRead.NonRegular -> {
+                nonRegularFile = true
+                null
+            }
         }
     }
     val submissionFiles = reviewed.map {
@@ -257,8 +292,8 @@ fun sealBundle(
                 val bytes = try {
                     Files.readAllBytes(provenanceDir.resolve(name))
                 } catch (_: Exception) {
-                    // Deliberately NOT widened, same reasoning as the reviewed-file read:
-                    // "skip" means the file vanished between listing and read. An Error
+                    // Deliberately NOT widened, same reasoning as WorkspaceFileRead.kt's read
+                    // step: "skip" means the file vanished between listing and read. An Error
                     // silently omitting a .slog would ship a bundle with a missing session.
                     // An Error here is caught by the enclosing handler and fails the seal.
                     continue // disappeared between listing and read — skip
@@ -285,6 +320,9 @@ fun sealBundle(
         manifestSha256 = manifestSha256,
         chainBroken = chainBroken,
         unreadableSession = unreadableSession,
+        unreadableFile = unreadableFile,
+        outOfWorkspaceFile = outOfWorkspaceFile,
+        nonRegularFile = nonRegularFile,
         orphanedSlog = packable.orphanedSlog,
         orphanedMeta = packable.orphanedMeta,
         emptySession = packable.emptySession,
