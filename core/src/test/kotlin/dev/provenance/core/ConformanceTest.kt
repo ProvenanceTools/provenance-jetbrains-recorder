@@ -2915,6 +2915,85 @@ class ConformanceTest {
         }
     }
 
+    /**
+     * `path-scope-vectors.json` — the cross-port path-scope matcher (design spec §3, §3.4).
+     * The fixture's own header comment says it is consumed identically by log-core
+     * (TypeScript), this port, and provnvim (Lua). A red test here means this port's matcher
+     * disagrees with the other two about which files a manifest watches.
+     */
+    @Nested
+    inner class PathScopeVectors {
+        private val v by lazy { vector("path-scope-vectors.json") }
+
+        private fun scopeOf(o: JsonObject): ResolvedScope = ResolvedScope(
+            track = o["track"]!!.jsonArray.map { it.jsonPrimitive.content },
+            ignore = o["ignore"]!!.jsonArray.map { it.jsonPrimitive.content },
+            attachments = o["attachments"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+
+        @Test
+        fun `match cases agree with log-core`() {
+            val cases = v["match"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val path = o["path"]!!.jsonPrimitive.content
+                val entry = o["entry"]!!.jsonPrimitive.content
+                val expect = o["expect"]!!.jsonPrimitive.boolean
+                assertEquals(expect, matchesScopeEntry(path, entry), "path=$path entry=$entry")
+            }
+            assertTrue(cases.size > 10, "path-scope-vectors.json lost match cases")
+        }
+
+        /**
+         * Paths a permissive editor watcher glob would plausibly deliver but the matcher
+         * rejects (design spec §4.2). A port that emits on its watcher's verdict alone,
+         * rather than re-checking every path against [matchesScopeEntry], fails here.
+         */
+        @Test
+        fun `editor glob hazards are all rejected`() {
+            val cases = v["editorGlobHazards"]!!.jsonObject["cases"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val path = o["path"]!!.jsonPrimitive.content
+                val entry = o["entry"]!!.jsonPrimitive.content
+                val expect = o["expect"]!!.jsonPrimitive.boolean
+                assertEquals(expect, matchesScopeEntry(path, entry), "path=$path entry=$entry")
+            }
+            assertTrue(cases.isNotEmpty(), "path-scope-vectors.json lost editorGlobHazards cases")
+        }
+
+        @Test
+        fun `validate cases agree with log-core`() {
+            val cases = v["validate"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val entry = o["entry"]!!.jsonPrimitive.content
+                val problemEl = o["problem"]
+                val expected = if (problemEl == null || problemEl is JsonNull) {
+                    null
+                } else {
+                    problemEl.jsonPrimitive.content
+                }
+                val actual = validateScopeEntry(entry)?.kind?.wire
+                assertEquals(expected, actual, "entry=$entry")
+            }
+            assertTrue(cases.size > 21, "path-scope-vectors.json lost validate cases")
+        }
+
+        @Test
+        fun `role cases agree with log-core`() {
+            val cases = v["role"]!!.jsonArray
+            for (case in cases) {
+                val o = case.jsonObject
+                val path = o["path"]!!.jsonPrimitive.content
+                val scope = scopeOf(o["scope"]!!.jsonObject)
+                val expect = o["expect"]!!.jsonPrimitive.content
+                assertEquals(expect, resolvePathRole(path, scope).wire, "path=$path")
+            }
+            assertTrue(cases.size > 6, "path-scope-vectors.json lost role cases")
+        }
+    }
+
     private fun assertWindow(expected: JsonObject, actual: CertWindowStatus, label: String) {
         assertEquals(expected["in_window"]!!.jsonPrimitive.boolean, actual.inWindow, label)
         val reason = expected["reason"]?.jsonPrimitive?.content
