@@ -98,7 +98,8 @@ class PrepareSubmissionBundleAction : AnAction() {
                 val dropped = if (result.anythingDropped) {
                     " Incomplete recording leftovers were left out so the bundle stays readable (" +
                         result.droppedDescriptions().joinToString("; ") +
-                        "). They are still on disk in .provenance/; mention this to course staff if asked."
+                        "). They are still on disk in .provenance/. This is not a finding about " +
+                        "your work; mention it to course staff if asked."
                 } else {
                     ""
                 }
