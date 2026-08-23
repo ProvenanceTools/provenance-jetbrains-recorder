@@ -16,6 +16,7 @@ import dev.provenance.core.GitCaptureCapability
 import dev.provenance.core.Manifest
 import dev.provenance.core.ManifestSubmission
 import dev.provenance.core.RecorderDegradedPayload
+import dev.provenance.core.ResolvedScope
 import dev.provenance.core.SessionEndPayload
 import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SessionResumedPayload
@@ -25,6 +26,7 @@ import dev.provenance.core.encryptSessionPrivkey
 import dev.provenance.core.isEventKindCaptured
 import dev.provenance.core.resolveCapturePolicy
 import dev.provenance.core.generateSessionKeypair
+import dev.provenance.core.scopeFromManifest
 import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
@@ -227,6 +229,28 @@ class RecordingSessionController(
     private val rollingSeal: RollingSealMaintainer?
 
     /**
+     * The LIVE `scope_capped` bit, read at every seal (rolling AND classic).
+     *
+     * Set once by [RecorderSessionManager.wireExternalChange] right after it constructs this
+     * session's [dev.provenance.recorder.watch.ExternalChangeCoordinator] — which owns the
+     * [dev.provenance.recorder.state.ExpectedContentRegistry] this reads
+     * [dev.provenance.recorder.state.ExpectedContentRegistry.capHit] from. That coordinator
+     * does not exist yet at THIS constructor's own first rolling-seal write point (see Step
+     * 5a below and [RollingSealMaintainer]), which is fine: a session with nothing tracked
+     * yet cannot have capped. Defaults to "never capped" until wired.
+     */
+    @Volatile
+    private var scopeCappedProvider: () -> Boolean = { false }
+
+    /** Called once by [RecorderSessionManager] after the coordinator (and its registry) exist. */
+    fun setScopeCappedProvider(provider: () -> Boolean) {
+        scopeCappedProvider = provider
+    }
+
+    /** The live cap bit, for the CLASSIC seal ([RecorderSessionManager.sealSession]). */
+    fun scopeCapped(): Boolean = scopeCappedProvider()
+
+    /**
      * PEER WITNESSING (program spec §7 mechanism 2). Drained on the checkpoint cadence and
      * once at teardown; see the two call sites below. Never null — witnessing is a floor
      * capability with no `policy.capture` key, so there is nothing to gate it on.
@@ -367,9 +391,14 @@ class RecordingSessionController(
                 workspaceRoot = activated.workspaceRoot,
                 assignmentId = activated.manifest.assignmentId,
                 semester = activated.manifest.semester,
-                filesUnderReview = activated.manifest.filesUnderReview,
+                scope = scopeFromManifest(activated.manifest),
                 sessionPrivkey = keypair.privateKey,
                 computeExtensionHash = computeExtensionHash,
+                // A closure over THIS controller's var, not its value at construction time:
+                // read live at every roll, so a cap that bites after session start (or after
+                // RecorderSessionManager wires the real provider in, moments after this
+                // constructor returns) is still reflected on the very next checkpoint.
+                scopeCapped = { scopeCappedProvider() },
             )
         }
 
@@ -723,9 +752,11 @@ private class RollingSealMaintainer(
     private val workspaceRoot: Path,
     private val assignmentId: String,
     private val semester: String,
-    private val filesUnderReview: List<String>,
+    private val scope: ResolvedScope,
     private val sessionPrivkey: ByteArray,
     private val computeExtensionHash: () -> String,
+    /** Read live at every [roll] — see [RecordingSessionController.scopeCappedProvider]. */
+    private val scopeCapped: () -> Boolean,
 ) {
     private val lock = Any()
 
@@ -751,10 +782,11 @@ private class RollingSealMaintainer(
                 workspaceRoot = workspaceRoot,
                 assignmentId = assignmentId,
                 semester = semester,
-                filesUnderReview = filesUnderReview,
+                scope = scope,
                 sessionPrivkey = sessionPrivkey,
                 extensionHash = hash,
                 isFinal = isFinal,
+                scopeCapped = scopeCapped(),
             )
         } catch (e: Throwable) {
             if (e is VirtualMachineError) throw e

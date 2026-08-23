@@ -424,6 +424,9 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         )
         Disposer.register(sessionDisposable, coordinator)
         coordinator.start()
+        // Now that the coordinator (and its ExpectedContentRegistry) exists, wire the
+        // controller's live cap reader to it — see RecordingSessionController.scopeCappedProvider.
+        controller.setScopeCappedProvider { coordinator.registry.capHit() }
     }
 
     /** End one session (root != null) or every session (root == null — project close / test
@@ -468,9 +471,10 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             workspaceRoot = s.activated.workspaceRoot,
             assignmentId = m.assignmentId,
             semester = m.semester,
-            filesUnderReview = m.filesUnderReview,
+            scope = scopeFromManifest(m),
             sessionPrivkey = s.controller.sessionPrivkey,
             computeExtensionHash = computeExtensionHash,
+            scopeCapped = s.controller.scopeCapped(),
             outputDir = s.activated.workspaceRoot,
             now = now,
         )
