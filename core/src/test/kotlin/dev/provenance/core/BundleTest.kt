@@ -129,4 +129,62 @@ class BundleTest {
         val m = BundleManifest("1.0", "hw3", "fa25", "aa".repeat(32), emptyList(), null)
         assertFalse(m.toJsonText().contains("submission_files"))
     }
+
+    @Test
+    fun `role round-trips both values through toJsonText and validateBundleManifestShape`() {
+        val m = fixtureManifest().copy(
+            submissionFiles = listOf(
+                SubmissionFileEntry("src/handout.pdf", "present", "11".repeat(32), role = "attachment"),
+                SubmissionFileEntry("src/main.py", "present", "ff".repeat(32), role = "reviewed"),
+                SubmissionFileEntry("src/missing.py", "missing", null),
+            ),
+        )
+        val r = validateBundleManifestShape(m.toJsonText())
+        assertTrue(r.isSuccess)
+        val files = r.getOrThrow().submissionFiles!!
+        assertEquals("attachment", files[0].role)
+        assertEquals("reviewed", files[1].role)
+        assertEquals(null, files[2].role)
+    }
+
+    @Test
+    fun `no role and no scope_capped canonicalizes byte-identical to before this change`() {
+        // fixtureManifest() sets neither field. Its canonical bytes must match the
+        // pinned cross-language fixture exactly — that pinned literal IS "before the
+        // change", since it predates role/scope_capped existing at all.
+        val canonical = Canonical.canonicalize(fixtureManifest().toJsonText())
+        assertEquals(fixture["canonical_json"]!!.jsonPrimitive.content, canonical)
+    }
+
+    @Test
+    fun `scope_capped true is present in canonical json`() {
+        val m = fixtureManifest().copy(scopeCapped = true)
+        val canonical = Canonical.canonicalize(m.toJsonText())
+        assertTrue(canonical.contains("\"scope_capped\":true"))
+    }
+
+    @Test
+    fun `scope_capped absent from JSON text entirely when false`() {
+        // Must not appear as a substring at all -- not merely be falsy once parsed.
+        assertFalse(fixtureManifest().toJsonText().contains("scope_capped"))
+    }
+
+    @Test
+    fun `shape validator rejects bad role value`() {
+        val text = """
+            {"format_version":"1.1","assignment_id":"hw3","semester":"fa25",
+             "extension_hash":"${"aa".repeat(32)}","sessions":[],
+             "submission_files":[{"path":"a.py","status":"present","sha256":"${"ff".repeat(32)}","role":"bogus"}]}
+        """.trimIndent()
+        assertTrue(validateBundleManifestShape(text).isFailure)
+    }
+
+    @Test
+    fun `shape validator rejects non-boolean scope_capped`() {
+        val text = """
+            {"format_version":"1.0","assignment_id":"hw3","semester":"fa25",
+             "extension_hash":"${"aa".repeat(32)}","sessions":[],"scope_capped":"true"}
+        """.trimIndent()
+        assertTrue(validateBundleManifestShape(text).isFailure)
+    }
 }

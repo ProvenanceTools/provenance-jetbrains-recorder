@@ -25,6 +25,21 @@ data class SubmissionFileEntry(
     val status: String,
     /** Hex sha256 of the raw on-disk bytes; null iff status == "missing". */
     val sha256: String?,
+    /**
+     * What this file was in the recording, not just in the bundle: "reviewed" or
+     * "attachment". ABSENT READS AS "reviewed", which is what every 1.1/1.2 bundle
+     * sealed before path scope existed means. Additive and optional for the same
+     * reason `final` is: no version bump, and absence is never a finding.
+     *
+     * An "attachment" was sealed and hashed but never captured — it has no event
+     * provenance by definition, so check 8 must not compare it against
+     * reconstruction.
+     *
+     * Kotlin-side `null` means absent; emitted by [toJsonText] with the OMIT-WHEN-
+     * ABSENT idiom (same as `final`), never as JSON `null` — an entry with no role
+     * opinion must canonicalize identically to one from before this field existed.
+     */
+    val role: String? = null,
 )
 
 data class SessionEntry(
@@ -56,6 +71,22 @@ data class BundleManifest(
      * once over a finished log and has no use for the distinction.
      */
     val isFinal: Boolean = false,
+    /**
+     * Whether the recorder's expected-content cap refused a path that the scope
+     * put under review. Additive and optional. Absent means "this recorder does
+     * not report", which is what every bundle sealed before path scope says, and
+     * is not a finding.
+     *
+     * True is not an accusation either — it is the recorder disclosing that its
+     * record of this session is incomplete, so a reader must NOT conclude
+     * "in scope, no activity" about any file.
+     *
+     * Wire key is `scope_capped`, **emitted only when true** — see [toJsonText].
+     * A non-capped session's manifest must stay byte-identical to what it
+     * produced before this field existed, because the canonical bytes ARE the
+     * signed message.
+     */
+    val scopeCapped: Boolean = false,
 )
 
 data class SignedBundleManifest(
@@ -100,6 +131,11 @@ fun BundleManifest.toJsonText(): String =
                             put("path", f.path)
                             put("status", f.status)
                             put("sha256", f.sha256?.let { JsonPrimitive(it) } ?: JsonNull)
+                            // OMITTED ENTIRELY when absent — never emitted as JSON null. Absence
+                            // reads as "reviewed", the meaning every pre-path-scope entry already
+                            // has, so an entry with no role opinion must canonicalize identically
+                            // to one from before this field existed.
+                            if (f.role != null) put("role", f.role)
                         }
                     }
                 },
@@ -110,6 +146,11 @@ fun BundleManifest.toJsonText(): String =
         // to what 1.2 emitted before this field existed; those bytes are pinned by the
         // cross-language conformance vectors that three recorder implementations share.
         if (isFinal) put("final", true)
+        // OMITTED ENTIRELY unless true — never emitted as `false`, for the same reason
+        // `final` is: the canonical bytes ARE the signed message, and an uncapped
+        // session's manifest must stay byte-identical to what it produced before this
+        // field existed.
+        if (scopeCapped) put("scope_capped", true)
     }.toString()
 
 /**
@@ -179,13 +220,34 @@ fun validateBundleManifestShape(jsonText: String): Result<BundleManifest> {
                 if (shaElem != null && shaElem != JsonNull) return fail("submission_files[$i].sha256 must be null for missing")
                 sha = null
             }
-            files.add(SubmissionFileEntry(path, status, sha))
+            val roleElem = f["role"]
+            val role = (roleElem as? JsonPrimitive)?.takeIf { it.isString }?.content
+            // roleElem == null means the key is ABSENT (reads as "reviewed"), which is
+            // fine. A PRESENT key — including explicit JSON null — must be one of the
+            // two allowed strings; role is optional, not nullable.
+            if (roleElem != null && role != "reviewed" && role != "attachment") {
+                return fail("submission_files[$i].role must be 'reviewed' or 'attachment' when present")
+            }
+            files.add(SubmissionFileEntry(path, status, sha, role))
         }
         submissionFiles = files
     }
 
+    // `scope_capped`. Optional everywhere; absence means "this recorder does not
+    // report" (every bundle sealed before path scope), which is not a finding.
+    // When present it must be a real boolean for the same reason `final` is.
+    val scopeCappedElem = obj["scope_capped"]
+    var scopeCapped = false
+    if (scopeCappedElem != null) {
+        val p = scopeCappedElem as? JsonPrimitive
+        if (p == null || p.isString || (p.content != "true" && p.content != "false")) {
+            return fail("scope_capped must be a boolean when present")
+        }
+        scopeCapped = p.content == "true"
+    }
+
     return Result.success(
-        BundleManifest(version, assignmentId, semester, extensionHash, sessions, submissionFiles),
+        BundleManifest(version, assignmentId, semester, extensionHash, sessions, submissionFiles, scopeCapped = scopeCapped),
     )
 }
 
