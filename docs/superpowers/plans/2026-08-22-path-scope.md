@@ -34,9 +34,16 @@ T1  core: PathScope.kt + vectors            (no deps)
 T2  core: Bundle.kt role + scope_capped     (no deps; may run beside T1)
 T3  core: Manifest.kt ignore + attachments  (needs T1)
 T4  recorder: registry + file_scope         (needs T1, T3)
-T5  recorder: SealBundle collection         (needs T1, T2, T3, T4)
-T6  recorder: RollingSeal collection        (needs T5)
+T5a recorder: close the shipped false-accusation path  (no deps; cherry-pickable)
+T5b recorder: SealBundle collects by walking (needs T1, T2, T3, T4, T5a)
+T6  recorder: RollingSeal collection        (needs T5b)
 ```
+
+Task 3 splits around the vector blocker: **T3a** adds the fields and
+`scopeFromManifest` without touching `buildSignedPayload` (no vector impact, so
+it can run immediately and unblocks T4/T5b); **T3b** makes them required at 2.0
+and adds them to the signed payload, and waits for the regenerated
+`manifest-v2.json`. T3b must land before this branch is pushed.
 
 ---
 
@@ -156,7 +163,47 @@ lists; `complete: false` for a rule-bearing scope.
 
 ---
 
-## Task 5 — recorder: `SealBundle.kt` collects by walking
+## Task 5a — recorder: close the shipped false-accusation path
+
+**This is a bug fix, not part of the feature, and it gets its own commit.**
+
+`SealBundle.kt`'s reviewed-file read and `RollingSeal.kt`'s `readSubmissionFile`
+both do `catch (_: Exception) -> status "missing"`. Every failure mode becomes an
+affirmative claim that the student did not submit the file: a permission error,
+a symlink loop, an I/O error, and — the likely one — an exact entry naming a
+**directory**, which is the ordinary staff typo `src` instead of `src/`.
+
+Measured on this JVM (JDK 25, macOS, APFS): reading a directory throws
+`java.io.IOException: Is a directory`, an `Exception`, so it lands in that catch.
+A genuinely absent file throws `java.nio.file.NoSuchFileException` — from both
+`readAllBytes` **and** `toRealPath`, which is the equivalence that makes failing
+closed lossless. `Files.readAllBytes` on a FIFO **blocks indefinitely**;
+`Files.isRegularFile` returns false for one.
+
+The existing catch carries a comment reasoning carefully about not widening to
+`Throwable`. That guard is real and points the wrong way — it never considered
+an ordinary `IOException` reaching the same line with the same consequence.
+
+**This bug is in the published build** (Marketplace plugin 32944, `v0.2.1`), so
+this commit must be written to cherry-pick cleanly onto `main` without any
+path-scope dependency. Do the fix against the current exact-path list; Task 5b
+layers the walk on top.
+
+Introduce the shared single-path read described in Task 5b's "the read", and use
+it from both seals. `missing` becomes reachable from exactly one condition.
+Everything else drops and is disclosed through `SealResult.Ok`'s existing
+boolean-plus-`droppedDescriptions()` surface, preserving the fact partition in
+spec §3.4.
+
+**Regression tests, each failing before the fix:** an exact entry naming a
+directory is dropped, never `missing` (this is the staff-typo case and the
+likeliest to recur — name it explicitly); an unreadable file is dropped, never
+`missing`; a symlink resolving outside the workspace is dropped and disclosed,
+never `missing`; a genuinely absent file is still `missing`.
+
+---
+
+## Task 5b — recorder: `SealBundle.kt` collects by walking
 
 This is the largest task and carries the R2 surface. Read spec §4 in full first,
 including the five invariants and the two mechanisms kept on their account.
