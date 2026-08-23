@@ -30,7 +30,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
     fun testCleanSaveDoesNotEmit() {
         val vf = seedFile("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n") // expected == disk
         SaveTimeExternalChangeChecker(ExternalChangeEngine(reg), emit = { emitted.add(it) })
             .checkAfterSave(rel, vf)
@@ -40,7 +40,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
     fun testExternalOverwriteBeforeSaveEmitsWithCorrectDirection() {
         val vf = seedFile("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n") // what the editor believed
         // Something else wrote between our last observed change and the save:
         Files.writeString(wsRoot.resolve("hw.py"), "import os\nos.system('rm -rf /')\n")
@@ -59,7 +59,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
     fun testFileNeverOpenedIsNoOp() {
         val vf = seedFile("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel)) // watched but no registry entry
+        val reg = ExpectedContentRegistry(trackOnly(rel)) // watched but no registry entry
         SaveTimeExternalChangeChecker(ExternalChangeEngine(reg), emit = { emitted.add(it) })
             .checkAfterSave(rel, vf)
         assertEquals(0, emitted.size)

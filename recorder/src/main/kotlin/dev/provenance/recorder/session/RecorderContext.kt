@@ -9,6 +9,7 @@ import dev.provenance.core.SessionStartPayload
 import dev.provenance.core.Sha256
 import dev.provenance.core.WitnessCaptureCapability
 import dev.provenance.core.buildFileScope
+import dev.provenance.core.isExactEntry
 
 /**
  * The cap on [SessionFileScope.watched], in entries. Ported from recorder-context.ts's
@@ -30,16 +31,30 @@ const val FILE_SCOPE_MAX_ENTRIES: Int = 4096
  * Resolve the EFFECTIVE FILE SET this session will watch — collaboration spec §5.6 item 1,
  * S25. Direct port of `resolveFileScope` in recorder-context.ts.
  *
- * Today this is the identity function over `manifest.files_under_review`: that list is already
- * assignment-root-relative by construction (the same category of path `doc.open.path` already
- * carries), so it needs no further resolution — see the TS docstring for why this is still the
- * right field to publish rather than a mere copy of the manifest. [buildFileScope] rejects an
- * absolute path, a colon, or a `..` segment; a course that put one in its manifest gets the
- * field OMITTED (returns null) rather than an unsafe path written into a signed log — S14(b).
+ * `files_under_review` is already assignment-root-relative by construction (the same
+ * category of path `doc.open.path` already carries), so no further resolution is needed
+ * — see the TS docstring for why this is still the right field to publish rather than a
+ * mere copy of the manifest. [buildFileScope] rejects an absolute path, a colon, or a
+ * `..` segment; a course that put one in its manifest gets the field OMITTED (returns
+ * null) rather than an unsafe path written into a signed log — S14(b).
+ *
+ * ## Rules make the list partial, not wrong (design spec §3.5)
+ *
+ * A manifest may now name a folder or a suffix rule. Such an entry cannot be
+ * enumerated at session start — that is the whole point of naming one — so `watched`
+ * carries only the EXACT-path entries ([isExactEntry]) and `complete` goes false the
+ * moment any rule entry is present, independent of the cap. This is binding: the
+ * analyzer reads `complete: false` as "absence from this list does not prove the file
+ * was unwatched", and separately reads `complete: true` on a rule-bearing scope as a
+ * tell that the recorder predates path scope and never applied the rules — degrading
+ * its answer to `unknown`. Emitting `complete: true` here for a scope containing
+ * `src/` would get this recorder mis-diagnosed as stale.
  */
 fun resolveFileScope(filesUnderReview: List<String>): SessionFileScope? {
-    val complete = filesUnderReview.size <= FILE_SCOPE_MAX_ENTRIES
-    val watched = if (complete) filesUnderReview else filesUnderReview.take(FILE_SCOPE_MAX_ENTRIES)
+    val exact = filesUnderReview.filter(::isExactEntry)
+    val hasRules = exact.size != filesUnderReview.size
+    val complete = !hasRules && exact.size <= FILE_SCOPE_MAX_ENTRIES
+    val watched = if (exact.size <= FILE_SCOPE_MAX_ENTRIES) exact else exact.take(FILE_SCOPE_MAX_ENTRIES)
     return buildFileScope(watched, complete)
 }
 

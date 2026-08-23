@@ -18,7 +18,7 @@ import org.junit.Test
  */
 class ExternalChangeEngineTest {
     private fun engine(vararg watched: String) =
-        ExternalChangeEngine(ExpectedContentRegistry(watched.toList()))
+        ExternalChangeEngine(ExpectedContentRegistry(trackOnly(*watched)))
 
     // ---- scope gate --------------------------------------------------------
 

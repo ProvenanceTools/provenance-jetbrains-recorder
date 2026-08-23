@@ -49,7 +49,7 @@ class ExternalChangeCoordinatorTest : BasePlatformTestCase() {
         val c = ExternalChangeCoordinator(
             project = project,
             workspaceRoot = wsRoot,
-            filesUnderReview = watched.toList(),
+            scope = trackOnly(*watched),
             emit = { emitted.add(it) },
             vfsDispatch = { it() }, // synchronous for deterministic assertions
             onEdt = onEdt,

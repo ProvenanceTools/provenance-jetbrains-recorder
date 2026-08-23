@@ -50,7 +50,7 @@ class DocumentReloadExternalChangeListenerTest : BasePlatformTestCase() {
     fun testSilentReloadWithDivergedContentEmitsAndResets() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         val engine = install(reg)
 
@@ -68,7 +68,7 @@ class DocumentReloadExternalChangeListenerTest : BasePlatformTestCase() {
     fun testReloadMatchingExpectedIsSilent() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg)
 
@@ -80,7 +80,7 @@ class DocumentReloadExternalChangeListenerTest : BasePlatformTestCase() {
 
     fun testUnwatchedFileIsIgnored() {
         val vf = vfFor("scratch.py", "print(1)\n")
-        val reg = ExpectedContentRegistry(listOf("other.py")) // scratch.py not watched
+        val reg = ExpectedContentRegistry(trackOnly("other.py")) // scratch.py not watched
         install(reg)
 
         val doc = FileDocumentManager.getInstance().getDocument(vf)!!

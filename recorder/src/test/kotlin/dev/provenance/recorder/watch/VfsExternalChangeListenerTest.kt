@@ -63,7 +63,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testExternalWriteEmitsModifyWithCorrectDirection() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg)
 
@@ -82,7 +82,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
         // emit — proving isFromSave routes to the save-time check, not the external path.
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n") // model NOT updated with the edit below
         install(reg, isRecentEditorChange = { true }) // suppress the external branch entirely
 
@@ -101,7 +101,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testExternalWriteSuppressedByRecencyGuard() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg, isRecentEditorChange = { true }) // external branch suppressed
 
@@ -112,7 +112,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testCreateEmitsOperationCreate() {
         // Seed a watched path that doesn't exist yet, install, then create it on disk.
         val rel = "created.py"
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         install(reg)
         // Load the parent dir into the VFS snapshot so create events fire for children.
         val rootVf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(wsRoot)!!
@@ -129,7 +129,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testDeleteEmitsOperationDeleteAndDropsEntry() {
         val vf = vfFor("gone.py", "temporary\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "temporary\n")
         val engine = install(reg)
 
@@ -147,7 +147,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
         val vfB = vfFor("b.py", "BBB\n")
         val relA = relativePathOf(vfA, wsRoot)!!
         val relB = relativePathOf(vfB, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(relA, relB))
+        val reg = ExpectedContentRegistry(trackOnly(relA, relB))
         reg.getOrCreate(relA, "AAA\n")
         reg.getOrCreate(relB, "BBB\n")
         install(reg)

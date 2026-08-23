@@ -352,4 +352,30 @@ class RecorderContextTest {
         assertNull(resolveFileScope(listOf("Solver.java", "../other-course/Solver.java")))
         assertNull(resolveFileScope(listOf("git@github.com:someone/proj2.git")))
     }
+
+    // -----------------------------------------------------------------------
+    // resolveFileScope + path scope rules (design spec §3.5) — a rule entry cannot be
+    // enumerated, so it is excluded from `watched` and forces `complete: false`
+    // regardless of the cap.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `a rule-bearing scope reports complete false and watched holds only the exact entries`() {
+        val scope = resolveFileScope(listOf("Solver.java", "src/", "*.class"))
+        assertNotNull(scope)
+        assertFalse(
+            "a rule entry cannot be enumerated, so its presence must downgrade complete " +
+                "even though the exact entries are well under the cap",
+            scope!!.complete,
+        )
+        assertEquals(listOf("Solver.java"), scope.watched)
+    }
+
+    @Test
+    fun `an all-exact scope under the cap yields complete true`() {
+        val scope = resolveFileScope(listOf("Solver.java", "src/Board.java", "README.md"))
+        assertNotNull(scope)
+        assertTrue(scope!!.complete)
+        assertEquals(listOf("Solver.java", "src/Board.java", "README.md"), scope.watched)
+    }
 }

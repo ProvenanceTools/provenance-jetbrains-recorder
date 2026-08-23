@@ -14,6 +14,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import dev.provenance.core.FsExternalChangePayload
+import dev.provenance.core.ResolvedScope
 import dev.provenance.recorder.state.Delta
 import dev.provenance.recorder.state.ExpectedContentRegistry
 import dev.provenance.recorder.wiring.runOnEdtAndWait
@@ -39,14 +40,14 @@ import java.nio.file.Path
 class ExternalChangeCoordinator(
     private val project: Project,
     private val workspaceRoot: Path,
-    filesUnderReview: List<String>,
+    scope: ResolvedScope,
     private val emit: (FsExternalChangePayload) -> Unit,
     private val isRecentEditorChange: (String) -> Boolean = { false },
     private val vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
     /** "Run this on the EDT and wait" — injectable so a test can observe where it lands. */
     private val onEdt: (() -> Unit) -> Unit = ::runOnEdtAndWait,
 ) : Disposable {
-    val registry = ExpectedContentRegistry(filesUnderReview)
+    val registry = ExpectedContentRegistry(scope)
     private val engine = ExternalChangeEngine(registry)
     private val saveChecker = SaveTimeExternalChangeChecker(engine, emit)
 

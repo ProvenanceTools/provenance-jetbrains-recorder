@@ -122,7 +122,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
     fun testKeystrokeDuringDispatchGapEmitsNothingAndDoesNotRollTheModelBack() {
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 
@@ -158,7 +158,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
         val external = "import os\nos.system(\"rm -rf /\")\n"
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 
@@ -189,7 +189,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
     fun testToleratedRaceDoesNotPerpetuateIntoTheNextSave() {
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 

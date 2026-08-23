@@ -14,6 +14,7 @@ import dev.provenance.core.Manifest
 import dev.provenance.core.SessionKeypair
 import dev.provenance.core.SystemClock
 import dev.provenance.core.generateSessionKeypair
+import dev.provenance.core.scopeFromManifest
 import dev.provenance.core.toJsonObject
 import com.intellij.openapi.diagnostic.Logger
 import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
@@ -412,7 +413,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         val coordinator = ExternalChangeCoordinator(
             project = project,
             workspaceRoot = activated.workspaceRoot,
-            filesUnderReview = activated.manifest.filesUnderReview,
+            scope = scopeFromManifest(activated.manifest),
             emit = { payload ->
                 // Consume once per external change (mirrors fs-watcher.ts): a recent git mark
                 // explains this change; otherwise keep whatever the payload already carried (null).
