@@ -1,17 +1,22 @@
 package dev.provenance.recorder.wiring
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runReadActionBlocking
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.fileEditor.FileDocumentManagerListener
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import dev.provenance.core.Position
 import dev.provenance.core.Range
 import dev.provenance.core.Sha256
@@ -19,9 +24,10 @@ import dev.provenance.recorder.events.buildDocChangeDelta
 import dev.provenance.recorder.events.buildDocChangePayload
 import dev.provenance.recorder.events.buildDocClosePayload
 import dev.provenance.recorder.events.buildDocOpenPayload
-import dev.provenance.recorder.events.buildDocSavePayload
 import dev.provenance.recorder.paste.PasteDecision
 import dev.provenance.recorder.paste.toPastePayload
+import dev.provenance.recorder.watch.VfsExternalChangeListener
+import dev.provenance.recorder.watch.readVfsText
 import java.nio.file.Path
 import java.util.WeakHashMap
 
@@ -29,7 +35,7 @@ import java.util.WeakHashMap
  * doc.open/change/save/close wiring (recorder PRD §4.2). Registered ONCE, project-scoped
  * (constructed by RecorderSessionManager, not per-session — see design.md's nested-manifest
  * discovery plan): a single global DocumentListener + FileEditorManagerListener +
- * FileDocumentManagerListener, each resolving the *one* owning session per event via
+ * post-save BulkFileListener, each resolving the *one* owning session per event via
  * [router], and dropping the event when no session owns the path. This is what makes
  * "no event escapes its assignment root" hold even for overlapping/nested roots — a per-
  * session listener filtered only by "is this under my root" would double-fire for a file
@@ -44,12 +50,31 @@ class DocWiring(
     parentDisposable: Disposable,
     private val localFsOf: (VirtualFile) -> Boolean = { it.isInLocalFileSystem },
     private val nioPathOf: (VirtualFile) -> Path? = { runCatching { it.toNioPath() }.getOrNull() },
+    /**
+     * How the post-save VFS listener gets off the EDT/write action before reading content.
+     * Shares [VfsExternalChangeListener.DEFAULT_DISPATCH] so there is one definition of
+     * "pooled thread inside a read action"; injectable so a test can run it inline.
+     */
+    private val vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
+    /**
+     * Reads what a just-completed save left on disk. VFS-mediated in production (see
+     * [readVfsText]); injectable so a test can state "what the editor wrote" explicitly
+     * instead of depending on filesystem timing.
+     */
+    private val readSavedText: (VirtualFile) -> String = ::readVfsText,
 ) {
     private val pending = WeakHashMap<Document, Range>()
     // Keyed by absolute nio path, NOT relative path: two different owning roots can each have
     // a file with the same relative name (e.g. "hw.py" under both cats/ and hog/), and a
     // relative-path key would wrongly treat the second as already-seen.
     private val seenPaths = mutableSetOf<Path>()
+
+    /** One completed editor save, triaged on the EDT and carried to [vfsDispatch]. */
+    private data class SavedFile(
+        val file: VirtualFile,
+        val relativePath: String,
+        val sink: RecordableSessionSink,
+    )
 
     // Listener registration AND the initial catch-up run as ONE EDT unit. That atomicity is the
     // ordering contract (recorder PRD §4.2.1, and see [runOnEdtAndWait]): a write action can only
@@ -126,13 +151,52 @@ class DocWiring(
             },
         )
 
-        project.messageBus.connect(parentDisposable).subscribe(
-            FileDocumentManagerListener.TOPIC,
-            object : FileDocumentManagerListener {
-                override fun beforeDocumentSaving(document: Document) {
-                    val vf = FileDocumentManager.getInstance().getFile(document) ?: return
-                    val sink = sinkFor(vf) ?: return
-                    sink.onDocSave(buildDocSavePayload(relativePath(vf, sink.workspaceRoot), Sha256.hex(document.text)))
+        // doc.save (recorder PRD §4.2) is driven by the POST-WRITE VFS signal, never by
+        // FileDocumentManagerListener.beforeDocumentSaving.
+        //
+        // beforeDocumentSaving fires before the physical write, and IntelliJ mutates the
+        // document from inside that very callback — the platform's TrailingSpacesStripper is
+        // itself a beforeDocumentSaving listener, as is the rest of Actions-on-Save. Whichever
+        // listener runs first sees a different document than the one that reaches disk, so a
+        // hash taken there records content that never existed on disk. That is not theoretical:
+        // it shipped, and a real submission's doc.save hash was the submitted file plus the four
+        // spaces the stripper had just removed, which the analyzer correctly reported as "file
+        // was changed outside the recording" against a student who had done nothing of the sort.
+        // There is no afterDocumentSaving, so the only true post-write signal the platform
+        // offers is the VFS content-change event with isFromSave() == true — the same signal
+        // SaveTimeExternalChangeChecker's docstring already named as the one to use.
+        //
+        // The reference implementation lands in the same place from the other direction:
+        // doc-wiring.ts hashes what `readFile` returns, "because the VS Code buffer may differ
+        // from what a concurrent tool wrote", and always emits doc.save with the on-disk hash.
+        //
+        // Why this listener and not the per-session one in ExternalChangeCoordinator: doc.*
+        // ownership is the router's nearest-ancestor rule, so exactly one session records a
+        // save even under nested manifest roots. A per-session VFS listener filtered only by
+        // "is this under my root" would emit twice for a nested root's file.
+        ApplicationManager.getApplication().messageBus.connect(parentDisposable).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            object : BulkFileListener {
+                override fun after(events: List<VFileEvent>) {
+                    // Runs on the EDT inside a write action: triage only (resolve owner +
+                    // relative path), and hand the content read to [vfsDispatch]. Routing stays
+                    // on the EDT exactly as it does for document events.
+                    val saved = ArrayList<SavedFile>()
+                    for (e in events) {
+                        if (e !is VFileContentChangeEvent || !e.isFromSave) continue
+                        val vf = e.file
+                        val sink = sinkFor(vf) ?: continue
+                        saved.add(SavedFile(vf, relativePath(vf, sink.workspaceRoot), sink))
+                    }
+                    if (saved.isEmpty()) return
+                    vfsDispatch {
+                        for (s in saved) {
+                            val onDisk = runCatching { readSavedText(s.file) }
+                                .onFailure { LOG.warn("could not read ${s.relativePath} after save; doc.save dropped", it) }
+                                .getOrNull() ?: continue
+                            s.sink.onSaveObserved(s.relativePath, onDisk)
+                        }
+                    }
                 }
             },
         )
@@ -210,5 +274,9 @@ class DocWiring(
         val endLine = document.getLineNumber(endOffset)
         val endChar = endOffset - document.getLineStartOffset(endLine)
         return Range(Position(startLine.toLong(), startChar.toLong()), Position(endLine.toLong(), endChar.toLong()))
+    }
+
+    private companion object {
+        private val LOG = Logger.getInstance(DocWiring::class.java)
     }
 }

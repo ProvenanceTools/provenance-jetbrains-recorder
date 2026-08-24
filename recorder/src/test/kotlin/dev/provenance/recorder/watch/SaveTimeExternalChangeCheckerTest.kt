@@ -33,7 +33,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
         val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n") // expected == disk
         SaveTimeExternalChangeChecker(ExternalChangeEngine(reg), emit = { emitted.add(it) })
-            .checkAfterSave(rel, vf)
+            .checkSavedContent(rel, readVfsText(vf))
         assertEquals(0, emitted.size)
     }
 
@@ -47,7 +47,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
         VfsUtil.markDirtyAndRefresh(false, false, false, vf)
 
         SaveTimeExternalChangeChecker(ExternalChangeEngine(reg), emit = { emitted.add(it) })
-            .checkAfterSave(rel, vf)
+            .checkSavedContent(rel, readVfsText(vf))
 
         assertEquals(1, emitted.size)
         val p = emitted[0]
@@ -61,7 +61,7 @@ class SaveTimeExternalChangeCheckerTest : BasePlatformTestCase() {
         val rel = relativePathOf(vf, wsRoot)!!
         val reg = ExpectedContentRegistry(trackOnly(rel)) // watched but no registry entry
         SaveTimeExternalChangeChecker(ExternalChangeEngine(reg), emit = { emitted.add(it) })
-            .checkAfterSave(rel, vf)
+            .checkSavedContent(rel, readVfsText(vf))
         assertEquals(0, emitted.size)
     }
 }

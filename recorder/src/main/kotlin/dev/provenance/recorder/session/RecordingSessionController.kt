@@ -247,6 +247,23 @@ class RecordingSessionController(
         scopeCappedProvider = provider
     }
 
+    /**
+     * The save-time external-change check, run by [onSaveObserved] BEFORE it records doc.save.
+     *
+     * Wired by [RecorderSessionManager.wireExternalChange] to this session's
+     * ExternalChangeCoordinator, for the same reason [scopeCappedProvider] is: that coordinator
+     * does not exist yet when this controller is constructed. Until it is wired, a save records
+     * doc.save and nothing else — the correct degradation, since a session with no
+     * expected-content model has no baseline to call a write external against.
+     */
+    @Volatile
+    private var saveObserver: (String, String) -> Unit = { _, _ -> }
+
+    /** Called once by [RecorderSessionManager], alongside [setScopeCappedProvider]. */
+    fun setSaveObserver(observer: (String, String) -> Unit) {
+        saveObserver = observer
+    }
+
     /** The live cap bit, for the CLASSIC seal ([RecorderSessionManager.sealSession]). */
     fun scopeCapped(): Boolean = scopeCappedProvider()
 
@@ -585,7 +602,33 @@ class RecordingSessionController(
         record("doc.change", payload.toJsonObject())
     }
 
-    override fun onDocSave(payload: dev.provenance.core.DocSavePayload) = record("doc.save", payload.toJsonObject())
+    /**
+     * The editor finished writing [relativePath]; [onDiskContent] is what landed on disk.
+     *
+     * Emits at most two events, and the ORDER between them is a contract, not a detail:
+     * fs.external_change first (when the write diverged from the expected-content model —
+     * format-on-save, or a save racing an external write), then doc.save carrying the hash of
+     * this exact content. The analyzer's save-path signature (`reconstruct-file.ts`) matches an
+     * fs.external_change whose `new_hash` equals the sha256 of the doc.save that immediately
+     * follows it; emitting them the other way round, or hashing a second, separately-read
+     * snapshot, breaks that pairing.
+     *
+     * The observer is the session's ExternalChangeCoordinator, wired by
+     * [RecorderSessionManager.wireExternalChange]. It is never allowed to cost us the doc.save:
+     * a save the recorder does not record is a hole in the on-disk history the analyzer reads,
+     * which is a worse outcome than a missing external-change annotation.
+     */
+    override fun onSaveObserved(relativePath: String, onDiskContent: String) {
+        runCatching { saveObserver(relativePath, onDiskContent) }
+            .onFailure { LOG.warn("save-time external-change check failed for $relativePath", it) }
+        record(
+            "doc.save",
+            dev.provenance.recorder.events.buildDocSavePayload(
+                relativePath,
+                dev.provenance.core.Sha256.hex(onDiskContent),
+            ).toJsonObject(),
+        )
+    }
 
     override fun onDocClose(payload: dev.provenance.core.DocClosePayload) = record("doc.close", payload.toJsonObject())
 

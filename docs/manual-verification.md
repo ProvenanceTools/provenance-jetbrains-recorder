@@ -66,6 +66,16 @@ against each IDE version the plugin targets.
       detail, not a version-pinned contract; `ExternalChangeTimingTest` will catch a
       regression when next run against a newer platform.
 
+      **This flag now also gates `doc.save`,** not just external-change dedup: the save
+      event is emitted from the post-write VFS signal, because hashing the buffer in
+      `beforeDocumentSaving` records content the platform's own save-time document mutations
+      (TrailingSpacesStripper, Actions-on-Save) never wrote to disk. Headless coverage exists
+      on both sides — `DocSavePostWriteHashTest` (the hash is the on-disk bytes) and
+      `VfsExternalChangeListenerTest.testEditorSaveIsNotHandledHereAndLeavesTheSavePathToOwnIt`
+      (a real editor save is tagged, so it does not fall through to the external branch). What
+      still needs a windowed IDE is confirming a **student-driven** Ctrl+S produces the event
+      at all on each target IDE: if it ever stopped, saves would silently stop being recorded.
+
 - [ ] **Network and container filesystems** (note only). If course infrastructure ever
       runs student IDEs against a network-mounted or containerized filesystem, confirm the
       native watcher works there. This is a known IntelliJ weak spot, unrelated to this

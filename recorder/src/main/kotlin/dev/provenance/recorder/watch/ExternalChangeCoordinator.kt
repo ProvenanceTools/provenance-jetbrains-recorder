@@ -58,7 +58,6 @@ class ExternalChangeCoordinator(
         val vfsListener = VfsExternalChangeListener(
             workspaceRoot = workspaceRoot,
             engine = engine,
-            saveChecker = saveChecker,
             emit = emit,
             isRecentEditorChange = isRecentEditorChange,
             dispatch = vfsDispatch,
@@ -71,9 +70,15 @@ class ExternalChangeCoordinator(
             .subscribe(FileDocumentManagerListener.TOPIC, reloadListener)
     }
 
-    /** Path 1 entry point for a true post-save hook, if a later plan adds one. */
-    fun checkAfterSave(relativePath: String, file: VirtualFile) =
-        saveChecker.checkAfterSave(relativePath, file)
+    /**
+     * Path 1 entry point, called by the session controller from its post-write doc.save path
+     * (DocWiring's isFromSave VFS listener → RecordingSessionController.onSaveObserved).
+     *
+     * Takes the content rather than re-reading it: the doc.save that follows must hash the SAME
+     * bytes this comparison ran against, and a second read could observe a different state.
+     */
+    fun checkSavedContent(relativePath: String, onDiskContent: String) =
+        saveChecker.checkSavedContent(relativePath, onDiskContent)
 
     /**
      * Registration + open-file catch-up as ONE EDT unit — see [runOnEdtAndWait]. The enumeration

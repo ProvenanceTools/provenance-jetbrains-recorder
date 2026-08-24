@@ -1,6 +1,5 @@
 package dev.provenance.recorder.watch
 
-import com.intellij.openapi.vfs.VirtualFile
 import dev.provenance.core.FsExternalChangePayload
 
 /**
@@ -8,23 +7,31 @@ import dev.provenance.core.FsExternalChangePayload
  * read the just-saved on-disk content and compare it to the expected model; a divergence
  * (format-on-save, or a save racing an external write) emits a modify.
  *
- * RECONCILIATION with Plan 4: Plan 4's doc-save signal is FileDocumentManagerListener
- * .beforeDocumentSaving, which fires BEFORE the physical write — reading disk there would
- * see stale content. The signal that fires exactly when an editor save has updated the
- * file is the VFS VFileContentChangeEvent with isFromSave() == true. So this checker's
- * production trigger is the VfsExternalChangeListener's isFromSave branch (wired by the
- * coordinator), not a beforeDocumentSaving hook. It is kept as a distinct, directly
- * testable unit — [checkAfterSave] can be called from any true post-save hook a later
- * plan adds.
+ * RECONCILIATION with the doc.save path: FileDocumentManagerListener.beforeDocumentSaving
+ * fires BEFORE the physical write — reading disk there would see stale content, and hashing
+ * the buffer there records content that never reached disk (IntelliJ mutates the document
+ * from inside that callback). The signal that fires exactly when an editor save has updated
+ * the file is the VFS VFileContentChangeEvent with isFromSave() == true.
+ *
+ * That signal is now owned by DocWiring's post-save listener, which routes it to the owning
+ * session and calls [checkSavedContent] via ExternalChangeCoordinator BEFORE recording the
+ * doc.save for the same bytes. This checker stays a distinct, directly testable unit; it just
+ * takes content instead of reading it, so caller and checker cannot disagree about what was
+ * written.
  */
 class SaveTimeExternalChangeChecker(
     private val engine: ExternalChangeEngine,
     private val emit: (FsExternalChangePayload) -> Unit,
-    private val readDisk: (VirtualFile) -> String = ::readVfsText,
 ) {
-    /** [relativePath] must already be the workspace-relative key (see [relativePathOf]). */
-    fun checkAfterSave(relativePath: String, file: VirtualFile) {
-        val onDisk = runCatching { readDisk(file) }.getOrNull() ?: return
-        engine.onSavedContent(relativePath, onDisk)?.let(emit)
+    /**
+     * [relativePath] must already be the workspace-relative key (see [relativePathOf]), and
+     * [onDiskContent] what the editor just wrote there.
+     *
+     * The content is passed in rather than read here so that this comparison and the doc.save
+     * the caller records next describe the same bytes — see
+     * [dev.provenance.recorder.wiring.RecordableSessionSink.onSaveObserved].
+     */
+    fun checkSavedContent(relativePath: String, onDiskContent: String) {
+        engine.onSavedContent(relativePath, onDiskContent)?.let(emit)
     }
 }

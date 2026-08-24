@@ -152,10 +152,10 @@ class CapturePolicyEnforcementTest : BasePlatformTestCase() {
         // Interleave suppressed and captured events so a hole would land mid-chain.
         c.onSelectionChange(selection())
         c.onDocOpen(DocOpenPayload("hw.py", "ef".repeat(32), 3, null, null))
-        c.onDocSave(dev.provenance.core.DocSavePayload("hw.py", "ef".repeat(32)))
+        c.onSaveObserved("hw.py", "print(1)\n")
         c.onSelectionChange(selection())
         c.onDocClose(dev.provenance.core.DocClosePayload("hw.py"))
-        c.onDocSave(dev.provenance.core.DocSavePayload("hw.py", "ef".repeat(32)))
+        c.onSaveObserved("hw.py", "print(1)\n")
 
         val entries = readEntries(c)
 

@@ -24,20 +24,24 @@ import java.nio.file.Path
  * (resolve relative path, classify event type, read the isFromSave flag) and hands the
  * work to [dispatch] for the actual content read + classify + emit off the write action.
  *
- * Dedup (the reconciliation with Plan 4's editor saves):
+ * Dedup (the reconciliation with the editor-save path):
  *  - isFromSave() == true  → the IDE's own mediated write (FileDocumentManagerImpl opts in
- *    to SavingRequestor). Routed to the save-time check (path 1). This is an exact flag,
+ *    to SavingRequestor). NOT handled here: DocWiring's post-save listener owns that signal,
+ *    because the save-time check and the doc.save it precedes must be one ordered unit over
+ *    one read of the file (see RecordableSessionSink.onSaveObserved). Running the check from
+ *    both places would race two unsynchronized callers through the same ExpectedContentRegistry
+ *    and could emit the pair twice, or emit fs.external_change AFTER its doc.save — which is
+ *    exactly the ordering the analyzer's save-path signature keys on. This is an exact flag,
  *    strictly better than VS Code's 250ms timing window.
  *  - isFromSave() == false → a genuine external write (CLI / git / other editor) → the
  *    anti-CLI signal (path 2). A secondary [isRecentEditorChange] guard is available for
  *    saves that trigger a second, differently-requestored write (e.g. format-on-save); it
- *    defaults to off since isFromSave is the primary mechanism and Plan 4 does not yet
- *    track per-path doc.change timestamps.
+ *    defaults to off since isFromSave is the primary mechanism and there is not yet
+ *    per-path doc.change timestamp tracking.
  */
 class VfsExternalChangeListener(
     private val workspaceRoot: Path,
     private val engine: ExternalChangeEngine,
-    private val saveChecker: SaveTimeExternalChangeChecker,
     private val emit: (FsExternalChangePayload) -> Unit,
     private val isRecentEditorChange: (String) -> Boolean = { false },
     private val readDisk: (VirtualFile) -> String = ::readVfsText,
@@ -76,14 +80,13 @@ class VfsExternalChangeListener(
     private fun process(item: Item) {
         when (item.kind) {
             Kind.MODIFY -> {
+                // Editor save — path 1 semantics (format-on-save / save race). Owned by
+                // DocWiring's post-save listener, which runs the same check against the same
+                // content it then records the doc.save hash from. See the dedup note above.
+                if (item.fromSave) return
+                if (isRecentEditorChange(item.relPath)) return // secondary dedup
                 val content = runCatching { readDisk(item.file!!) }.getOrNull() ?: return
-                if (item.fromSave) {
-                    // Editor save — path 1 semantics (format-on-save / save race).
-                    saveChecker.checkAfterSave(item.relPath, item.file!!)
-                } else {
-                    if (isRecentEditorChange(item.relPath)) return // secondary dedup
-                    engine.onExternalModify(item.relPath, content)?.let(emit)
-                }
+                engine.onExternalModify(item.relPath, content)?.let(emit)
             }
             Kind.CREATE -> {
                 val content = runCatching { readDisk(item.file!!) }.getOrNull() ?: return

@@ -6,6 +6,7 @@ import dev.provenance.core.Manifest
 import dev.provenance.core.ParseResult
 import dev.provenance.core.GENESIS_PREV_HASH
 import dev.provenance.core.parseEntries
+import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.events.buildDocChangeDelta
 import dev.provenance.recorder.events.buildDocChangePayload
 import dev.provenance.recorder.io.FlushScheduler
@@ -117,6 +118,60 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         val change = entries.firstOrNull { it.kind == "doc.change" }
         assertNotNull("expected a doc.change entry", change)
         assertEquals("session.start", entries[0].kind)
+    }
+
+    // REGRESSION: doc.save must hash the bytes handed to the sink (what reached disk), and the
+    // save-time external-change check must land BEFORE it. See
+    // RecordableSessionSink.onSaveObserved and the analyzer's save-path signature in
+    // reconstruct-file.ts, which matches an fs.external_change on the doc.save that FOLLOWS it.
+    fun testSaveObservedRecordsTheOnDiskHash() {
+        val c = controller()
+        val onDisk = "print(1)\n"
+        c.onSaveObserved("hw.py", onDisk)
+        val save = readEntries(c).single { it.kind == "doc.save" }
+        assertEquals("hw.py", save.data["path"]!!.jsonPrimitive.content)
+        assertEquals(dev.provenance.core.Sha256.hex(onDisk), save.data["sha256"]!!.jsonPrimitive.content)
+    }
+
+    fun testSaveObservedRunsTheExternalChangeCheckBeforeRecordingDocSave() {
+        val c = controller()
+        val onDisk = "print(1)\n"
+        c.setSaveObserver { rel, content ->
+            // Stand-in for ExternalChangeCoordinator.checkSavedContent: it emits through the
+            // controller's own append seam, exactly as the real one does.
+            c.append(
+                "fs.external_change",
+                dev.provenance.core.FsExternalChangePayload(
+                    path = rel,
+                    oldHash = "00".repeat(32),
+                    newHash = dev.provenance.core.Sha256.hex(content),
+                    diffSize = 1,
+                    operation = "modify",
+                ).toJsonObject(),
+            )
+        }
+        c.onSaveObserved("hw.py", onDisk)
+
+        val kinds = readEntries(c).map { it.kind }
+        val external = kinds.indexOf("fs.external_change")
+        val save = kinds.indexOf("doc.save")
+        assertTrue("expected both events", external >= 0 && save >= 0)
+        assertTrue("fs.external_change must precede its doc.save", external < save)
+        // And the pair must describe the SAME bytes — the signature matches on hash equality.
+        val entries = readEntries(c)
+        assertEquals(
+            entries[external].data["new_hash"]!!.jsonPrimitive.content,
+            entries[save].data["sha256"]!!.jsonPrimitive.content,
+        )
+    }
+
+    // A check that throws must never cost the session its doc.save: a missing save is a hole in
+    // the on-disk history the analyzer reads, a missing annotation is not.
+    fun testSaveObservedStillRecordsDocSaveWhenTheCheckThrows() {
+        val c = controller()
+        c.setSaveObserver { _, _ -> throw IllegalStateException("boom") }
+        c.onSaveObserved("hw.py", "print(1)\n")
+        assertEquals(1, readEntries(c).count { it.kind == "doc.save" })
     }
 
     fun testFocusTransitionsEmitDiscreteFocusChangeEvents() {

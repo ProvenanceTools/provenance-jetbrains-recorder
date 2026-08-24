@@ -40,9 +40,8 @@ class ExternalChangeTimingTest : BasePlatformTestCase() {
 
     private fun install(reg: ExpectedContentRegistry): ExternalChangeEngine {
         val engine = ExternalChangeEngine(reg)
-        val saveChecker = SaveTimeExternalChangeChecker(engine, emit = { emitted.add(it) })
         val listener = VfsExternalChangeListener(
-            workspaceRoot = wsRoot, engine = engine, saveChecker = saveChecker,
+            workspaceRoot = wsRoot, engine = engine,
             emit = { emitted.add(it) }, dispatch = { it() },
         )
         ApplicationManager.getApplication().messageBus.connect(testRootDisposable)

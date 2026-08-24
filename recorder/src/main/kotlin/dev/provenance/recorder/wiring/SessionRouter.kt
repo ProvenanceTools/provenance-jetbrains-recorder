@@ -3,7 +3,6 @@ package dev.provenance.recorder.wiring
 import dev.provenance.core.DocChangePayload
 import dev.provenance.core.DocClosePayload
 import dev.provenance.core.DocOpenPayload
-import dev.provenance.core.DocSavePayload
 import dev.provenance.core.PastePayload
 import dev.provenance.core.SelectionChangePayload
 import dev.provenance.recorder.paste.PasteCorrelator
@@ -20,7 +19,24 @@ interface RecordableSessionSink {
     val pasteCorrelator: PasteCorrelator?
     fun onDocOpen(payload: DocOpenPayload)
     fun onDocChange(payload: DocChangePayload)
-    fun onDocSave(payload: DocSavePayload)
+    /**
+     * A watched file's editor save has COMPLETED and [onDiskContent] is what landed on disk.
+     *
+     * Deliberately not `onDocSave(payload)`: the hash a doc.save carries must be of the bytes
+     * that reached disk, and only the caller of this method is in a position to know them.
+     * IntelliJ mutates the document during the save (its TrailingSpacesStripper and the rest
+     * of Actions-on-Save all run from `beforeDocumentSaving`), so the buffer text at save
+     * entry is not what gets written — hashing it records a state that never existed on disk
+     * and makes the analyzer's "submitted file matches the last recorded on-disk state" check
+     * fail against an honest student.
+     *
+     * Passing content rather than a payload also keeps the ORDER right. The implementor emits
+     * fs.external_change (if the write diverged from the expected-content model) and *then*
+     * doc.save carrying this exact content's hash — the pairing `reconstruct-file.ts`'s
+     * save-path signature matches on. Two sink calls could not guarantee that pairing, and a
+     * second disk read could not guarantee the two events describe the same bytes.
+     */
+    fun onSaveObserved(relativePath: String, onDiskContent: String)
     fun onDocClose(payload: DocClosePayload)
     fun onPaste(payload: PastePayload)
     fun onSelectionChange(payload: SelectionChangePayload)

@@ -106,17 +106,27 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
     /**
      * Construct the project-scoped doc/selection/terminal/git routing ONCE, lazily, the moment
      * the registry goes from empty to non-empty. It reads the test fs-seam overrides at this
-     * point (so a test must set them before its first [start]). [teardownRoutedWiringIfIdle]
+     * point (so a test must set them before its first [start]), and takes [vfsDispatch] from
+     * whichever [start] call constructs it. [teardownRoutedWiringIfIdle]
      * disposes it again when the last session stops, so a test that reuses one manager instance
      * across methods gets a fresh router (with that method's overrides) on each empty→non-empty
      * transition, never a stale one.
      */
-    private fun ensureRoutedWiring() {
+    private fun ensureRoutedWiring(vfsDispatch: (() -> Unit) -> Unit) {
         if (routedWiring != null) return
         val localFsOf = localFsOfOverride ?: { vf: VirtualFile -> vf.isInLocalFileSystem }
         val nioPathOf = nioPathOfOverride ?: { vf: VirtualFile -> runCatching { vf.toNioPath() }.getOrNull() }
         val disposable = Disposer.newDisposable(this, "provenance-routed-wiring")
-        val doc = DocWiring(project, this, disposable, localFsOf = localFsOf, nioPathOf = nioPathOf)
+        val doc = DocWiring(
+            project, this, disposable,
+            localFsOf = localFsOf, nioPathOf = nioPathOf,
+            // Same seam the coordinator gets, for the same reason: DocWiring's post-save
+            // listener also hops off the write action before reading content, and a test that
+            // wants to observe the resulting doc.save has to be able to run that hop inline.
+            // Only the FIRST session's value is used — this wiring is project-scoped, exactly
+            // like the localFsOf/nioPathOf overrides above.
+            vfsDispatch = vfsDispatch,
+        )
         val sel = SelectionWiring(this, disposable, localFsOf = localFsOf, nioPathOf = nioPathOf)
         val terminalState = project.service<RecorderTerminalState>()
         terminalState.emitTerminalOpen = { cwd, payload -> routeTerminalOpen(cwd, payload) }
@@ -369,7 +379,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         // blocking IO and deliberately stays OFF the EDT.
         runOnEdtAndWait {
             sessions[root] = session
-            ensureRoutedWiring()
+            ensureRoutedWiring(vfsDispatch)
 
             // Catch up doc.open for files already open under THIS root, on EVERY start() — not
             // just the first (which constructs DocWiring and runs its init-time catch-up).
@@ -427,6 +437,11 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         // Now that the coordinator (and its ExpectedContentRegistry) exists, wire the
         // controller's live cap reader to it — see RecordingSessionController.scopeCappedProvider.
         controller.setScopeCappedProvider { coordinator.registry.capHit() }
+        // And the save-time check the doc.save path runs before it records the save. This is the
+        // "true post-save hook" ExternalChangeCoordinator.checkSavedContent was written for: the
+        // trigger is DocWiring's post-write VFS listener, which owns the ordering between
+        // fs.external_change and the doc.save that follows it.
+        controller.setSaveObserver { rel, onDisk -> coordinator.checkSavedContent(rel, onDisk) }
     }
 
     /** End one session (root != null) or every session (root == null — project close / test
