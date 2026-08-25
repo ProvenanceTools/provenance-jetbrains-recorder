@@ -113,9 +113,38 @@ class DocWiring(
                 }
 
                 override fun documentChanged(event: DocumentEvent) {
-                    val vf = FileDocumentManager.getInstance().getFile(event.document) ?: return
+                    val fdm = FileDocumentManager.getInstance()
+                    val vf = fdm.getFile(event.document) ?: return
                     val sink = sinkFor(vf) ?: return
+                    // Consume the pending range BEFORE any early return below. beforeDocumentChange
+                    // stored one for THIS change; bailing out without removing it would leave a
+                    // stale range in the map keyed by a live Document.
                     val range = pending.remove(event.document) ?: return
+                    // Reload-from-disk guard (recorder PRD §4.5), the same discriminator
+                    // ExternalChangeCoordinator's expected-model feeder uses. When an external
+                    // tool rewrites a file IntelliJ has open with a CLEAN buffer — `git pull`,
+                    // `git stash pop`, a CLI agent — the platform silently replaces the buffer to
+                    // match disk. That replacement is a real DocumentEvent, and it is one big
+                    // delta, so PasteClassifier (any single insert >= PASTE_MIN_INSERT_CHARS)
+                    // called it a paste: the recorder logged a PARTNER'S PULLED WORK as code this
+                    // student pasted, verbatim, while fs.external_change recorded the very same
+                    // change correctly a millisecond later. On a shared group repo that is a
+                    // false-accusation generator, so the paste/doc.change path must not see it.
+                    //
+                    // The discriminator: a reload converges the buffer to disk and leaves the
+                    // document SAVED; only a genuine in-editor edit leaves it UNSAVED. IntelliJ
+                    // makes this exact, unlike VS Code — FileDocumentManagerImpl.documentChanged
+                    // keys off `hasWriteAction(ExternalChangeAction)`, so it has already added the
+                    // document to (or removed it from) the unsaved set by the time this listener
+                    // runs. There is no "the dirty flag flips one event later" window here, which
+                    // is why doc-wiring.ts needs a synchronous disk read and this does not; the
+                    // first-edit-after-save cases are pinned by DocWiringReloadTest.
+                    //
+                    // The change is NOT lost: DocumentReloadExternalChangeListener (path 3) and
+                    // the VFS listener (path 2) emit fs.external_change for it. Accepted gap: a
+                    // file outside `files_under_review` has no such fallback, so its reload goes
+                    // unrecorded. An unrecorded reload beats a fabricated paste.
+                    if (!fdm.isDocumentUnsaved(event.document)) return
                     val delta = buildDocChangeDelta(
                         range.start.line, range.start.character,
                         range.end.line, range.end.character,
