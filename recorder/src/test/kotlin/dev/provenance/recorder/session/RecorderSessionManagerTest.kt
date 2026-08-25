@@ -14,6 +14,7 @@ import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
+import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ScheduledFuture
@@ -53,6 +54,11 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
     override fun tearDown() {
         try {
             runCatching { project.service<RecorderSessionManager>().stop() }
+            // The restart tests drive the REAL startFromActivation, which records an identity
+            // outcome (and, on the failure path, a degraded mark) into RecorderState. That
+            // service hangs off the shared light-fixture project, so leaving it populated leaks
+            // a "(not enrolled)" / "not recording" status bar into every later test class.
+            runCatching { project.service<dev.provenance.recorder.activation.RecorderState>().deactivateAll() }
             wsRoot.toFile().deleteRecursively()
             wsRoot2.toFile().deleteRecursively()
         } finally {
@@ -115,6 +121,99 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         val ks = kinds(session)
         assertTrue("terminal.open must be recorded", ks.contains("terminal.open"))
         assertTrue("git.event must be recorded", ks.contains("git.event"))
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Mid-session enrollment: identity is built ONCE, at session start, so importing a
+    // credential into a live session changes nothing about it. The import restarts the
+    // sessions so work from that moment on is attributed. The restart has to be clean —
+    // a truncated log or an orphaned writer would be a worse bug than the one it fixes.
+    // -------------------------------------------------------------------------------------
+
+    private fun kindsOfFile(slog: Path): List<String> {
+        val text = String(Files.readAllBytes(slog), Charsets.UTF_8)
+        return (parseEntries(text) as ParseResult.Ok).entries.map { it.kind }
+    }
+
+    fun testRestartEndsTheOldSessionCleanlyAndStartsAFreshOne() {
+        val m = manager()
+        installFsSeams(m)
+        val old = start(m)
+        val oldSlog = old.controller.slogPath
+
+        val report = runBlocking { m.restartSessions() }
+
+        assertEquals(listOf(wsRoot), report.restarted)
+        assertTrue("no root may fail here", report.failed.isEmpty())
+
+        // The old session ended the ordinary way: session.end written, writer flushed+closed.
+        val oldKinds = kindsOfFile(oldSlog)
+        assertEquals("session.start", oldKinds.first())
+        assertEquals("the old session must end cleanly, not be truncated", "session.end", oldKinds.last())
+
+        // And a genuinely new session is live for the same root.
+        val fresh = m.activeSessions[wsRoot]
+        assertNotNull("the root must still be recording after the restart", fresh)
+        assertNotSame("the restart must build a new controller", old.controller, fresh!!.controller)
+        assertNotSame(oldSlog, fresh.controller.slogPath)
+        assertEquals("session.start", kinds(fresh).first())
+    }
+
+    fun testRestartCoversEveryOpenAssignmentRoot() {
+        val m = manager()
+        installFsSeams(m)
+        val a = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        val b = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        val report = runBlocking { m.restartSessions() }
+
+        assertEquals(setOf(wsRoot, wsRoot2), report.restarted.toSet())
+        assertTrue(report.failed.isEmpty())
+        assertNotSame(a.controller, m.activeSessions[wsRoot]!!.controller)
+        assertNotSame(b.controller, m.activeSessions[wsRoot2]!!.controller)
+        assertEquals("session.end", kindsOfFile(a.controller.slogPath).last())
+        assertEquals("session.end", kindsOfFile(b.controller.slogPath).last())
+    }
+
+    fun testRestartWithNothingRecordingIsANoOp() {
+        val report = runBlocking { manager().restartSessions() }
+        assertTrue(report.restarted.isEmpty())
+        assertTrue(report.failed.isEmpty())
+    }
+
+    fun testAFailedRestartDegradesLoudlyInsteadOfThrowing() {
+        val m = manager()
+        installFsSeams(m)
+        val old = start(m)
+
+        // Must not throw into the caller (the import action), and must not leave the student
+        // with a root that silently stopped recording: the widget has to say so.
+        val report = runBlocking { m.restartSessions { _, _ -> throw IllegalStateException("boom") } }
+
+        assertEquals(listOf(wsRoot), report.failed)
+        assertTrue(report.restarted.isEmpty())
+        assertEquals("session.end", kindsOfFile(old.controller.slogPath).last())
+        assertTrue(
+            "a root that could not be restarted must render as degraded, never as recording",
+            project.service<dev.provenance.recorder.activation.RecorderState>().isDegraded(wsRoot),
+        )
+    }
+
+    fun testOneFailedRootDoesNotStopTheOthersFromRestarting() {
+        val m = manager()
+        installFsSeams(m)
+        start(m, root = wsRoot, provDir = provDir, assignmentId = "cats")
+        val b = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+
+        val report = runBlocking {
+            m.restartSessions { root, manifest ->
+                if (root == wsRoot) throw IllegalStateException("boom") else m.startFromActivation(root, manifest)
+            }
+        }
+
+        assertEquals(listOf(wsRoot), report.failed)
+        assertEquals(listOf(wsRoot2), report.restarted)
+        assertNotSame(b.controller, m.activeSessions[wsRoot2]!!.controller)
     }
 
     fun testTerminalEventWithNoOwningRootIsDropped() {

@@ -18,6 +18,7 @@ import dev.provenance.core.scopeFromManifest
 import dev.provenance.core.toJsonObject
 import com.intellij.openapi.diagnostic.Logger
 import dev.provenance.recorder.activation.ROOT_PUBLIC_KEY_HEX
+import dev.provenance.recorder.activation.degradedReason
 import dev.provenance.recorder.commands.SealResult
 import dev.provenance.recorder.commands.computeInstalledExtensionHash
 import dev.provenance.recorder.commands.sealBundle
@@ -305,6 +306,65 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             preparedKeypair = keypair,
             preparedIdentity = identityOutcome,
         )
+    }
+
+    /** What [restartSessions] managed to do, per root. Both lists are in registry order. */
+    data class RestartReport(val restarted: List<Path>, val failed: List<Path>) {
+        val attempted: Int get() = restarted.size + failed.size
+    }
+
+    /**
+     * Stop and start every live session, so each one rebuilds its `session.start`.
+     *
+     * Exists for exactly one caller: importing an enrollment credential mid-session. The
+     * identity block is assembled ONCE, in [startFromActivation], before the session exists —
+     * so a credential imported into a running session changes nothing about it, and every event
+     * until the student next reopens the project lands in a bundle the analyzer will file under
+     * nobody. Restarting is what makes the import take effect now.
+     *
+     * **This is not a new lifecycle.** Each root goes through the ordinary [stop] →
+     * [startFromActivation] pair, in that order, with the manifest the session was already
+     * running under (already verified at activation — re-discovering it here would re-walk the
+     * VFS to reach the same object). So the old session gets its normal `session.end` + flush +
+     * writer/meta close via its session Disposable, the new session runs the same chain recovery
+     * every start runs, and `prev_session_id` follows the same rule as any other restart: set
+     * only for a DANGLING prior session, which a cleanly stopped one is not.
+     *
+     * **A failed start does not throw and does not stay quiet.** The root is marked degraded in
+     * [dev.provenance.recorder.activation.RecorderState], exactly as a failed start during
+     * activation is, so the status bar reads "not recording (error)" instead of continuing to
+     * claim it is recording. The caller reports the roots in [RestartReport.failed] and tells
+     * the student to reopen the project. There is no way to keep the old session instead: its
+     * writer is closed by then, and [start] refuses a second session for a live root.
+     *
+     * @param starter the per-root start, injectable so tests can drive the failure path.
+     */
+    suspend fun restartSessions(
+        starter: suspend (Path, Manifest) -> Unit = { root, manifest -> startFromActivation(root, manifest) },
+    ): RestartReport {
+        // Snapshot first: the registry is mutated by every stop/start below.
+        val open = sessions.entries.map { it.key to it.value.activated.manifest }
+        val restarted = mutableListOf<Path>()
+        val failed = mutableListOf<Path>()
+        for ((root, manifest) in open) {
+            stop(root)
+            try {
+                starter(root, manifest)
+                restarted.add(root)
+            } catch (c: kotlin.coroutines.cancellation.CancellationException) {
+                // The IDE is going down or the caller was cancelled. Not a recording failure,
+                // and swallowing it would break structured concurrency.
+                throw c
+            } catch (t: Throwable) {
+                // Per-root isolation, same rule as activation: one root that cannot come back
+                // must not stop the others from coming back.
+                LOG.warn("could not restart recording for $root after an identity import", t)
+                failed.add(root)
+                runCatching { project.service<RecorderState>().markDegraded(root, degradedReason(t)) }
+                    .onFailure { LOG.warn("could not mark $root degraded after a failed restart", it) }
+            }
+        }
+        return RestartReport(restarted, failed)
     }
 
     /** Testable core: construct the controller for [activated.workspaceRoot] and wire the

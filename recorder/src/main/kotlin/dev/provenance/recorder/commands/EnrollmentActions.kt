@@ -5,10 +5,14 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import dev.provenance.core.deriveCourseKeypair
 import dev.provenance.core.deriveStudentKeypair
+import dev.provenance.recorder.activation.refreshStatusBarWidget
 import dev.provenance.recorder.identity.CourseKeyCache
 import dev.provenance.recorder.identity.ENROLL_URL
 import dev.provenance.recorder.identity.IdentityImportOk
@@ -20,6 +24,7 @@ import dev.provenance.recorder.identity.exportMasterSecret
 import dev.provenance.recorder.identity.loadOrCreateMasterSecret
 import dev.provenance.recorder.identity.saveIdentityArtifact
 import dev.provenance.recorder.session.RecorderSessionManager
+import kotlinx.coroutines.runBlocking
 
 /**
  * The four student-facing identity commands (program spec §S2, §5a).
@@ -73,6 +78,73 @@ private fun notify(project: Project, type: NotificationType, title: String, body
         .createNotification(title, body, type)
         .notify(project)
 }
+
+/**
+ * What the student is told after a credential lands while sessions are already running.
+ *
+ * Pure, and pinned by `EnrollmentRestartNoticeTest`, because the sentence that matters most is
+ * the one it would be most convenient to leave out: **work recorded before the import stays
+ * unattributed.** `session.start.identity` is written once, at the top of a signed, hash-chained
+ * log; there is no amending it afterwards and no honest way to imply otherwise.
+ */
+internal fun identityStoredNotice(stored: String, activeRoots: Int): String = when {
+    activeRoots <= 0 -> "$stored New recording sessions will include it."
+    else -> "$stored Recording is restarting for ${assignments(activeRoots)} so that work from " +
+        "this point on is attributed to you. Work recorded before now stays unattributed and " +
+        "cannot be changed after the fact."
+}
+
+/** The degraded path: the credential IS stored, but a root did not come back up. */
+internal fun restartFailedNotice(failedRoots: Int): String =
+    "Your identity is stored, but recording could not be restarted for " +
+        "${assignments(failedRoots)}. Close and reopen the project to start an attributed " +
+        "session. Work recorded before now stays unattributed."
+
+private fun assignments(n: Int): String = if (n == 1) "1 assignment" else "$n assignments"
+
+/**
+ * Apply a freshly-stored credential to the sessions already running, and say so.
+ *
+ * Never throws into the action: a failure here costs the restart, and the student is told to
+ * reopen the project instead. Runs off the EDT because the restart writes `session.end`, closes
+ * the writers, and re-runs chain recovery for each root.
+ *
+ * Scoped to the project the command ran in. A 2.1 credential is machine-global, so sessions in
+ * ANOTHER open project window still carry the old (or no) identity until that window is
+ * reopened — which is why the counted wording below says how many assignments are restarting
+ * rather than claiming everything is now covered.
+ */
+private fun applyIdentityToOpenSessions(project: Project, title: String, stored: String) {
+    val manager = project.service<RecorderSessionManager>()
+    val open = manager.activeSessions.size
+    notify(project, NotificationType.INFORMATION, title, identityStoredNotice(stored, open))
+    if (open == 0) return
+
+    object : Task.Backgroundable(project, "Applying your Provenance identity", false) {
+        override fun run(indicator: ProgressIndicator) {
+            // restartSessions isolates each root itself, so a throw escaping it means the whole
+            // restart died; every root that was open is then a root that did not come back.
+            val failedCount = runCatching { runBlocking { manager.restartSessions() }.failed.size }
+                .getOrElse {
+                    LOG.warn("restarting sessions after an identity import failed outright", it)
+                    open
+                }
+            if (failedCount > 0) {
+                notify(
+                    project,
+                    NotificationType.ERROR,
+                    "Provenance: recording did not restart",
+                    restartFailedNotice(failedCount),
+                )
+            }
+            // Whatever happened, the widget must now show it: a restarted root has a fresh
+            // identity outcome, and a failed one is marked degraded.
+            refreshStatusBarWidget(project)
+        }
+    }.queue()
+}
+
+private val LOG = Logger.getInstance("dev.provenance.recorder.commands.EnrollmentActions")
 
 /**
  * The course ids currently being recorded, so the student never has to type one. Only 2.0
@@ -152,18 +224,17 @@ class ImportEnrollmentTokenAction : AnAction() {
         ) ?: return
 
         when (val result = saveIdentityArtifact(storeOf(), pasted)) {
-            is StoreResult.Ok -> notify(
+            // Stored AND applied: the identity block is built once, at session start, so a
+            // credential imported into a live session does nothing until that session restarts.
+            is StoreResult.Ok -> applyIdentityToOpenSessions(
                 project,
-                NotificationType.INFORMATION,
                 "Provenance: enrolled",
                 when (val ok = result.value) {
                     is IdentityImportOk.Current21 ->
-                        "Your identity for ${ok.institutionId} is stored. New recording " +
-                            "sessions in every course will include it."
+                        "Your identity for ${ok.institutionId} is stored, for every course."
 
                     is IdentityImportOk.Legacy20 ->
-                        "You are now enrolled in ${ok.courseId}. New recording sessions " +
-                            "will include your identity."
+                        "You are now enrolled in ${ok.courseId}."
                 },
             )
 
@@ -231,12 +302,15 @@ class ImportStudentSecretAction : AnAction() {
         when (
             val result = dev.provenance.recorder.identity.importMasterSecret(storeOf(), pasted)
         ) {
-            is StoreResult.Ok -> notify(
+            // Restarted for the same reason an enrollment import is: importing the SECRET is
+            // what makes tokens the student already holds derive correctly, so this can turn a
+            // live session's StudentKeyMismatch into a working identity — but only at the next
+            // session.start, which is the one this restart produces.
+            is StoreResult.Ok -> applyIdentityToOpenSessions(
                 project,
-                NotificationType.INFORMATION,
                 "Provenance: identity secret imported",
-                "Your per-course keys will re-derive from it, so any enrollment tokens you " +
-                    "already have keep working.",
+                "Your identity secret is stored. Your per-course keys re-derive from it, so any " +
+                    "enrollment tokens you already have keep working.",
             )
 
             is StoreResult.Err -> notify(
