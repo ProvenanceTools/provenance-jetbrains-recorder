@@ -7,6 +7,7 @@ import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
@@ -101,10 +102,17 @@ object EnrollNudgeNotifier {
         }
     }
 
-    /** Run the existing palette action rather than duplicating its key-derivation logic. */
+    /**
+     * Run the existing palette action rather than duplicating its key-derivation logic.
+     *
+     * Goes through [ActionUtil.performAction], never [com.intellij.openapi.actionSystem.AnAction.actionPerformed]
+     * directly: the latter is `@ApiStatus.OverrideOnly` -- a plugin may override it, never invoke
+     * it -- and calling it bypasses the action system's own update/context handling.
+     * [EnrollNudgeNotifierOverrideOnlyTest] guards this, because the compiler does not.
+     */
     private fun showEnrollmentKey(e: AnActionEvent) {
         val action = ActionManager.getInstance().getAction(SHOW_ENROLLMENT_KEY_ACTION_ID) ?: return
-        action.actionPerformed(e)
+        ActionUtil.performAction(action, e)
     }
 
     private const val GROUP_ID = "Provenance Recorder"
