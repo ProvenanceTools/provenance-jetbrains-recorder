@@ -28,6 +28,11 @@ package dev.provenance.recorder.identity
  * see [isUnenrolledSkip]. Attaching an enrollment URL to a packaging bug would send the student
  * somewhere that cannot help them and bury the real fault.
  *
+ * The other eight are not silent either: [identitySkipAdvice] gives each one its own sentence,
+ * and [identitySuffix] / [identityTooltipLines] put it in front of the student. Not telling them
+ * was the original defect — a bundle came back entirely `unattributed` while the status bar had
+ * said "Provenance: recording" the whole way through.
+ *
  * ## No network, still
  *
  * Recorder PRD NG2 forbids the recorder making network calls during a session. Nothing here
@@ -166,3 +171,121 @@ fun enrollmentTooltipLine(unenrolled: Boolean): String? =
         "You have not enrolled, so this work is not attributed to you. " +
             "Enrol at $ENROLL_URL, then run \"Provenance: Import Enrollment Token\"."
     }
+
+/**
+ * The status-bar suffix for a session that CAN be attributed to nobody for a reason enrolling
+ * would not fix.
+ *
+ * Deliberately visible, and deliberately just one fixed string. The reported failure was a
+ * student watching the bar read plain "Provenance: recording" for a whole assignment while every
+ * session in the bundle came out `unattributed` — the same silent-failure shape the degraded
+ * indicator exists to make impossible ("a student must be able to tell recording is broken, not
+ * merely absent"). One neutral marker restores the signal; the diagnosis, which differs per
+ * reason and is often a sentence long, belongs in the tooltip where there is room for it.
+ */
+const val IDENTITY_UNAVAILABLE_SUFFIX: String = " (identity unavailable)"
+
+/**
+ * What actually went wrong, in a sentence a student can act on.
+ *
+ * Total over [IdentitySkipReason] — every reason, not only the two [isUnenrolledSkip] admits.
+ * Before this existed, eight of the ten reasons produced a status bar reading plain "recording"
+ * and a bundle nobody could attribute, with the reason surviving only as a `LOG.debug` line.
+ *
+ * Three rules the wording follows:
+ *
+ *  - **Say the consequence.** Every line states that the work is not attributed. It is the one
+ *    fact the student is being denied, and it is the same fact whatever the cause.
+ *  - **Say the fix, and only a fix that works.** A key mismatch is answered with the identity
+ *    SECRET, never with the enrollment page — re-enrolling mints a fresh credential against the
+ *    same wrong key and fails identically. An unavailable credential store is not answered with
+ *    "enrol", because storing an enrollment needs that same store.
+ *  - **Never print the enum.** `StudentKeyMismatch` is not a sentence, and a student reading it
+ *    learns nothing except that something they cannot name broke.
+ */
+fun identitySkipAdvice(reason: IdentitySkipReason): String = when (reason) {
+    // The two enrolling fixes reuse the existing, already-tested wording VERBATIM rather than
+    // paraphrasing it — two copies of one sentence is two chances to drift.
+    is IdentitySkipReason.NotEnrolled, is IdentitySkipReason.ManifestNot20 ->
+        enrollmentTooltipLine(true)!!
+
+    is IdentitySkipReason.NoRootPublicKey ->
+        "This copy of the recorder was built without a trust anchor, so it cannot attach your " +
+            "identity and this work is not attributed to you. Enrolling will not fix it: " +
+            "reinstall the recorder from your course's link and tell course staff if it persists."
+
+    is IdentitySkipReason.InstitutionCertNotRootSigned ->
+        "Your stored enrollment certificate was not issued by an authority this recorder " +
+            "trusts, so this work is not attributed to you. Import the credential again exactly " +
+            "as your institution sent it; if it still fails, ask course staff to re-issue it."
+
+    is IdentitySkipReason.CredentialKeyMismatch ->
+        "Your enrollment credential belongs to a different identity secret than the one on this " +
+            "machine, so this work is not attributed to you. Run \"Provenance: Import Student " +
+            "Identity Secret\" with the secret exported from the machine you enrolled on."
+
+    is IdentitySkipReason.StudentKeyMismatch ->
+        "Your enrollment token for this course belongs to a different identity secret than the " +
+            "one on this machine, so this work is not attributed to you. Run \"Provenance: " +
+            "Import Student Identity Secret\" with the secret exported from the machine you " +
+            "enrolled on, or ask course staff to re-issue the token for this machine."
+
+    is IdentitySkipReason.MasterSecretUnavailable ->
+        "This machine's credential store could not give the recorder your identity secret " +
+            "(${reason.reason}), so this work is not attributed to you. Unlock your system " +
+            "keychain and reopen the project — storing a new enrollment would need the same " +
+            "store, so re-enrolling will not help."
+
+    is IdentitySkipReason.InvalidSessionPubkey ->
+        "The recorder could not produce a usable session key, so this work is not attributed to " +
+            "you. Your work is still being recorded. Restart the IDE, and report it to course " +
+            "staff if it happens again."
+
+    is IdentitySkipReason.ChainDidNotVerify ->
+        "Your enrollment credential did not pass the same check your grader will run, so it was " +
+            "left out rather than written unverifiable, and this work is not attributed to you. " +
+            "Import the credential again; if it still fails, ask course staff to re-issue it."
+
+    is IdentitySkipReason.UnexpectedError ->
+        "Your identity could not be attached because of an unexpected error " +
+            "(${reason.reason}), so this work is not attributed to you. Your work is still " +
+            "being recorded. Report it to course staff."
+}
+
+/**
+ * The status-bar suffix for the identity state as a whole.
+ *
+ * Precedence, top down, and the first two rungs are load-bearing:
+ *
+ *  1. **Anything emitted wins.** [anyIdentityEmitted]'s all-or-nothing rule, unchanged — one
+ *     attributed session makes both suffixes below the wrong thing to say.
+ *  2. **"(not enrolled)" keeps its exact meaning.** Only the reasons enrolling would fix.
+ *  3. Everything else is an identity failure the student did not cause and cannot be told to
+ *     enrol out of, so it gets the neutral [IDENTITY_UNAVAILABLE_SUFFIX].
+ */
+fun identitySuffix(outcomes: Collection<IdentityOutcome>): String = when {
+    anyIdentityEmitted(outcomes) -> ""
+    isUnenrolled(outcomes) -> enrollmentSuffix(true)
+    outcomes.any { it is IdentityOutcome.Skipped } -> IDENTITY_UNAVAILABLE_SUFFIX
+    else -> ""
+}
+
+/**
+ * Every distinct identity problem worth putting in the tooltip, most actionable first.
+ *
+ * Gated on [anyIdentityEmitted] for exactly the reason its docstring gives: with one session
+ * attributed, the per-course gap is the analyzer's to report against the submission that lacks a
+ * contributor, and the widget saying "your identity is unavailable" would be false.
+ *
+ * Ordered deterministically — enrollment first (it is the one the student can act on today),
+ * then the rest sorted. `RecorderState.identityOutcomes` comes out of a `ConcurrentHashMap`,
+ * whose iteration order is neither insertion order nor stable across rehashes, and a tooltip
+ * that reshuffles its lines between refreshes reads as noise.
+ */
+fun identityTooltipLines(outcomes: Collection<IdentityOutcome>): List<String> {
+    if (anyIdentityEmitted(outcomes)) return emptyList()
+    val reasons = outcomes.filterIsInstance<IdentityOutcome.Skipped>().map { it.reason }
+    val (enrolling, other) = reasons.partition { isUnenrolledSkip(it) }
+    return enrolling.map(::identitySkipAdvice).distinct() +
+        other.map(::identitySkipAdvice).distinct().sorted()
+}

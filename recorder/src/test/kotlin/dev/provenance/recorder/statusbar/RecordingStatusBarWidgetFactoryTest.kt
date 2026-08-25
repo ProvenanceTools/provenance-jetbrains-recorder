@@ -109,4 +109,41 @@ class RecordingStatusBarWidgetFactoryTest : BasePlatformTestCase() {
         val tooltip = (widget.getPresentation() as StatusBarWidget.TextPresentation).getTooltipText()
         assertEquals("Provenance recorder is active for this assignment.", tooltip)
     }
+
+    // An identity failure that ENROLLING CANNOT FIX used to render as plain "Provenance:
+    // recording" with an empty tooltip, while every session in the bundle came out
+    // unattributed. That silence is the defect.
+    private fun tooltip(): String =
+        (RecordingStatusBarWidgetFactory().createWidget(project).getPresentation() as StatusBarWidget.TextPresentation)
+            .getTooltipText().orEmpty()
+
+    fun `test a non-enrollment identity failure is visible in the widget text`() {
+        val state = project.service<RecorderState>()
+        val root = java.nio.file.Paths.get("/ws")
+        state.activate(root, manifest())
+        state.recordIdentity(
+            root,
+            dev.provenance.recorder.identity.IdentityOutcome.Skipped(
+                dev.provenance.recorder.identity.IdentitySkipReason.StudentKeyMismatch("aa", "bb"),
+            ),
+        )
+        assertEquals("Provenance: recording (identity unavailable)", text())
+    }
+
+    fun `test the widget tooltip explains what actually failed and what to do`() {
+        val state = project.service<RecorderState>()
+        val root = java.nio.file.Paths.get("/ws")
+        state.activate(root, manifest())
+        state.recordIdentity(
+            root,
+            dev.provenance.recorder.identity.IdentityOutcome.Skipped(
+                dev.provenance.recorder.identity.IdentitySkipReason.MasterSecretUnavailable("SecretStoreUnavailable"),
+            ),
+        )
+        val tip = tooltip()
+        assertTrue(tip, tip.startsWith("Provenance recorder is active for this assignment."))
+        assertTrue("the consequence must be stated: $tip", tip.contains("not attributed"))
+        assertTrue("the actual failure must be named: $tip", tip.contains("credential store"))
+        assertFalse("this student DID enrol; do not call them un-enrolled: $tip", tip.contains("not enrolled"))
+    }
 }

@@ -140,6 +140,158 @@ class EnrollNudgeTest {
     }
 
     // ---------------------------------------------------------------------
+    // identitySkipAdvice — the OTHER eight reasons, which used to say nothing
+    // ---------------------------------------------------------------------
+
+    /** The names a student must never be shown. */
+    private val reasonClassNames: List<String> = allSkipReasons.mapNotNull { it::class.simpleName }
+
+    @Test
+    fun `every skip reason yields advice, and none of it leaks the enum name`() {
+        for (reason in allSkipReasons) {
+            val advice = identitySkipAdvice(reason)
+            assertTrue("blank advice for $reason", advice.isNotBlank())
+            for (name in reasonClassNames) {
+                assertFalse("advice for $reason leaks \"$name\": $advice", advice.contains(name))
+            }
+        }
+    }
+
+    @Test
+    fun `every skip reason names the consequence`() {
+        // The whole defect: a student could not tell an unattributed session from an
+        // attributed one. Whatever went wrong, the line has to say the work is unattributed.
+        for (reason in allSkipReasons) {
+            assertTrue(
+                "advice for $reason does not state the consequence: ${identitySkipAdvice(reason)}",
+                identitySkipAdvice(reason).contains("not attributed") ||
+                    identitySkipAdvice(reason).contains("not be attributed"),
+            )
+        }
+    }
+
+    @Test
+    fun `the two enrolling fixes keep the existing wording, verbatim`() {
+        assertEquals(enrollmentTooltipLine(true), identitySkipAdvice(IdentitySkipReason.NotEnrolled("cs61b")))
+        assertEquals(enrollmentTooltipLine(true), identitySkipAdvice(IdentitySkipReason.ManifestNot20))
+    }
+
+    @Test
+    fun `the eight non-enrollment reasons each say something different`() {
+        val others = allSkipReasons.filterNot { isUnenrolledSkip(it) }.map { identitySkipAdvice(it) }
+        assertEquals(8, others.size)
+        assertEquals("each reason needs its own advice", others.size, others.distinct().size)
+    }
+
+    @Test
+    fun `a key mismatch sends the student to their secret, never to the enrollment page`() {
+        // Enrolling again mints a credential for the SAME wrong key. The fix is the secret.
+        for (reason in listOf(
+            IdentitySkipReason.CredentialKeyMismatch("aa", "bb"),
+            IdentitySkipReason.StudentKeyMismatch("aa", "bb"),
+        )) {
+            val advice = identitySkipAdvice(reason)
+            assertTrue(advice, advice.contains("Import Student Identity Secret"))
+            assertFalse(advice, advice.contains(ENROLL_URL))
+        }
+    }
+
+    @Test
+    fun `an unavailable keyring is not answered with advice that needs the keyring`() {
+        val advice = identitySkipAdvice(IdentitySkipReason.MasterSecretUnavailable("SecretStoreUnavailable"))
+        assertTrue(advice, advice.contains("credential store"))
+        assertFalse("enrolling needs the same store", advice.contains(ENROLL_URL))
+        assertTrue("the detail belongs in the line for staff", advice.contains("SecretStoreUnavailable"))
+    }
+
+    @Test
+    fun `a broken build points at the plugin, not at the student`() {
+        for (reason in listOf(
+            IdentitySkipReason.NoRootPublicKey,
+            IdentitySkipReason.InvalidSessionPubkey,
+            IdentitySkipReason.UnexpectedError("boom"),
+        )) {
+            val advice = identitySkipAdvice(reason)
+            assertTrue(advice, advice.contains("course staff"))
+            assertFalse("enrolling cannot fix a broken build", advice.contains(ENROLL_URL))
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // identitySuffix / identityTooltipLines — what the widget renders
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `an attributed session renders exactly as before`() {
+        assertEquals("", identitySuffix(listOf(emitted())))
+        assertEquals(emptyList<String>(), identityTooltipLines(listOf(emitted())))
+    }
+
+    @Test
+    fun `the not-enrolled wording is untouched`() {
+        val outcomes = listOf(skipped(IdentitySkipReason.NotEnrolled("cs61b")))
+        assertEquals(" (not enrolled)", identitySuffix(outcomes))
+        assertEquals(listOf(enrollmentTooltipLine(true)), identityTooltipLines(outcomes))
+    }
+
+    @Test
+    fun `a non-enrollment failure is visible in the bar and explained in the tooltip`() {
+        // The reported bug, exactly: the status bar read plain "recording" and the bundle
+        // came out unattributed with nothing said anywhere.
+        val outcomes = listOf(skipped(IdentitySkipReason.StudentKeyMismatch("aa", "bb")))
+        assertEquals(" (identity unavailable)", identitySuffix(outcomes))
+        assertEquals(
+            listOf(identitySkipAdvice(IdentitySkipReason.StudentKeyMismatch("aa", "bb"))),
+            identityTooltipLines(outcomes),
+        )
+    }
+
+    @Test
+    fun `anyIdentityEmitted still wins over every skip`() {
+        // The all-or-nothing rule in anyIdentityEmitted's docstring: one attributed session
+        // makes "not enrolled" / "identity unavailable" the wrong thing to say.
+        val mixed = listOf(
+            emitted(),
+            skipped(IdentitySkipReason.NotEnrolled("cs61b")),
+            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+        )
+        assertEquals("", identitySuffix(mixed))
+        assertEquals(emptyList<String>(), identityTooltipLines(mixed))
+    }
+
+    @Test
+    fun `no sessions means nothing to say`() {
+        assertEquals("", identitySuffix(emptyList()))
+        assertEquals(emptyList<String>(), identityTooltipLines(emptyList()))
+    }
+
+    @Test
+    fun `the enrollment line leads, and repeated reasons are said once`() {
+        val outcomes = listOf(
+            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+            skipped(IdentitySkipReason.NotEnrolled("cs61b")),
+            skipped(IdentitySkipReason.NotEnrolled("cs61c")),
+            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+        )
+        val lines = identityTooltipLines(outcomes)
+        assertEquals(2, lines.size)
+        assertEquals(enrollmentTooltipLine(true), lines.first())
+    }
+
+    @Test
+    fun `the tooltip does not depend on the order the sessions happened to report in`() {
+        val outcomes = listOf(
+            skipped(IdentitySkipReason.NoRootPublicKey),
+            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+            skipped(IdentitySkipReason.InvalidSessionPubkey),
+        )
+        // RecorderState hands these over from a ConcurrentHashMap, whose iteration order is
+        // not the insertion order — a tooltip that reshuffles between refreshes is a bug.
+        assertEquals(identityTooltipLines(outcomes), identityTooltipLines(outcomes.reversed()))
+        assertEquals(3, identityTooltipLines(outcomes).size)
+    }
+
+    // ---------------------------------------------------------------------
     // shouldShowNudge / nextNudgeState
     // ---------------------------------------------------------------------
 

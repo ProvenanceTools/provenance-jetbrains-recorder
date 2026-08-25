@@ -332,7 +332,12 @@ class RecordingSessionController(
             rootPubkeyHex = ROOT_PUBLIC_KEY_HEX,
         )
         if (identityOutcome is IdentityOutcome.Skipped) {
-            LOG.debug("provenance: session.start identity omitted: ${identityOutcome.reason}")
+            // INFO, not DEBUG. This session will produce a permanently unattributed bundle, and
+            // DEBUG is off by default — so the reason existed nowhere a student or a grader could
+            // ever reach it. The student-facing half of the same fact is the status-bar suffix and
+            // tooltip (see `EnrollNudge.identitySkipAdvice`); this is the copy staff can read out
+            // of idea.log when the student reports it. Once per session start, so not chatty.
+            LOG.info("provenance: session.start identity omitted: ${identityOutcome.reason}")
         }
 
         val ctx = buildRecorderContext(

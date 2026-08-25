@@ -6,9 +6,8 @@ import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.util.Consumer
 import dev.provenance.recorder.activation.RecorderState
-import dev.provenance.recorder.identity.enrollmentSuffix
-import dev.provenance.recorder.identity.enrollmentTooltipLine
-import dev.provenance.recorder.identity.isUnenrolled
+import dev.provenance.recorder.identity.identitySuffix
+import dev.provenance.recorder.identity.identityTooltipLines
 import java.awt.Component
 import java.awt.event.MouseEvent
 
@@ -41,10 +40,14 @@ class RecordingStatusBarWidget(private val project: Project) :
      * not as absent — the widget is the student's only signal that recording died. Mixed
      * projects report both halves rather than hiding either.
      *
-     * A third state rides on top: ENROLLMENT. Recording that nobody can attribute is its own
-     * quiet failure, so the suffix is appended to whatever the count/degraded logic produced.
-     * It is a suffix rather than a replacement because the two are independent — a student can
-     * be un-enrolled and degraded at once, and both facts matter.
+     * A third state rides on top: IDENTITY. Recording that nobody can attribute is its own quiet
+     * failure, so the suffix is appended to whatever the count/degraded logic produced. It is a
+     * suffix rather than a replacement because the two are independent — a student can be
+     * un-enrolled and degraded at once, and both facts matter.
+     *
+     * That suffix now covers every way the identity can go missing, not just "not enrolled":
+     * a stale credential, a locked keychain or an unusable trust anchor all produce the same
+     * unattributed bundle, and all of them used to render as a plain "recording".
      */
     override fun getText(): String {
         val state = project.service<RecorderState>()
@@ -56,13 +59,17 @@ class RecordingStatusBarWidget(private val project: Project) :
             recording == 0 -> if (degraded > 1) "Provenance: not recording ($degraded errors)" else "Provenance: not recording (error)"
             else -> "Provenance: recording ($recording of $total assignments, ${errors(degraded)})"
         }
-        return base + enrollmentSuffix(isUnenrolled(state.identityOutcomes))
+        return base + identitySuffix(state.identityOutcomes)
     }
 
+    /**
+     * The tooltip is where the DIAGNOSIS lives: what failed, and what the student can do about
+     * it. One line per distinct identity problem, because with several roots open the reasons
+     * can differ and "something went wrong" is not an instruction.
+     */
     override fun getTooltipText(): String {
         val state = project.service<RecorderState>()
         val degraded = state.degradedRoots
-        val enrollment = enrollmentTooltipLine(isUnenrolled(state.identityOutcomes))
         val base = if (degraded.isEmpty()) {
             "Provenance recorder is active for this assignment."
         } else {
@@ -70,7 +77,7 @@ class RecordingStatusBarWidget(private val project: Project) :
             "Provenance is NOT recording for $what: " +
                 degraded.entries.joinToString("; ") { (root, reason) -> "$root ($reason)" }
         }
-        return listOfNotNull(base, enrollment).joinToString(" ")
+        return (listOf(base) + identityTooltipLines(state.identityOutcomes)).joinToString(" ")
     }
 
     private fun errors(count: Int): String = if (count == 1) "1 error" else "$count errors"
