@@ -1,0 +1,844 @@
+{
+  "note": "Institution identity conformance vectors, identity format_version 2.1. The chain is root -> institution_cert -> student_credential -> session_pubkey_sig. ROOT signs the institution cert (offline); the INSTITUTION key, which is the only private key that lives on a server, signs one credential per student; the STUDENT key — ONE per student, forever, across every course — countersigns the ephemeral session pubkey. A port walks all of it with only the embedded root key. Identity names no course: course membership is a roster question answered later by the server, and making it a precondition of HAVING an identity is what deadlocked the 2.0 design (rosters are populated by Gradescope ingest, which runs only after a student submits). Every object key in every signed payload is a fixed ASCII identifier and there are no JSON arrays — student_ref is always a VALUE, never a key. See course-cert.json for why.",
+  "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+  "institution_pubkey_hex": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+  "other_institution_pubkey_hex": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+  "student_pubkey_hex": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+  "other_student_pubkey_hex": "31debe55d37c722768b137131caa6087080b2e0b60b94bd785d14575cfa498bc",
+  "session_pubkey_hex": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+  "valid_institution_cert": {
+    "format_version": "2.1",
+    "institution_id": "berkeley",
+    "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+    "valid_from": "2026-08-20",
+    "valid_until": "2027-01-15",
+    "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+  },
+  "valid_student_credential": {
+    "format_version": "2.1",
+    "institution_id": "berkeley",
+    "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+    "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+    "issued_at": "2026-09-01T00:00:00Z",
+    "expires_at": "2027-01-15",
+    "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+  },
+  "session_pubkey_binding": {
+    "institution_id": "berkeley",
+    "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+    "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+    "sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+  },
+  "format_version": "2.1",
+  "session_pubkey_binding_purpose": "provenance-session-pubkey-binding-v2",
+  "discriminator": {
+    "note": "THE ROUTING RULE. Two identity shapes share the same two wire slots in session.start.identity: `enrollment_cert` and `enrollment`. Which walk runs is decided by the SIGNED format_version inside `enrollment_cert` — 2.0 is the legacy course-scoped chain (course-signed enrollment_cert + enrollment token), 2.1 is this institution chain (root-signed institution_cert + student credential). NEVER route on which fields are present: presence is attacker-controlled and ambiguous, and this project already shipped that bug once — bundle-manifest.ts read the mere presence of an embedded manifest as a 2.0 claim and made the whole legacy path unreachable. The credential's own format_version must then MATCH the cert's; a mixed pair is refused outright, so a legacy course-signed cert can never authorize an institution credential.",
+    "field": "enrollment_cert.format_version",
+    "course_scoped": "2.0",
+    "institution_scoped": "2.1"
+  },
+  "canonical_json": {
+    "institution_cert": "{\"format_version\":\"2.1\",\"institution_id\":\"berkeley\",\"institution_pubkey\":\"20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7\",\"valid_from\":\"2026-08-20\",\"valid_until\":\"2027-01-15\"}",
+    "student_credential": "{\"expires_at\":\"2027-01-15\",\"format_version\":\"2.1\",\"institution_id\":\"berkeley\",\"issued_at\":\"2026-09-01T00:00:00Z\",\"student_pubkey\":\"511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a\",\"student_ref\":\"9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21\"}",
+    "session_pubkey_binding": "{\"institution_id\":\"berkeley\",\"purpose\":\"provenance-session-pubkey-binding-v2\",\"session_pubkey\":\"53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3\",\"student_ref\":\"9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21\"}"
+  },
+  "root_verification_cases": [
+    {
+      "name": "genuine_root_signature",
+      "note": "The cert the rest of these vectors anchor to.",
+      "input": {
+        "cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "signed_by_a_key_that_is_not_the_root",
+      "note": "MUST be refused: an attacker supplying the cert supplies institution_pubkey too.",
+      "input": {
+        "cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ed3ccdab34163707f1846691860419779db25a14374dd16e832442d758c2172495db8c024a7b83c6197819085251f8b24d4c31bb6b50d6a531c5d50ea0df5f0d"
+        },
+        "root_pubkey_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+      },
+      "expected": {
+        "ok": false
+      }
+    }
+  ],
+  "chain_cases": [
+    {
+      "name": "valid",
+      "note": "The whole chain, every link genuine.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "identity_version": "2.1",
+        "scope": "institution",
+        "institution_id": "berkeley",
+        "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+        "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+        "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+        "cert_window": {
+          "in_window": true
+        },
+        "token_window": {
+          "in_window": true
+        }
+      }
+    },
+    {
+      "name": "cert_not_a_known_version",
+      "note": "Version gate, step 0: a cert declaring a version that is neither 2.0 nor 2.1 is refused before any signature work.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "3.0",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "e8116e885043aca8899173d1cd53fd23dd52de2e47f648905dadf3a498dcc2d8d0bf93e9c1bc1222e6d94deaecc224e8d62d4e308841bd12c1814ccdf1635d07"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "unsupported_identity_version",
+          "format_version": "3.0"
+        }
+      }
+    },
+    {
+      "name": "future_3_0_is_not_replayable_as_2_1",
+      "note": "Version gate, step 0: BOTH artifacts genuinely signed and declaring 3.0. A reader that skipped the gate would walk them under 2.1 rules; the whole point of signing the version is that it cannot.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "3.0",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "11313f86612fdf2ecebc5f0a7fc3aa6daeee2195a6d51dace0224303a07971c7ad76a44ba67ad3da0232f3a466a156cf6299b79621c52d9aed4cc8f0fd4aba02"
+          },
+          "enrollment_cert": {
+            "format_version": "3.0",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "e8116e885043aca8899173d1cd53fd23dd52de2e47f648905dadf3a498dcc2d8d0bf93e9c1bc1222e6d94deaecc224e8d62d4e308841bd12c1814ccdf1635d07"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "unsupported_identity_version",
+          "format_version": "3.0"
+        }
+      }
+    },
+    {
+      "name": "mixed_versions_are_refused",
+      "note": "Version gate, step 0: a 2.1 cert paired with a 2.0-versioned credential. Refused rather than resolved — otherwise each artifact is read under rules the other never agreed to.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "900014e1ecf06b3df04c6b5415b2a0082b220bdea4b23f99feade75c71aaa7da7991ea3f74b0663094d2a4fbb404791e5f88e98588a3a0578c05dc1f5e210102"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "identity_version_mismatch",
+          "cert_version": "2.1",
+          "credential_version": "2.0"
+        }
+      }
+    },
+    {
+      "name": "credential_signed_by_uncertified_key",
+      "note": "Step 1: a credential signed by an institution key the root never certified.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "1c9fbe4c2440353865fe0065eef3e9304fcc5d2d4a83fcdb93d2c37c8738df7aae1e3f08b9827a229feee444965539ae1c3ec98bd245c163a220a210e327ce0a"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_institution_signature"
+        }
+      }
+    },
+    {
+      "name": "cross_institution_forgery",
+      "note": "Step 2, MANDATORY — the institution-scoped replacement for 2.0 cross_course_forgery. Stanford holds a genuinely ROOT-certified institution key. It mints a credential naming BERKELEY and ships it with its own genuine cert. The cert verifies against root; the credential verifies against exactly the key that cert names; every signature in the bundle is real. Only comparing institution_id across the credential, the travelling cert and the root-verified anchor refuses it. One signer’s credential must never be replayable under another signer’s authority.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "1c9fbe4c2440353865fe0065eef3e9304fcc5d2d4a83fcdb93d2c37c8738df7aae1e3f08b9827a229feee444965539ae1c3ec98bd245c163a220a210e327ce0a"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "stanford",
+            "institution_pubkey": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8db0b52215a0ce20598a394564ba4180a41f0733d94622b8f6e5f5f28b3126e75fc29451f41f02f3106eb541d4f40afec9bcc088d21db0565d67121267c03b0a"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "stanford",
+          "institution_pubkey": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8db0b52215a0ce20598a394564ba4180a41f0733d94622b8f6e5f5f28b3126e75fc29451f41f02f3106eb541d4f40afec9bcc088d21db0565d67121267c03b0a"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "institution_mismatch",
+          "credential_institution_id": "berkeley",
+          "cert_institution_id": "stanford",
+          "anchor_institution_id": "stanford",
+          "pubkey_mismatch": false
+        }
+      }
+    },
+    {
+      "name": "travelling_cert_names_another_institution",
+      "note": "Step 2: the cert shipped in the bundle disagrees with the root-verified anchor about which institution it is.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "stanford",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "aa592c61d29b90822955fdbdd2a2c2b29c9f4000e99254f85da3d86966c3c6634277e320e065664f6a12a899e43fa0a06f78202aa1e585d17692bc0746b12f04"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "institution_mismatch",
+          "credential_institution_id": "berkeley",
+          "cert_institution_id": "stanford",
+          "anchor_institution_id": "berkeley",
+          "pubkey_mismatch": false
+        }
+      }
+    },
+    {
+      "name": "travelling_cert_names_another_key",
+      "note": "Step 2: same institution id, different certified key. A verifier that read institution_pubkey from the travelling cert rather than the anchor would accept a key of the attacker’s choosing.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "21de6185b289d52b50c3de7c492b3d7602dd94dea1dea73cf49ab04aa640d606ed61ee6caefb4000502e020e1fb362bfd7ea17cae45fb448f07c38528603db03"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "institution_mismatch",
+          "credential_institution_id": "berkeley",
+          "cert_institution_id": "berkeley",
+          "anchor_institution_id": "berkeley",
+          "pubkey_mismatch": true
+        }
+      }
+    },
+    {
+      "name": "session_pubkey_sig_from_another_student",
+      "note": "Step 3: the countersignature came from a different student key.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "4ce1ae1e3fa58d25df5ca44251eb461d78487a5d54301e1f43d00bb1e27bb14ff6f28b438c0661009535db881fe551c02aede70e12ba9cd58af98893db785c0e"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_session_pubkey_signature"
+        }
+      }
+    },
+    {
+      "name": "session_pubkey_not_the_countersigned_one",
+      "note": "Step 3: a genuine countersignature lifted onto a different session key.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "31f3322d4923d36c41c109bdb0099193187bed99942096e4926a24c77efd0d2f",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "invalid_session_pubkey_signature"
+        }
+      }
+    },
+    {
+      "name": "expired_credential_is_NOT_fatal",
+      "note": "Step 4: an expired credential still returns ok, reporting token_window. An expired credential must never stop a recorder from recording (program spec §4); the analyzer decides.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2025-09-01T00:00:00Z",
+            "expires_at": "2025-12-15",
+            "institution_sig": "d882ceda82998968b6e4365235e2bd7529e09d6d5ba6a7ab462dbab1fb8301932e04dd861f1bd469e92b1528ac11756826f5d4ab501b43658ab55d7b7160b30a"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "8e09f024b15e88164c7630dbeea49e13e0b63e5cac30df60f737217fefe22231198a819a233c0c0dae9ef6610156ac4f78e6bcedb5e86fe8baa4b6ebf41c570c"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "identity_version": "2.1",
+        "scope": "institution",
+        "institution_id": "berkeley",
+        "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+        "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+        "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+        "cert_window": {
+          "in_window": false,
+          "reason": "before_valid_from"
+        },
+        "token_window": {
+          "in_window": false,
+          "reason": "after_valid_until"
+        }
+      }
+    },
+    {
+      "name": "expired_institution_cert_is_NOT_fatal",
+      "note": "Step 4, cert side. Same rule.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+            "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "institution_sig": "bc9f13eb8d476713e7b437fdbba2aa500cce7115b43c92491ec45d18b91132170369028311cedb985fbc9ca959effea8848015ce868f603bde0b8b1116002a0e"
+          },
+          "enrollment_cert": {
+            "format_version": "2.1",
+            "institution_id": "berkeley",
+            "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+            "valid_from": "2020-01-01",
+            "valid_until": "2020-12-31",
+            "root_sig": "57c30f41d7aa1c0f39183f324f5660bae9f66ec02293d1397798d0db71919533fbb1f36bafb5ce25b6af496fe7805fcf2fb46122ef9fb6c822327d9433346c01"
+          },
+          "session_pubkey_sig": "1d36689b1ab0b2a7f83ff9231d56fd5203a90f563b945fa99751ead9422a2e00b84d39c4caebd798e36378d2f7fab95a5aa90c0e83cb35de547b6eb464081d05"
+        },
+        "session_pubkey": "53470962558a6e0839022ae65c6b2723b32772e5c0c5f4776cb8e6a3e10ba2f3",
+        "institution_cert": {
+          "format_version": "2.1",
+          "institution_id": "berkeley",
+          "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+          "valid_from": "2020-01-01",
+          "valid_until": "2020-12-31",
+          "root_sig": "57c30f41d7aa1c0f39183f324f5660bae9f66ec02293d1397798d0db71919533fbb1f36bafb5ce25b6af496fe7805fcf2fb46122ef9fb6c822327d9433346c01"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "identity_version": "2.1",
+        "scope": "institution",
+        "institution_id": "berkeley",
+        "student_ref": "9c8e1a70-2f2b-4c55-8f1e-6b4a0d9c7e21",
+        "student_pubkey": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a",
+        "institution_pubkey": "20828bf5c5bdcacb684863336c202fb5599da48be5596615742170705beca9f7",
+        "cert_window": {
+          "in_window": false,
+          "reason": "after_valid_until"
+        },
+        "token_window": {
+          "in_window": true
+        }
+      }
+    }
+  ],
+  "legacy_2_0_note": "ARCHIVED COURSE-SCOPED IDENTITY MUST KEEP VERIFYING, PERMANENTLY. Every bundle recorded before this change carries a 2.0 identity block, and adjudicating a case years after the fact is the entire justification for this system (program spec §9). These cases run the SAME entry point a 2.1 bundle uses and must produce exactly the results enrollment.json pins — including the course_id triple comparison, which stays the mandatory forgery check for 2.0 material. A port whose router looks at field presence rather than the signed format_version will fail here.",
+  "legacy_2_0_cases": [
+    {
+      "name": "archived_course_identity_still_verifies",
+      "note": "The unchanged 2.0 walk, reached through the version router.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61b",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "2d41ec685c6724041682d78c3eb694d3b42bb5a825339db42f5d75cbff983ef71872993f7f84b66b40ed30284dca04e07e6e5577a76ad0e8078bcef7087ca60c"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61b",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "61bd0b68934eb37174bb1c00cab52174edb9c29501edc0bc08bb25ac403f52674b9b7f21bfeb110466812f02cb15994f85cd650fecde5fd65ff21a57b2c18d08"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": true,
+        "identity_version": "2.0",
+        "scope": "course",
+        "course_id": "berkeley-cs61b",
+        "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+        "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+        "cert_window": {
+          "in_window": true
+        },
+        "token_window": {
+          "in_window": true
+        }
+      }
+    },
+    {
+      "name": "archived_cross_course_forgery_still_refused",
+      "note": "The 2.0 mandatory check is untouched: 61B certifies an enrollment key \"for 61C\" and it mints a 61C token. Every signature genuine; only comparing course_id at every link rejects it.",
+      "input": {
+        "identity": {
+          "enrollment": {
+            "format_version": "2.0",
+            "student_ref": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "course_id": "berkeley-cs61c",
+            "student_pubkey": "5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84",
+            "issued_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2027-01-15",
+            "enrollment_sig": "977ed40ebab15182bf79abc82f167e9472f8a9548b4813cdd86658d5b3f112c047d5ce99a0456c53a5161cd4760b335038624a59220160dcf43fec1860163305"
+          },
+          "enrollment_cert": {
+            "format_version": "2.0",
+            "course_id": "berkeley-cs61c",
+            "enrollment_pubkey": "0beef5a9e679e6a3e134fe27837bff32c7cb5f5d44ea09bcb0e542bad6a4c0cc",
+            "valid_from": "2026-08-20",
+            "valid_until": "2027-01-15",
+            "course_sig": "f03fcdf374acdc7e8b503cee3971911f6574101d9a9665bbabeb94e3ebb05f7a2cb05c3a18b67fa2a42839e12cb51dbd3e14357af71701c3318096353156f40e"
+          },
+          "session_pubkey_sig": "8398f9384677ea3cd6d3d5e89a649141d90f791aa21196084100fa19d14febae2809a4d1db726a11b416aa04a23a4726e2e030ba12a453ffcbef05ac4999b204"
+        },
+        "session_pubkey": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "course_cert": {
+          "course_id": "berkeley-cs61b",
+          "course_pubkey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+          "valid_from": "2026-08-20",
+          "valid_until": "2027-01-15",
+          "root_sig": "ab4cd1f740d6d03a18170107e73d1f8d499a33f845219ce82ac4e93de6a659795cd13f61e0ffe2989ce5a2cdf4bf0d9c9756a223183d6f9f8dea0c0e3077d206"
+        },
+        "session_started_at": "2026-09-08T12:00:00Z"
+      },
+      "expected": {
+        "ok": false,
+        "error": {
+          "kind": "course_id_mismatch",
+          "token_course_id": "berkeley-cs61c",
+          "cert_course_id": "berkeley-cs61c",
+          "course_cert_course_id": "berkeley-cs61b"
+        }
+      }
+    }
+  ],
+  "window_note": "Every window is judged against the RELEVANT ISSUE TIME, never wall-clock now, so an archived bundle still verifies years later in an adjudication. The institution cert is judged against the credential's issued_at; the credential is judged against the session start. A date-only expires_at is inclusive THROUGH THE END of that day, exactly as course_cert.valid_until — same resolution rule, implemented once.",
+  "credential_window_cases": [
+    {
+      "name": "in_window",
+      "note": "Mid-semester.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2026-10-01T00:00:00Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "before_issued",
+      "note": "Session predates issuance.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2026-08-25T00:00:00Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "before_valid_from"
+      }
+    },
+    {
+      "name": "date_only_expiry_covers_that_whole_day",
+      "note": "expires_at 2027-01-15 covers all of Jan 15.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2027-01-15T23:59:59Z"
+      },
+      "expected": {
+        "in_window": true
+      }
+    },
+    {
+      "name": "date_only_expiry_ends_at_next_midnight",
+      "note": "and expires at the first instant of Jan 16.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "2027-01-16T00:00:00Z"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "after_valid_until"
+      }
+    },
+    {
+      "name": "unparseable",
+      "note": "A bad instant reports unparseable_timestamp rather than throwing.",
+      "input": {
+        "issued_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2027-01-15",
+        "at": "whenever"
+      },
+      "expected": {
+        "in_window": false,
+        "reason": "unparseable_timestamp"
+      }
+    }
+  ],
+  "student_key_derivation": {
+    "note": "The CURRENT student key derivation: one master secret, ONE key, forever, across every course. Same HKDF-SHA256, same 32-byte master secret as IKM, same non-empty salt and same 32-byte output-is-the-ed25519-seed rule as the legacy per-course derivation in student-keys.json — the ONLY difference is the info string, which is now FIXED. Because the two info strings differ, a student’s existing per-course keys are untouched and archived bundles keep verifying against the pubkeys their tokens name; student-keys.json remains the contract for those and is unchanged.",
+    "hkdf_params": {
+      "hash": "SHA-256",
+      "ikm": "the 32 raw bytes of the master secret",
+      "salt_utf8": "provenance-student-key-v1",
+      "salt_hex": "70726f76656e616e63652d73747564656e742d6b65792d7631",
+      "info_utf8": "provenance-student-key-v2",
+      "info_construction": "UTF-8 bytes of info_utf8 verbatim — nothing is concatenated",
+      "output_length_bytes": 32,
+      "output_is": "the ed25519 secret key (seed)"
+    },
+    "encoding_note": "The v1 info concatenates a course_id, and a port encoding that as US_ASCII rather than UTF-8 silently derives a DIFFERENT key with no error — it bit provjet once, which is why student-keys.json keeps a berkeley-café case. Nothing is concatenated onto the v2 info and the constant is pure ASCII, so the hazard is retired rather than mitigated here. The v1 case stays live in student-keys.json for archived material.",
+    "master_secret_bytes": 32,
+    "derivation_cases": [
+      {
+        "note": "The baseline derivation.",
+        "input": {
+          "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+        },
+        "expected": {
+          "info_utf8": "provenance-student-key-v2",
+          "seed_hex": "43f67896d0bde2031f136cdd7d3e821a8fe2f17e4b273bc2c7bfcfd0edada1bf",
+          "pubkey_hex": "7f37b491058a4a4c1ffe80a2ab8645ab3fadf6cd22448de59de2bff69099cf47"
+        }
+      },
+      {
+        "note": "A different student: a different key.",
+        "input": {
+          "master_secret_hex": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+        },
+        "expected": {
+          "info_utf8": "provenance-student-key-v2",
+          "seed_hex": "014d3d527d3476b07db90a2241fa99d9843cac3541859f79053fa76a1fb9e92b",
+          "pubkey_hex": "ab5bce24edca9a970a28d5eb2b815ec8a5c8de426d3233a72a1095cf894352f6"
+        }
+      }
+    ],
+    "differs_from_legacy_course_derivation": {
+      "note": "Same master secret, both derivations. These MUST NOT be equal — that is what keeps a student's archived per-course keys separate from their new global one.",
+      "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "global_pubkey_hex": "7f37b491058a4a4c1ffe80a2ab8645ab3fadf6cd22448de59de2bff69099cf47",
+      "legacy_course_id": "berkeley-cs61b",
+      "legacy_pubkey_hex": "0b2bd2ad8968dd145318ec3e2aff91f86cc3a080e8639ac564ffd0ad6148db9c"
+    }
+  }
+}

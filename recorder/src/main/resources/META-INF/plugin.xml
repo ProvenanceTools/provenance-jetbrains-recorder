@@ -177,5 +177,39 @@
             description="Seal the recorded provenance log and reviewed files into a submission bundle.">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+
+        <!-- Identity (program spec S2). Enrollment is a PASTE, never a fetch: recorder PRD
+             NG2 forbids network calls, so the student shows a public key, obtains a token
+             out of band, and imports it. Export/Import Student Identity Secret are the only
+             way an identity reaches a second machine — the credential vault is not readable
+             by hand and there is no escrow. -->
+        <action
+            id="dev.provenance.recorder.ShowEnrollmentKey"
+            class="dev.provenance.recorder.commands.ShowEnrollmentKeyAction"
+            text="Provenance: Show My Enrollment Key"
+            description="Show your per-course public key to send to course staff.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="dev.provenance.recorder.ImportEnrollmentToken"
+            class="dev.provenance.recorder.commands.ImportEnrollmentTokenAction"
+            text="Provenance: Import Enrollment Token"
+            description="Paste the enrollment token your course staff sent you.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="dev.provenance.recorder.ExportStudentSecret"
+            class="dev.provenance.recorder.commands.ExportStudentSecretAction"
+            text="Provenance: Export Student Identity Secret"
+            description="Show your identity secret so you can move it to another machine.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="dev.provenance.recorder.ImportStudentSecret"
+            class="dev.provenance.recorder.commands.ImportStudentSecretAction"
+            text="Provenance: Import Student Identity Secret"
+            description="Adopt an identity secret exported from another machine.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

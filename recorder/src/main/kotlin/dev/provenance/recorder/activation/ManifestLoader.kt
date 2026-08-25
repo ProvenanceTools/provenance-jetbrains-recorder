@@ -16,7 +16,8 @@ val MANIFEST_FILE_NAMES: List<String> = listOf(".provenance-manifest", "provenan
  */
 fun loadAndVerifyManifest(
     baseDir: VirtualFile,
-    coursePubkeyHex: String = COURSE_PUBLIC_KEY_HEX,
+    legacyCoursePubkeyHex: String = LEGACY_COURSE_PUBLIC_KEY_HEX,
+    rootPubkeyHex: String = ROOT_PUBLIC_KEY_HEX,
 ): ManifestActivation {
     for (name in MANIFEST_FILE_NAMES) {
         val file = baseDir.findChild(name) ?: continue
@@ -25,7 +26,7 @@ fun loadAndVerifyManifest(
         } catch (e: IOException) {
             return ManifestActivation.Inactive("read_error")
         }
-        return evaluateManifestText(text, coursePubkeyHex)
+        return evaluateManifestText(text, legacyCoursePubkeyHex, rootPubkeyHex)
     }
     return ManifestActivation.Inactive("no_manifest_file")
 }
@@ -33,8 +34,9 @@ fun loadAndVerifyManifest(
 /** Project-level convenience wrapper — resolves the workspace root, then delegates. */
 fun loadAndVerifyManifest(
     project: Project,
-    coursePubkeyHex: String = COURSE_PUBLIC_KEY_HEX,
+    legacyCoursePubkeyHex: String = LEGACY_COURSE_PUBLIC_KEY_HEX,
+    rootPubkeyHex: String = ROOT_PUBLIC_KEY_HEX,
 ): ManifestActivation {
     val baseDir = project.guessProjectDir() ?: return ManifestActivation.Inactive("no_project_dir")
-    return loadAndVerifyManifest(baseDir, coursePubkeyHex)
+    return loadAndVerifyManifest(baseDir, legacyCoursePubkeyHex, rootPubkeyHex)
 }

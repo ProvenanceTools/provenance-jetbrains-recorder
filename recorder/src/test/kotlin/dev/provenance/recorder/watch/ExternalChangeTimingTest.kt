@@ -40,9 +40,8 @@ class ExternalChangeTimingTest : BasePlatformTestCase() {
 
     private fun install(reg: ExpectedContentRegistry): ExternalChangeEngine {
         val engine = ExternalChangeEngine(reg)
-        val saveChecker = SaveTimeExternalChangeChecker(engine, emit = { emitted.add(it) })
         val listener = VfsExternalChangeListener(
-            workspaceRoot = wsRoot, engine = engine, saveChecker = saveChecker,
+            workspaceRoot = wsRoot, engine = engine,
             emit = { emitted.add(it) }, dispatch = { it() },
         )
         ApplicationManager.getApplication().messageBus.connect(testRootDisposable)
@@ -56,7 +55,7 @@ class ExternalChangeTimingTest : BasePlatformTestCase() {
         val vfB = vfFor("b.py", "BBB\n")
         val relA = relativePathOf(vfA, wsRoot)!!
         val relB = relativePathOf(vfB, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(relA, relB))
+        val reg = ExpectedContentRegistry(trackOnly(relA, relB))
         reg.getOrCreate(relA, "AAA\n")
         reg.getOrCreate(relB, "BBB\n")
         install(reg)
@@ -82,7 +81,7 @@ class ExternalChangeTimingTest : BasePlatformTestCase() {
     fun testSameLengthSameTimestampWriteIsNotDetected() {
         val vf = vfFor("hw.py", "AAAA\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "AAAA\n")
         install(reg)
 
@@ -99,7 +98,7 @@ class ExternalChangeTimingTest : BasePlatformTestCase() {
     fun testSaveThenExternalWriteSameFileProducesNoDoubleEmission() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg)
 

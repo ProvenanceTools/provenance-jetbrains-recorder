@@ -1,0 +1,503 @@
+{
+  "note": "peer.observed — peer witnessing (program spec §7 mechanism 2, collaboration spec §5.5). One contributor's signed record of ANOTHER contributor's .provenance/ log: filename, byte digest, and the foreign chain's seq_high + final hash. Deleting a partner's log then leaves your own chain testifying that it existed, so hiding a deletion means destroying both chains — which yields a submission with no provenance at all, the loudest possible signal.",
+  "sha256_is_not_the_test_note": "The obvious implementation compares sha256 against the archived file and calls inequality tampering. It is WRONG. A foreign log is append-only and its owner keeps recording, so the bytes witnessed are normally a PREFIX of the bytes finally committed: inequality is the NORMAL case. The verifiable commitment is seq_high + last_hash — an archived log that stops before that seq, or reaches it with a different hash, cannot reproduce it. seq_high alone would make truncation detectable only by LENGTH, which a forger can match. sha256 is corroborating detail for display and nothing more.",
+  "null_is_not_absent_note": "null means \"the recorder could not read this out of the foreign file\", which is a different fact from a field being absent. The nulls MUST be emitted explicitly: a port that omits them produces different canonical bytes and therefore a different chain hash. See the unparseable_file case.",
+  "all_or_nothing_note": "session_id, seq_high and last_hash are the three values read out of the foreign chain. Either the recorder parsed it or it did not, so they are all non-null together or all null together. A payload with only some of them is self-contradictory and is REJECTED — it would name a session while committing to nothing any later archive could contradict.",
+  "no_identity_note": "NO student ref, NO key, NO git author, and no path outside .provenance/. A witness names a FILE and a CHAIN POSITION. This payload is about somebody ELSE, so the CPHS constraint that keeps author identity out of git.event applies with more force here. Attribution runs through student_ref inside session.start.identity, and nowhere else. A port that adds an identifier here is out of protocol.",
+  "floor_note": "peer.observed is a FLOOR event kind: it has no key in policy.capture, so \"off\" is not expressible. The collaboration spec §5.6 assigns \"was witnessing AVAILABLE?\" to a session.start capability report rather than to a capture knob, so there is no knob for it to be gated on. NOTE this is provisional: the CPHS question in collaboration spec §8 item 5 is open and gates the WRITER half. See capture-policy.json.",
+  "reader_half_only_note": "No recorder emits this kind yet. Readers before writers (program spec §9): implement the narrowing and the canonical form now; the directory watcher lands with the writer contract.",
+  "states": [
+    "appeared",
+    "grew",
+    "shrank",
+    "disappeared",
+    "unparseable"
+  ],
+  "cases": [
+    {
+      "name": "appeared_parsed",
+      "note": "The ordinary witness: a git pull dropped a partner's log into the tree, the recorder hashed it and read its chain. This is what corroboration is checked against.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "appeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "06ac7c9f1279464fb68c9a398729582a46193405b39010c4d99e417359141edb",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      }
+    },
+    {
+      "name": "grew",
+      "note": "The same file, later and longer. Distinct from appeared: a reader must be able to see the foreign chain advancing inside this chain.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bytes": 12288,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 601,
+        "last_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "grew"
+      },
+      "canonical_json": "{\"bytes\":12288,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"seq_high\":601,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"state\":\"grew\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "bytes": 12288,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 601,
+          "last_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": "grew"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "e8d096707a28008c720f18764122a59ffe2c0612bfc78e88913d9172cbae5135",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bytes": 12288,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 601,
+        "last_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "grew"
+      }
+    },
+    {
+      "name": "shrank",
+      "note": "The file got SHORTER. Append-only logs do not shrink, so this is the observation that catches a truncation while it happens — but it is still only an observation, and not by itself misconduct.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "bytes": 2048,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 90,
+        "last_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "state": "shrank"
+      },
+      "canonical_json": "{\"bytes\":2048,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"seq_high\":90,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"state\":\"shrank\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "bytes": 2048,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 90,
+          "last_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "state": "shrank"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9c5098c7fb6b9223724f18e7f501a0dd410c15642f59c41c12657ee8ffecd5f9",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "bytes": 2048,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 90,
+        "last_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "state": "shrank"
+      }
+    },
+    {
+      "name": "disappeared",
+      "note": "The file is gone from the working tree. NOT evidence of misconduct: checking out a branch that does not contain a partner's .slog removes it, and so does a stash. The digest and chain fields describe the LAST state the recorder saw, which is what makes the observation evidentiary at all.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "disappeared"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"disappeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "disappeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "1254b2229c864663a9ea3a2b3e41784903a258472586ca88e9ea090bd4e9fa1a",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "disappeared"
+      }
+    },
+    {
+      "name": "unparseable_file",
+      "note": "The foreign file could not be read — mid-write, conflict-marked, or truncated. All three chain fields are explicitly null. The recorder does NOT rename, rewrite or delete it: recording this state is the entire response. Note the nulls are present in the canonical bytes; omitting them changes the hash.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 41,
+        "session_id": null,
+        "seq_high": null,
+        "last_hash": null,
+        "state": "unparseable"
+      },
+      "canonical_json": "{\"bytes\":41,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":null,\"seq_high\":null,\"session_id\":null,\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"unparseable\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 41,
+          "session_id": null,
+          "seq_high": null,
+          "last_hash": null,
+          "state": "unparseable"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "6fc4fbb2fe5a41f81b967f4e50f72f649cc2c2c36eabbab06ae7b7fca04b00a2",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 41,
+        "session_id": null,
+        "seq_high": null,
+        "last_hash": null,
+        "state": "unparseable"
+      }
+    },
+    {
+      "name": "seq_high_zero",
+      "note": "A foreign log holding only its session.start. 0 is a real seq: a truthiness check here rejects the shortest possible honest witness and reads it as unparsed.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 512,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 0,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      },
+      "canonical_json": "{\"bytes\":512,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":0,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 512,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 0,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "appeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "7439e5bf16ab96d4921b52915bd9dc6ce4d82cc815580fafc0c1854c45b1d2bd",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 512,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 0,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      }
+    },
+    {
+      "name": "rejected_named_session_without_tip",
+      "note": "REJECTED (partially_parsed). Names a session, commits to no tip. It reads as authoritative while being unfalsifiable by any archive — the single most dangerous shape this payload can take.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": null,
+        "last_hash": null,
+        "state": "appeared"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":null,\"seq_high\":null,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": null,
+          "last_hash": null,
+          "state": "appeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "bf8781979264e86ee562a92d157c356baefbf1945203dbed4d490db8a3c7f9b2",
+      "accepted": false,
+      "error": {
+        "kind": "partially_parsed",
+        "present": [
+          "session_id"
+        ],
+        "absent": [
+          "seq_high",
+          "last_hash"
+        ]
+      }
+    },
+    {
+      "name": "rejected_seq_without_hash",
+      "note": "REJECTED (partially_parsed). seq_high alone is a SIZE claim; a forger can match a length. last_hash is what makes it a commitment to an exact prefix.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": null,
+        "state": "appeared"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":null,\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": null,
+          "state": "appeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "c3c0d8e0fad1ea42bc86daa273f097f15ea603b86f8791cdf4a5394152f37c7a",
+      "accepted": false,
+      "error": {
+        "kind": "partially_parsed",
+        "present": [
+          "session_id",
+          "seq_high"
+        ],
+        "absent": [
+          "last_hash"
+        ]
+      }
+    },
+    {
+      "name": "rejected_unparseable_with_chain_values",
+      "note": "REJECTED (unparseable_with_chain_values). Self-contradictory: the recorder cannot both have failed to parse the file and have read its chain out.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 41,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "unparseable"
+      },
+      "canonical_json": "{\"bytes\":41,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"unparseable\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 41,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "unparseable"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "84844dcae1df05024b0c4420bc4bb8a30903cfc8841f1c78652e8be86ebe1c8c",
+      "accepted": false,
+      "error": {
+        "kind": "unparseable_with_chain_values",
+        "present": [
+          "session_id",
+          "seq_high",
+          "last_hash"
+        ]
+      }
+    },
+    {
+      "name": "rejected_unknown_state",
+      "note": "REJECTED (unknown_state). Unlike an unknown event KIND — forward compatibility, must pass — an unknown state inside a payload we DO understand would have to be given a meaning, and inventing one is how an unfamiliar observation becomes an accusation.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "vanished"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"vanished\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "vanished"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "fb83fc967740b973940a25e54cee900ffd0128af3e0239c43bf530e637e3c6ed",
+      "accepted": false,
+      "error": {
+        "kind": "unknown_state",
+        "state": "vanished"
+      }
+    },
+    {
+      "name": "rejected_uppercase_sha256",
+      "note": "REJECTED (bad_field: sha256). Hex is lowercase everywhere in this format. A port that upper-cases produces a value that will never match any digest computed here.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "appeared"
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "48804466e159c85313ec767fb8153d4584bae327b39baa14f5c217f23b896bfd",
+      "accepted": false,
+      "error": {
+        "kind": "bad_field",
+        "field": "sha256"
+      }
+    },
+    {
+      "name": "accepted_unknown_extra_key",
+      "note": "ACCEPTED. Forward compatibility, the same rule resolveCapturePolicy applies to unknown capture keys: a newer recorder's extra field must not make a reader discard the whole witness. It is ignored, never carried onto the narrowed value. NOTE the extra key DOES change the canonical bytes and therefore the chain hash — narrowing is not canonicalization.",
+      "data": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared",
+        "future_signal": true
+      },
+      "canonical_json": "{\"bytes\":8192,\"file\":\"session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog\",\"future_signal\":true,\"last_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seq_high\":412,\"session_id\":\"4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"appeared\"}",
+      "envelope": {
+        "seq": 0,
+        "t": 0,
+        "wall": "2026-01-01T00:00:00.000Z",
+        "kind": "peer.observed",
+        "data": {
+          "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8192,
+          "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+          "seq_high": 412,
+          "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "appeared",
+          "future_signal": true
+        }
+      },
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "acef3e1f328bc12994ed41fc6ff83fb59e9b3c4a374eb2d7bda2ced932a98d63",
+      "accepted": true,
+      "value": {
+        "file": "session-7f3a1c22-9b0e-4d51-8a77-2c6e5d0b41af.slog",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 8192,
+        "session_id": "4e2d9c10-55af-4b3e-9d21-8f0c7a6b3e55",
+        "seq_high": 412,
+        "last_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "appeared"
+      }
+    }
+  ]
+}

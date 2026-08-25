@@ -1,10 +1,12 @@
 package dev.provenance.core
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * Per-event-kind payload shapes (recorder PRD §4.2, §5.1). Ported from log-core's
@@ -30,6 +32,34 @@ private fun Range.toJsonObject(): JsonObject = buildJsonObject {
     put("end", end.toJsonObject())
 }
 
+/**
+ * Editor/host metadata. Replaces the VS Code-shaped `vscode` block in
+ * `session.start` 2.0 (program spec §5).
+ *
+ * provjet and provnvim previously had to pretend into a field named `vscode`,
+ * filling it with editor-generic values because renaming a signed field is a
+ * monorepo-owned format change. `host` un-warps that: this recorder can finally
+ * say `jetbrains` in a field that means what it says.
+ *
+ * `vscode` is still emitted alongside it through the reader-before-writer
+ * migration (program spec §9) so 1.x readers keep working; a later change drops it.
+ */
+data class HostInfo(
+    /** `"vscode"`, `"jetbrains"`, or `"neovim"`. */
+    val editor: String,
+    val editorVersion: String,
+    /** Editor build/commit identifier. `""` is permitted. */
+    val editorBuild: String,
+    val platform: String,
+)
+
+fun HostInfo.toJsonObject(): JsonObject = buildJsonObject {
+    put("editor", editor)
+    put("editor_version", editorVersion)
+    put("editor_build", editorBuild)
+    put("platform", platform)
+}
+
 data class SessionStartPayload(
     val formatVersion: String,
     val sessionId: String,
@@ -44,6 +74,36 @@ data class SessionStartPayload(
     val recorderVersion: String,
     val recorderExtensionId: String,
     val sessionPubkey: String,
+    /**
+     * The FULL manifest: signed payload + `sig` + `course_cert` (program spec §5).
+     * Emitted for 1.x manifests too — it is additive, and a 1.x manifest's parsed
+     * form carries no 2.0-only fields, so nothing unsigned can ride along.
+     *
+     * Nullable at the type level so every pre-2.0 construction site stays valid.
+     */
+    val manifest: Manifest? = null,
+    /** Editor/host metadata (program spec §5). Nullable for the same reason. */
+    val host: HostInfo? = null,
+    /**
+     * The student's enrollment identity for this session (program spec §5, §S2).
+     *
+     * Null — and the key then ABSENT from the payload, never present-and-empty —
+     * whenever an identity cannot be produced or cannot be verified. Not being
+     * enrolled is the ordinary pre-enrollment state, not an error, and it must
+     * never stop a session recording.
+     */
+    val identity: SessionIdentity? = null,
+    /**
+     * The three `session.start` CAPABILITY REPORTS (collaboration spec §5.6). See
+     * `SessionCapabilities.kt` for the full contract. Each is nullable and OMITTED — never
+     * emitted as JSON `null` — when there is nothing to report; [toJsonObject] enforces that
+     * structurally via `?.let { put(...) }`.
+     */
+    val gitCapture: GitCaptureCapability? = null,
+    /** @see gitCapture */
+    val witnessCapture: WitnessCaptureCapability? = null,
+    /** @see gitCapture */
+    val fileScope: SessionFileScope? = null,
 )
 
 fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
@@ -76,6 +136,22 @@ fun SessionStartPayload.toJsonObject(): JsonObject = buildJsonObject {
         },
     )
     put("session_pubkey", sessionPubkey)
+    // Omitted when null, never emitted as JSON null — mirrors JSON.stringify dropping
+    // `undefined` in log-core, so a pre-2.0 payload serializes byte-identically.
+    // Key order here is irrelevant to integrity: chainEntry canonicalizes (JCS) before
+    // hashing, and JCS sorts keys.
+    manifest?.let { put("manifest", it.toJsonObject()) }
+    host?.let { put("host", it.toJsonObject()) }
+    // Absent, never present-and-empty, when the student is not enrolled or the block
+    // failed its chain walk. An unverifiable identity claim inside a signed, hash-chained
+    // entry is permanent and unrepairable, so emitting nothing is strictly better than
+    // emitting something broken.
+    identity?.let { put("identity", it.toJsonObject()) }
+    // The three §5.6 capability reports. Omitted, never present-and-null, when there is
+    // nothing to report — see SessionCapabilities.kt.
+    gitCapture?.let { put("git_capture", it.wire) }
+    witnessCapture?.let { put("witness_capture", it.wire) }
+    fileScope?.let { put("file_scope", it.toJsonObject()) }
 }
 
 data class SessionHeartbeatPayload(val focused: Boolean, val activeFile: String?, val idleSinceMs: Long)
@@ -278,18 +354,100 @@ fun TerminalCommandPayload.toJsonObject(): JsonObject = buildJsonObject {
 }
 
 /**
- * git.event payload (recorder PRD §4.4). Mirrors log-core's GitEventPayload
- * (events.ts:188-191) and the VS Code git-wiring.ts, which always emits
- * `operation: "state_change"` regardless of the underlying git operation (commit /
- * checkout / branch switch / index change all look the same through the change topic).
- * Matched exactly per this repo's "port the wiring, not a new product" mandate.
- * [commitSha] is optional — omitted when null (no HEAD yet, e.g. an empty repo).
+ * git.event payload (recorder PRD §4.4), carrying enough of the commit graph for replay to
+ * show branch and merge structure (program spec S5). Mirrors log-core's GitEventPayload.
+ *
+ * ## Why the graph is recorded rather than shipped
+ *
+ * Gradescope delivers no `.git`, and a `.git` that did travel would prove less than it
+ * appears to: `commit --amend`, `rebase`, and `filter-branch` rewrite history after the
+ * fact, so a repository handed in at submission time is evidence of what a student ended up
+ * with, not of what happened. The recorder sits on the live repository while the work is
+ * being done, so capturing the graph here puts it inside the signed hash chain at the
+ * instant it existed, where it can no longer be rewritten.
+ *
+ * ## No author identity. Ever.
+ *
+ * There is deliberately no `author_name`, no `author_email`, no author date and no commit
+ * message here, and none anywhere else in the log. The approved CPHS protocol treats a new
+ * category of identifier as requiring a filed modification BEFORE implementation, and git
+ * author identity is exactly that — a real name and a real email address, in clear, attached
+ * to every commit. `sha`, `parents`, and `branch` are structural: they describe the SHAPE of
+ * the history, not who produced it.
+ *
+ * Attribution already has a designed home, and it is opaque on purpose: the `student_ref`
+ * UUID inside `session.start.identity`. Adding an author field here would reintroduce,
+ * unsigned and unreviewed, precisely the identifier that design went to some trouble to
+ * avoid.
+ *
+ * ## Every new field is optional, permanently
+ *
+ * 1.x bundles, and the 2.0 bundles recorded before this landed, carry only [operation] and
+ * [commitSha]. 1.x support is permanent (program spec §9), so these stay optional rather
+ * than becoming required at some future version.
  */
-data class GitEventPayload(val operation: String, val commitSha: String?)
+data class GitEventPayload(
+    val operation: String,
+    /**
+     * Superseded by [sha], which means the same thing. Retained — and still EMITTED by 2.0
+     * writers — so 1.x readers keep working through the reader-before-writer migration
+     * (program spec §9).
+     */
+    val commitSha: String?,
+    /** Full 40-char hex sha of the commit HEAD points at. Absent if unreadable. */
+    val sha: String? = null,
+    /**
+     * Parent shas of [sha], in git's own order — the FIRST parent is the branch that was
+     * merged into. Order is therefore meaningful and must NEVER be sorted: reversing it
+     * inverts the meaning of a merge, and JCS canonicalizes object keys but leaves array
+     * elements alone, so a sort here changes the signed bytes and the chain hash.
+     *
+     * Length is the structure: 0 is a root commit, 1 an ordinary commit, 2 or more a merge.
+     * An EMPTY LIST and an ABSENT FIELD mean different things — `[]` is "this commit
+     * genuinely has no parents", absent is "the recorder could not read them" — so a reader
+     * must not collapse the two, and neither may a writer.
+     */
+    val parents: List<String>? = null,
+    /** Current branch name. Absent when HEAD is detached; never invented. */
+    val branch: String? = null,
+    /**
+     * The REPOSITORY DISCRIMINATOR (decision D12): the root-commit sha of the repository this
+     * observation came from, lowercase hex, 40 for sha-1 or 64 for sha-256.
+     *
+     * A scope can observe more than one repository — a submodule, or a repository nested
+     * inside the one that owns the assignment root — and their sha spaces are unrelated, so a
+     * reader that keys observed commits by sha alone merges two graphs that have nothing to do
+     * with each other. This is what lets the analyzer key on `(repository, sha)`.
+     *
+     * **OMITTED, never `null`.** Absence is a legal, permanent, blameless answer — a shallow
+     * clone, an older recorder, any failure at all — and an absent key canonicalizes
+     * differently from an explicit `null`, so the two chain to different hashes exactly as
+     * `parents: []` and an absent `parents` do. Readers accept `null` as absence so a
+     * nonconforming log still parses; a writer that emits it is nonconforming.
+     *
+     * Never the repository path and never a remote URL (S14(b)) — a path is arguably an
+     * identifier and a remote URL embeds the org and often the student's own username. The
+     * writer validates every candidate through [readRepositoryDiscriminator] for exactly that
+     * reason.
+     */
+    val rootCommitSha: String? = null,
+)
 
 fun GitEventPayload.toJsonObject(): JsonObject = buildJsonObject {
     put("operation", operation)
     if (commitSha != null) put("commit_sha", commitSha)
+    if (sha != null) put("sha", sha)
+    // `parents != null` and not `isNotEmpty()`: an empty list is a positive claim of "root
+    // commit" and must survive to the wire as `[]`.
+    if (parents != null) {
+        putJsonArray("parents") {
+            for (p in parents) add(JsonPrimitive(p))
+        }
+    }
+    if (branch != null) put("branch", branch)
+    // OMITTED when unknown, never `null` — see the field's KDoc. `if (x != null)` and not a
+    // `put(k, x)` with a nullable overload, so absence can never be spelled as JsonNull.
+    if (rootCommitSha != null) put(REPOSITORY_DISCRIMINATOR_FIELD, rootCommitSha)
 }
 
 /**

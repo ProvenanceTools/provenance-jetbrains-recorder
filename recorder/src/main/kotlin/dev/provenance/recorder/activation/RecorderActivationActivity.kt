@@ -7,6 +7,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.impl.status.widget.StatusBarWidgetsManager
 import dev.provenance.core.Manifest
+import dev.provenance.recorder.identity.EnrollNudgeNotifier
 import dev.provenance.recorder.session.RecorderSessionManager
 import dev.provenance.recorder.statusbar.RecordingStatusBarWidgetFactory
 import java.nio.file.Path
@@ -38,6 +39,7 @@ class RecorderActivationActivity internal constructor(
     private val sessionStarter: suspend (Project, Path, Manifest) -> Unit,
     private val refreshWidget: (Project) -> Unit,
     private val discoverer: (Project, String) -> List<DiscoveredManifest>,
+    private val enrollNudge: (Project) -> Unit = EnrollNudgeNotifier::maybeNudge,
 ) : ProjectActivity {
 
     constructor() : this(::startSessionFromActivation, ::refreshStatusBarWidget, ::discoverManifestRoots)
@@ -52,6 +54,11 @@ class RecorderActivationActivity internal constructor(
             // ALWAYS, even if discovery itself blew up: RecorderState may already say "active",
             // and an active gate with no rendered widget is the silent-death shape this guards.
             refreshWidget(project)
+            // AFTER the widget, and after every session: whether the student is enrolled is an
+            // answer only the started sessions have. Inside the `finally` for the same reason
+            // the refresh is — a discovery that blew up still leaves a student who should be
+            // told. It swallows its own failures, so it cannot displace the refresh above.
+            enrollNudge(project)
         }
     }
 
@@ -70,7 +77,10 @@ class RecorderActivationActivity internal constructor(
         // `readAction {}`: it is EDT-hostile, and ActivationResilienceTest / RecorderStateTest
         // drive `execute()` inside `runBlocking` on the EDT.
         val discovered = ReadAction.computeBlocking<List<DiscoveredManifest>, Throwable> {
-            discoverer(project, COURSE_PUBLIC_KEY_HEX)
+            // The root key is not threaded here: the discoverer seam exists so tests can
+            // swap the 1.x key, and ROOT_PUBLIC_KEY_HEX is a compile-time constant the
+            // discoverer picks up by default. Same shape as before Manifest 2.0.
+            discoverer(project, LEGACY_COURSE_PUBLIC_KEY_HEX)
         }
         val state = project.service<RecorderState>()
         state.deactivateAll()

@@ -8,23 +8,33 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.provenance.core.DocChangePayload
+import dev.provenance.core.DocClosePayload
+import dev.provenance.core.DocOpenPayload
 import dev.provenance.core.FsExternalChangePayload
+import dev.provenance.core.PastePayload
+import dev.provenance.core.SelectionChangePayload
 import dev.provenance.core.Sha256
+import dev.provenance.recorder.paste.PasteCorrelator
 import dev.provenance.recorder.state.Delta
 import dev.provenance.recorder.state.ExpectedContentRegistry
+import dev.provenance.recorder.wiring.DocWiring
+import dev.provenance.recorder.wiring.RecordableSessionSink
+import dev.provenance.recorder.wiring.SessionRouter
 import java.nio.file.Files
 import java.nio.file.Path
 
 /**
  * The save-time race (recorder PRD §4.5).
  *
- * [VfsExternalChangeListener.after] runs on the EDT inside a write action and hands the
- * actual content read + compare to [VfsExternalChangeListener.DEFAULT_DISPATCH], which
- * runs it on a pooled background thread. The expected-content model, meanwhile, is fed
- * from the EDT by ExternalChangeCoordinator's DocumentListener. A keystroke processed on
- * the EDT between the VFS save event and the pooled-thread comparison therefore advances
- * the model past the bytes that were actually written — and a naive hash compare reports
- * the student's own save as an external write.
+ * The post-save VFS listener (DocWiring, since doc.save and the save-time check are one
+ * ordered unit) runs on the EDT inside a write action and hands the actual content read +
+ * compare to [VfsExternalChangeListener.DEFAULT_DISPATCH], which runs it on a pooled
+ * background thread. The expected-content model, meanwhile, is fed from the EDT by
+ * ExternalChangeCoordinator's DocumentListener. A keystroke processed on the EDT between the
+ * VFS save event and the pooled-thread comparison therefore advances the model past the bytes
+ * that were actually written — and a naive hash compare reports the student's own save as an
+ * external write.
  *
  * Worse, the divergence branch used to call `expected.reset(onDiskContent)`, rolling the
  * model BACKWARDS onto the stale snapshot, which guaranteed the next save mismatched too.
@@ -32,10 +42,10 @@ import java.nio.file.Path
  * this produced 3316 false fs.external_change events across a 156-submission corpus.
  *
  * Seams used here, both already injectable and both used by the existing suite:
- *  - `dispatch` is deferred instead of synchronous, so the test controls exactly when the
+ *  - `vfsDispatch` is deferred instead of synchronous, so the test controls exactly when the
  *    background work runs and can advance the model inside that window.
- *  - `readDisk` is stubbed, so "what the editor wrote" is stated explicitly rather than
- *    depending on filesystem timing.
+ *  - `readSavedText` is stubbed, so "what the editor wrote" is stated explicitly rather
+ *    than depending on filesystem timing.
  *
  * The model is advanced by calling `applyDelta` directly — the same call
  * ExternalChangeCoordinator's DocumentListener makes — rather than by driving a real
@@ -75,23 +85,29 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
 
     private fun install(reg: ExpectedContentRegistry) {
         val engine = ExternalChangeEngine(reg)
-        val readDisk: (VirtualFile) -> String = { diskContent }
-        val saveChecker = SaveTimeExternalChangeChecker(
-            engine,
-            emit = { emitted.add(it) },
-            readDisk = readDisk,
-        )
-        val listener = VfsExternalChangeListener(
-            workspaceRoot = wsRoot,
-            engine = engine,
-            saveChecker = saveChecker,
-            emit = { emitted.add(it) },
-            readDisk = readDisk,
+        val saveChecker = SaveTimeExternalChangeChecker(engine, emit = { emitted.add(it) })
+        // The production save path: DocWiring's post-save VFS listener resolves the owning
+        // session and hands it the on-disk content; the session runs the check before recording
+        // doc.save. Only the check is asserted here — this test is about the model, not doc.save.
+        val sink = object : RecordableSessionSink {
+            override val workspaceRoot: Path get() = wsRoot
+            override val pasteCorrelator: PasteCorrelator? get() = null
+            override fun onDocOpen(payload: DocOpenPayload) = Unit
+            override fun onDocChange(payload: DocChangePayload) = Unit
+            override fun onSaveObserved(relativePath: String, onDiskContent: String) =
+                saveChecker.checkSavedContent(relativePath, onDiskContent)
+            override fun onDocClose(payload: DocClosePayload) = Unit
+            override fun onPaste(payload: PastePayload) = Unit
+            override fun onSelectionChange(payload: SelectionChangePayload) = Unit
+        }
+        DocWiring(
+            project = project,
+            router = SessionRouter { path -> if (path.startsWith(wsRoot)) sink else null },
+            parentDisposable = testRootDisposable,
             // Deferred, NOT synchronous: this is the pooled-thread hop the bug lives in.
-            dispatch = { pending.add(it) },
+            vfsDispatch = { pending.add(it) },
+            readSavedText = { diskContent },
         )
-        ApplicationManager.getApplication().messageBus.connect(testRootDisposable)
-            .subscribe(VirtualFileManager.VFS_CHANGES, listener)
     }
 
     /** Run the work the listener handed to the background thread. */
@@ -122,7 +138,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
     fun testKeystrokeDuringDispatchGapEmitsNothingAndDoesNotRollTheModelBack() {
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 
@@ -158,7 +174,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
         val external = "import os\nos.system(\"rm -rf /\")\n"
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 
@@ -189,7 +205,7 @@ class ExternalChangeRaceTest : BasePlatformTestCase() {
     fun testToleratedRaceDoesNotPerpetuateIntoTheNextSave() {
         val vf = vfFor("hw.py", BASE)
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, BASE)
         install(reg)
 

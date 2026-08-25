@@ -1,0 +1,90 @@
+{
+  "note": "Student per-course key derivation (program spec §S2). One master secret per STUDENT, one derived ed25519 keypair per COURSE. The master secret never leaves the machine and is never sent to any server; each course therefore sees an unlinkable public key, and correlating a student across courses requires the master itself. If three ports derive different bytes here, a student signature will not verify against the pubkey their token names and the failure will look like tampering — so these values are load-bearing.",
+  "algorithm": "HKDF-SHA256",
+  "hkdf_note": "IKM is the 32 RAW BYTES of the master secret (not hex, not base64). The salt is deliberately NON-EMPTY: HKDF's absent-salt rule (substitute HashLen zeros) and HMAC's own key zero-padding make an empty salt and a 32-zero-byte salt produce the same PRK — an equivalence that is true but that no port should have to know. Passing concrete bytes removes the question. The 32-byte output IS the ed25519 seed; ed25519 accepts any 32 bytes, so there is no rejection sampling or retry loop to agree on.",
+  "hkdf_params": {
+    "hash": "SHA-256",
+    "ikm": "the 32 raw bytes of the master secret",
+    "salt_utf8": "provenance-student-key-v1",
+    "salt_hex": "70726f76656e616e63652d73747564656e742d6b65792d7631",
+    "info_prefix_utf8": "provenance-student-key-v1:",
+    "info_construction": "UTF-8 bytes of (info_prefix_utf8 + course_id)",
+    "output_length_bytes": 32,
+    "output_is": "the ed25519 secret key (seed)"
+  },
+  "master_secret_bytes": 32,
+  "derivation_cases": [
+    {
+      "note": "The baseline derivation.",
+      "input": {
+        "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "course_id": "berkeley-cs61b"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:berkeley-cs61b",
+        "seed_hex": "737260173a35212d562eb807fa89d5e0af8dc1afa2211a0e33274b4eee554d37",
+        "pubkey_hex": "0b2bd2ad8968dd145318ec3e2aff91f86cc3a080e8639ac564ffd0ad6148db9c"
+      }
+    },
+    {
+      "note": "Same student, different course: an UNLINKABLE second key. This is the privacy claim.",
+      "input": {
+        "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "course_id": "berkeley-cs61c"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:berkeley-cs61c",
+        "seed_hex": "19147168089734eda4eeb80a90c71f44b5356cacd9c4d152fa313b1bb12e0dd0",
+        "pubkey_hex": "6773c4baac4eece120b230b657b5efe0a33ffa7a3a4e15c58d4e03eba905e660"
+      }
+    },
+    {
+      "note": "Different student, same course: a different key.",
+      "input": {
+        "master_secret_hex": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+        "course_id": "berkeley-cs61b"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:berkeley-cs61b",
+        "seed_hex": "ee333e736487a9d51b8174e2e13a850caad3379c1d28ac5712f41453120b1c58",
+        "pubkey_hex": "bf515a97cd60be01af112cd1a9891f7a4b30312602b2cbe33b7365c0371e872b"
+      }
+    },
+    {
+      "note": "Short course id — guards against prefix-concatenation collisions.",
+      "input": {
+        "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "course_id": "cs61b"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:cs61b",
+        "seed_hex": "ee8deb7521748c1f26b3c4aa30309d287316954752c6b8d67e11b27037038e07",
+        "pubkey_hex": "4dba094b74d8bca7df59d34cf74efa98eb1540d7d59b231e850ba9eec4440782"
+      }
+    },
+    {
+      "note": "and the longer id it must not collide with.",
+      "input": {
+        "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "course_id": "cs61b-extra"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:cs61b-extra",
+        "seed_hex": "7d833f47fb72595cb0ece0d52870e4aa44481bc4f1ab3ed2f199e7eb6f4de12f",
+        "pubkey_hex": "4a348006acdf91c24941d8b5725480827ac049fa77a0e22144e301c739f420a1"
+      }
+    },
+    {
+      "note": "A NON-ASCII course id. Safe here because course_id enters as a VALUE inside the HKDF info byte string, never as a JSON object key — UTF-8 encoding is unambiguous across all three languages, whereas object-key ordering is not.",
+      "input": {
+        "master_secret_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "course_id": "berkeley-café"
+      },
+      "expected": {
+        "info_utf8": "provenance-student-key-v1:berkeley-café",
+        "seed_hex": "2813a88e41260cf734e06e768e9bff48ea56359ba4a335402d1d58da97935ffc",
+        "pubkey_hex": "fd59ffc0240788a615fca3d34b90bfc2183277a8758c4856998ca37d415b0220"
+      }
+    }
+  ]
+}

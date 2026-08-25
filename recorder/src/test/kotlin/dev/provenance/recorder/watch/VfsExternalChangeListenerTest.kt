@@ -41,11 +41,9 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
         isRecentEditorChange: (String) -> Boolean = { false },
     ): ExternalChangeEngine {
         val engine = ExternalChangeEngine(reg)
-        val saveChecker = SaveTimeExternalChangeChecker(engine, emit = { emitted.add(it) })
         val listener = VfsExternalChangeListener(
             workspaceRoot = wsRoot,
             engine = engine,
-            saveChecker = saveChecker,
             emit = { emitted.add(it) },
             isRecentEditorChange = isRecentEditorChange,
             dispatch = { it() }, // synchronous for deterministic assertions
@@ -63,7 +61,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testExternalWriteEmitsModifyWithCorrectDirection() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg)
 
@@ -76,15 +74,24 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
         assertEquals(Sha256.hex("import evil\n"), p.newHash) // on-disk reality
     }
 
-    fun testEditorSaveIsRoutedToSaveCheckerNotExternalPath() {
-        // Discriminator: with the external recency-guard forced ON, only the save-checker
-        // branch can emit. An editor save (isFromSave) whose model diverged must still
-        // emit — proving isFromSave routes to the save-time check, not the external path.
+    fun testEditorSaveIsNotHandledHereAndLeavesTheSavePathToOwnIt() {
+        // Discriminator, and it cuts both ways.
+        //
+        // The model below is deliberately NOT advanced with the edit, and the recency guard is
+        // OFF — so if this listener treated the save as an external write, it would emit. It must
+        // not: an editor save (isFromSave) belongs to DocWiring's post-save path, which runs the
+        // same check against the same content it then records the doc.save hash from.
+        //
+        // Silence here is also the assertion that isFromSave() is still SET on a real editor
+        // save. If the platform ever stopped tagging saves, this save would fall through to the
+        // external branch and emit — so this test fails loudly rather than letting doc.save
+        // quietly stop being recorded. That is the headless half of the "isFromSave tags every
+        // real editor save" item in docs/manual-verification.md.
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n") // model NOT updated with the edit below
-        install(reg, isRecentEditorChange = { true }) // suppress the external branch entirely
+        install(reg) // external branch fully armed
 
         val doc = FileDocumentManager.getInstance().getDocument(vf)!!
         WriteCommandAction.runWriteCommandAction(project) { doc.insertString(doc.textLength, "print(2)\n") }
@@ -92,16 +99,13 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
             WriteAction.run<RuntimeException> { FileDocumentManager.getInstance().saveDocument(doc) }
         }
 
-        assertEquals("save-checker must emit despite recency guard", 1, emitted.size)
-        assertEquals("modify", emitted[0].operation)
-        assertEquals(Sha256.hex("print(1)\n"), emitted[0].oldHash)
-        assertEquals(Sha256.hex("print(1)\nprint(2)\n"), emitted[0].newHash)
+        assertEquals("an editor save must not be reported as an external write", 0, emitted.size)
     }
 
     fun testExternalWriteSuppressedByRecencyGuard() {
         val vf = vfFor("hw.py", "print(1)\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "print(1)\n")
         install(reg, isRecentEditorChange = { true }) // external branch suppressed
 
@@ -112,7 +116,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testCreateEmitsOperationCreate() {
         // Seed a watched path that doesn't exist yet, install, then create it on disk.
         val rel = "created.py"
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         install(reg)
         // Load the parent dir into the VFS snapshot so create events fire for children.
         val rootVf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(wsRoot)!!
@@ -129,7 +133,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
     fun testDeleteEmitsOperationDeleteAndDropsEntry() {
         val vf = vfFor("gone.py", "temporary\n")
         val rel = relativePathOf(vf, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(rel))
+        val reg = ExpectedContentRegistry(trackOnly(rel))
         reg.getOrCreate(rel, "temporary\n")
         val engine = install(reg)
 
@@ -147,7 +151,7 @@ class VfsExternalChangeListenerTest : BasePlatformTestCase() {
         val vfB = vfFor("b.py", "BBB\n")
         val relA = relativePathOf(vfA, wsRoot)!!
         val relB = relativePathOf(vfB, wsRoot)!!
-        val reg = ExpectedContentRegistry(listOf(relA, relB))
+        val reg = ExpectedContentRegistry(trackOnly(relA, relB))
         reg.getOrCreate(relA, "AAA\n")
         reg.getOrCreate(relB, "BBB\n")
         install(reg)

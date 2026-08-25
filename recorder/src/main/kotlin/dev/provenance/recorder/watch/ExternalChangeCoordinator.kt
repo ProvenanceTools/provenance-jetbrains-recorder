@@ -14,6 +14,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import dev.provenance.core.FsExternalChangePayload
+import dev.provenance.core.ResolvedScope
 import dev.provenance.recorder.state.Delta
 import dev.provenance.recorder.state.ExpectedContentRegistry
 import dev.provenance.recorder.wiring.runOnEdtAndWait
@@ -39,14 +40,14 @@ import java.nio.file.Path
 class ExternalChangeCoordinator(
     private val project: Project,
     private val workspaceRoot: Path,
-    filesUnderReview: List<String>,
+    scope: ResolvedScope,
     private val emit: (FsExternalChangePayload) -> Unit,
     private val isRecentEditorChange: (String) -> Boolean = { false },
     private val vfsDispatch: (() -> Unit) -> Unit = VfsExternalChangeListener.DEFAULT_DISPATCH,
     /** "Run this on the EDT and wait" — injectable so a test can observe where it lands. */
     private val onEdt: (() -> Unit) -> Unit = ::runOnEdtAndWait,
 ) : Disposable {
-    val registry = ExpectedContentRegistry(filesUnderReview)
+    val registry = ExpectedContentRegistry(scope)
     private val engine = ExternalChangeEngine(registry)
     private val saveChecker = SaveTimeExternalChangeChecker(engine, emit)
 
@@ -57,7 +58,6 @@ class ExternalChangeCoordinator(
         val vfsListener = VfsExternalChangeListener(
             workspaceRoot = workspaceRoot,
             engine = engine,
-            saveChecker = saveChecker,
             emit = emit,
             isRecentEditorChange = isRecentEditorChange,
             dispatch = vfsDispatch,
@@ -70,9 +70,15 @@ class ExternalChangeCoordinator(
             .subscribe(FileDocumentManagerListener.TOPIC, reloadListener)
     }
 
-    /** Path 1 entry point for a true post-save hook, if a later plan adds one. */
-    fun checkAfterSave(relativePath: String, file: VirtualFile) =
-        saveChecker.checkAfterSave(relativePath, file)
+    /**
+     * Path 1 entry point, called by the session controller from its post-write doc.save path
+     * (DocWiring's isFromSave VFS listener → RecordingSessionController.onSaveObserved).
+     *
+     * Takes the content rather than re-reading it: the doc.save that follows must hash the SAME
+     * bytes this comparison ran against, and a second read could observe a different state.
+     */
+    fun checkSavedContent(relativePath: String, onDiskContent: String) =
+        saveChecker.checkSavedContent(relativePath, onDiskContent)
 
     /**
      * Registration + open-file catch-up as ONE EDT unit — see [runOnEdtAndWait]. The enumeration

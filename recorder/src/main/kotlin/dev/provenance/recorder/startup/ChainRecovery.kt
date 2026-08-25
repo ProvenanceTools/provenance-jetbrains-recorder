@@ -11,18 +11,24 @@ import java.time.Instant
 /**
  * Startup chain recovery — pure decision logic behind an injected filesystem seam.
  *
- * Direct 1:1 port of provenance/packages/recorder/src/startup/chain-recovery.ts. That
- * file's header comment is the authoritative rationale for three decisions honored here:
- *   1. Multiple .slog files → take the alphabetically last one (any deterministic
- *      tie-break suffices; alphabetical-last is simple, deterministic, testable, and
- *      avoids the TOCTOU risk of mtime stat() calls).
- *   2. prev_session_id linkage is set ONLY for a dangling prior session (crash: no
+ * WHICH `.slog` this operates on is decided entirely by `SlogOwnership.kt`: eligible files
+ * only, latest `session.start.wall` among them. Read that file before changing anything
+ * here; a partner's `.slog` must never reach this module's quarantine.
+ *
+ * Two decisions live here, and the VS Code twin
+ * (provenance/packages/recorder/src/startup/chain-recovery.ts) is their rationale:
+ *   1. prev_session_id linkage is set ONLY for a dangling prior session (crash: no
  *      trailing session.end). A cleanly-completed prior session is not linked; a corrupt
  *      one is surfaced via quarantine + recorder.recovered_from_corruption, never linkage.
- *   3. Corruption does NOT emit chain.broken. That kind stays reserved for a live session
+ *   2. Corruption does NOT emit chain.broken. That kind stays reserved for a live session
  *      detecting its own chain breaking mid-stream. Recovery quarantines the file
  *      (`<slog>.corrupt-<ISO>`) and reports the quarantined path.
- * Do not deviate from that rationale.
+ *
+ * ORDERING CONSTRAINT ON CALLERS: recovery must run AFTER this session's identity has been
+ * built, because [RecoveryDeps.ownStudentRef] is the whole ownership signal and it comes
+ * from that identity. Recovering with a null ref in an enrolled student's shared repo is
+ * the bug this module was rewritten to fix, not a degraded-but-acceptable mode. See
+ * `RecorderSessionManager.startFromActivation`.
  */
 
 sealed interface RecoveryDecision {
@@ -53,33 +59,53 @@ interface RecoveryDeps {
     suspend fun listSlogFiles(dir: String): List<String>
 
     fun now(): Instant
-}
 
-private fun quarantinePath(slogPath: String, now: Instant): String =
-    "$slogPath.corrupt-${now.toString().replace(Regex("[:.]"), "-")}"
+    /**
+     * `identity.enrollment.student_ref` of the session that is STARTING, or null when this
+     * recorder holds no verifying enrollment for this course.
+     *
+     * This is the whole ownership signal — see [SlogOwnership]. Defaulted so callers and
+     * tests that predate the enrollment work keep exactly the behaviour they had (the
+     * unenrolled path).
+     */
+    val ownStudentRef: String? get() = null
+}
 
 /**
  * Inspect provenanceDir for a previous session and return a recovery decision.
- * Side effect: if the chain is invalid (or unreadable/unparsable/malformed-header), renames
- * the .slog to `<slog>.corrupt-<ISO>` (quarantine) before returning PreviousSessionCorrupt.
+ *
+ * Side effect: if the SELECTED .slog is invalid (or unreadable/unparsable/malformed-header),
+ * renames it to `<slog>.corrupt-<ISO>` (quarantine) before returning PreviousSessionCorrupt
+ * — but only ever a file this recorder is entitled to touch. A file belonging to another
+ * contributor is never read past its first line, never selected, never linked, and never
+ * renamed (`SlogOwnership.kt`).
  */
 suspend fun recoverPreviousSession(deps: RecoveryDeps): RecoveryDecision {
     val slogFiles = deps.listSlogFiles(deps.provenanceDir).filter { it.endsWith(".slog") }.sorted()
     if (slogFiles.isEmpty()) return RecoveryDecision.CleanStart
 
-    // Alphabetically last — see chain-recovery.ts header comment for the tie-break rationale.
-    val slogPath = "${deps.provenanceDir}/${slogFiles.last()}"
+    // Most recent ELIGIBLE session by session.start wall. Null means the whole directory
+    // belongs to other contributors: start clean and leave every one of their files exactly
+    // where it is.
+    val picked = selectEligible(slogFiles, deps.provenanceDir, deps::readSlogFile, deps.ownStudentRef)
+        ?: return RecoveryDecision.CleanStart
 
+    val slogPath = "${deps.provenanceDir}/${picked.filename}"
+
+    // The one quarantine call site, on the selected path only.
     suspend fun quarantine(): RecoveryDecision.PreviousSessionCorrupt {
-        val quarantined = quarantinePath(slogPath, deps.now())
+        val quarantined = "$slogPath.corrupt-${deps.now().toString().replace(Regex("[:.]"), "-")}"
         deps.rename(slogPath, quarantined)
         return RecoveryDecision.PreviousSessionCorrupt(quarantined)
     }
 
-    val readResult = deps.readSlogFile(slogPath)
-    if (readResult !is SlogReadResult.Ok) return quarantine()
+    // Reuse the text selection already read; only re-read on the eligible fallback.
+    val text = picked.text ?: when (val r = deps.readSlogFile(slogPath)) {
+        is SlogReadResult.Ok -> r.text
+        is SlogReadResult.Err -> return quarantine()
+    }
 
-    val parseResult = parseEntries(readResult.text)
+    val parseResult = parseEntries(text)
     if (parseResult !is ParseResult.Ok) return quarantine()
 
     val entries = parseResult.entries

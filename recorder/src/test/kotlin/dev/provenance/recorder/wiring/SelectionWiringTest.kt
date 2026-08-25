@@ -5,7 +5,6 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.DocChangePayload
 import dev.provenance.core.DocClosePayload
 import dev.provenance.core.DocOpenPayload
-import dev.provenance.core.DocSavePayload
 import dev.provenance.core.PastePayload
 import dev.provenance.core.SelectionChangePayload
 import dev.provenance.recorder.paste.PasteCorrelator
@@ -20,7 +19,7 @@ class SelectionWiringTest : BasePlatformTestCase() {
         override val pasteCorrelator: PasteCorrelator? = null
         override fun onDocOpen(payload: DocOpenPayload) = Unit
         override fun onDocChange(payload: DocChangePayload) = Unit
-        override fun onDocSave(payload: DocSavePayload) = Unit
+        override fun onSaveObserved(relativePath: String, onDiskContent: String) = Unit
         override fun onDocClose(payload: DocClosePayload) = Unit
         override fun onPaste(payload: PastePayload) = Unit
         override fun onSelectionChange(payload: SelectionChangePayload) { changes.add(payload) }

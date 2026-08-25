@@ -16,6 +16,9 @@ import dev.provenance.core.ChainCheck
 import dev.provenance.core.FixedClock
 import dev.provenance.core.HashedEnvelope
 import dev.provenance.core.ParseResult
+import dev.provenance.core.REPOSITORY_DISCRIMINATOR_FIELD
+import dev.provenance.core.RepositoryDiscriminatorRead
+import dev.provenance.core.readRepositoryDiscriminator
 import dev.provenance.core.Sha256
 import dev.provenance.core.parseEntries
 import dev.provenance.core.validateChain
@@ -23,9 +26,8 @@ import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.session.ActivatedWorkspace
 import dev.provenance.recorder.session.RecorderSessionManager
 import dev.provenance.recorder.startup.RecoveryDecision
-import dev.provenance.recorder.wiring.git.GitWiringStartupActivity
+import dev.provenance.recorder.wiring.git.installGitWiring
 import git4idea.repo.GitRepositoryManager
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
@@ -69,11 +71,17 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
     private val otherBranchContent = "print(1)\nprint(2)\nimport external\n"
 
     private fun git(vararg args: String) {
+        gitOutput(*args)
+    }
+
+    /** Run git in [ws] and return its stdout. Fails the test on a non-zero exit. */
+    private fun gitOutput(vararg args: String): String {
         val cmd = arrayOf("git", *args)
         val p = ProcessBuilder(*cmd).directory(ws.toFile()).redirectErrorStream(true).start()
         val out = p.inputStream.readBytes().decodeToString()
         val code = p.waitFor()
         check(code == 0) { "git ${args.joinToString(" ")} failed ($code):\n$out" }
+        return out
     }
 
     override fun tearDown() {
@@ -118,7 +126,9 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
         assertFalse("git4idea must detect the real repository", mgr.repositories.isEmpty())
 
         // Register our git.event subscription (ProjectActivity is not auto-run in tests).
-        runBlocking { GitWiringStartupActivity().execute(project) }
+        // Keep the handle: emission is async now (reading `parents` is a blocking VCS call),
+        // so the assertions below must await settled() rather than race the graph read.
+        val gitWiring = installGitWiring(project)
 
         val hw = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(ws.resolve("hw.py"))!!
         ApplicationManager.getApplication().invokeAndWait {
@@ -150,6 +160,8 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
         // → our subscription emits git.event and marks the ExplanationTagger.
         ApplicationManager.getApplication().executeOnPooledThread { mgr.repositories[0].update() }.get()
         PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        // The git.event is emitted off the state-change thread, after the commit-graph read.
+        assertTrue("the git wiring must settle", gitWiring.settled())
         // Surface the new file content to VFS → fs.external_change, tagged explanation="git".
         VfsUtil.markDirtyAndRefresh(false, false, false, hw)
         PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
@@ -175,5 +187,53 @@ class GitExternalChangeGateTest : BasePlatformTestCase() {
             ext[0].data["new_hash"]?.jsonPrimitive?.content,
         )
         assertEquals("the chain must stay valid across the real git-driven signals", ChainCheck.Valid, validateChain(entries))
+
+        // --- D12: the REPOSITORY DISCRIMINATOR, end to end against a real repository.
+        //
+        // This is the only place the production derivation actually runs: `installGitWiring`
+        // defaults to the real `deriveRootCommitSha` over the IntelliJ VCS API
+        // (`git4idea.commands.Git`), so what is asserted here is that this plugin's platform
+        // seam invokes real git plumbing in the real repository and gets the real root commit
+        // — not that a stubbed seam was wired up correctly. `RootCommitShaTest` covers the
+        // derivation RULES against the seam; nothing but this covers the seam itself.
+        //
+        // The expected value is computed by an independent `git` invocation with the SAME
+        // arguments the writer contract pins, so a port that quietly dropped `--first-parent`
+        // or `--max-parents=0` disagrees here.
+        val expectedRoot = gitOutput("rev-list", "--max-parents=0", "--first-parent", "HEAD")
+            .trim()
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .min()
+        val gitEvents = entries.filter { it.kind == "git.event" }
+        val labelled = gitEvents.filter { REPOSITORY_DISCRIMINATOR_FIELD in it.data }
+        assertFalse(
+            "a real repository must label its git.events with a root_commit_sha",
+            labelled.isEmpty(),
+        )
+        for (event in labelled) {
+            assertEquals(
+                "the discriminator must be THIS repository's real first-parent root commit",
+                expectedRoot,
+                event.data[REPOSITORY_DISCRIMINATOR_FIELD]!!.jsonPrimitive.content,
+            )
+            // And it must be a value this recorder's own reader accepts — a nonconforming
+            // writer's path or remote URL would be stopped here, on the write side, before it
+            // ever reached a staff-facing UI.
+            assertTrue(
+                "the emitted discriminator must narrow as `recorded`",
+                readRepositoryDiscriminator(event.data) is RepositoryDiscriminatorRead.Recorded,
+            )
+        }
+        // Rule 10: every event that carries a `sha` carries the label. An unlabelled
+        // observation does not correlate even when its neighbours in the same session do.
+        for (event in gitEvents) {
+            if ("sha" !in event.data) continue
+            assertTrue(
+                "a git.event with a sha must carry the discriminator",
+                REPOSITORY_DISCRIMINATOR_FIELD in event.data,
+            )
+        }
     }
 }

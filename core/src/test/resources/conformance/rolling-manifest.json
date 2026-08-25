@@ -1,0 +1,254 @@
+{
+  "note": "Rolling seal (S3). One manifest per session, signed by that session key, rewritten on every checkpoint so a git-committed .provenance/ is always sealed.",
+  "format_version": "1.2",
+  "session_id": "33333333-3333-4333-8333-333333333333",
+  "filenames": {
+    "json": "manifest-33333333-3333-4333-8333-333333333333.json",
+    "sig": "manifest-33333333-3333-4333-8333-333333333333.sig"
+  },
+  "not_rolling_filenames": [
+    "manifest.json",
+    "manifest.sig",
+    "manifest-.json",
+    "manifest-33333333-3333-4333-8333-333333333333.json.tmp",
+    "session-33333333-3333-4333-8333-333333333333.slog"
+  ],
+  "session_pubkey_hex": "8a875fff1eb38451577acd5afee405456568dd7c89e090863a0557bc7af49f17",
+  "manifest": {
+    "format_version": "1.2",
+    "assignment_id": "proj2",
+    "semester": "fa26",
+    "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "sessions": [
+      {
+        "session_id": "33333333-3333-4333-8333-333333333333",
+        "prev_session_id": null,
+        "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "submission_files": [
+      {
+        "path": "gitlet/Repository.java",
+        "status": "present",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      {
+        "path": "gitlet/Missing.java",
+        "status": "missing",
+        "sha256": null
+      }
+    ]
+  },
+  "canonical_json": "{\"assignment_id\":\"proj2\",\"extension_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"format_version\":\"1.2\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"prev_session_id\":null,\"session_id\":\"33333333-3333-4333-8333-333333333333\",\"slog_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}],\"submission_files\":[{\"path\":\"gitlet/Repository.java\",\"sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"status\":\"present\"},{\"path\":\"gitlet/Missing.java\",\"sha256\":null,\"status\":\"missing\"}]}",
+  "signature_hex": "8f98396a94d369af359e8249ed8ff120fe4ea41aa0acff3a82719c85f1702fc6241c52aa8c6c93b5c2406243fa2c8d1abc49b4be1e12fd47024a4f68575a4e06",
+  "final_marker": {
+    "non_final": {
+      "note": "every roll but the last: the key is absent, not false",
+      "is_final": false,
+      "manifest": {
+        "format_version": "1.2",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ]
+      },
+      "canonical_json": "{\"assignment_id\":\"proj2\",\"extension_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"format_version\":\"1.2\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"prev_session_id\":null,\"session_id\":\"33333333-3333-4333-8333-333333333333\",\"slog_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}],\"submission_files\":[{\"path\":\"gitlet/Repository.java\",\"sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"status\":\"present\"},{\"path\":\"gitlet/Missing.java\",\"sha256\":null,\"status\":\"missing\"}]}",
+      "signature_hex": "8f98396a94d369af359e8249ed8ff120fe4ea41aa0acff3a82719c85f1702fc6241c52aa8c6c93b5c2406243fa2c8d1abc49b4be1e12fd47024a4f68575a4e06"
+    },
+    "final": {
+      "note": "the dispose()-time roll, over a finished log — read WHOLE-FILE",
+      "is_final": true,
+      "manifest": {
+        "format_version": "1.2",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ],
+        "final": true
+      },
+      "canonical_json": "{\"assignment_id\":\"proj2\",\"extension_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"final\":true,\"format_version\":\"1.2\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"prev_session_id\":null,\"session_id\":\"33333333-3333-4333-8333-333333333333\",\"slog_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}],\"submission_files\":[{\"path\":\"gitlet/Repository.java\",\"sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"status\":\"present\"},{\"path\":\"gitlet/Missing.java\",\"sha256\":null,\"status\":\"missing\"}]}",
+      "signature_hex": "e4050f6c522cc8181dc8bd451d3424b4032dbe81b36e418a7fcb303ac8460252f7c8cb3a98b69e2a08c2903c82e5c9dd37d84287fad8a15d13ea5ee812c28503"
+    },
+    "not_final_values": [
+      null,
+      false,
+      "true",
+      1,
+      {}
+    ],
+    "downgrade_rejects": {
+      "note": "final stripped, final signature kept — must NOT verify",
+      "canonical_json": "{\"assignment_id\":\"proj2\",\"extension_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"format_version\":\"1.2\",\"semester\":\"fa26\",\"sessions\":[{\"meta_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"prev_session_id\":null,\"session_id\":\"33333333-3333-4333-8333-333333333333\",\"slog_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}],\"submission_files\":[{\"path\":\"gitlet/Repository.java\",\"sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"status\":\"present\"},{\"path\":\"gitlet/Missing.java\",\"sha256\":null,\"status\":\"missing\"}]}",
+      "signature_hex": "e4050f6c522cc8181dc8bd451d3424b4032dbe81b36e418a7fcb303ac8460252f7c8cb3a98b69e2a08c2903c82e5c9dd37d84287fad8a15d13ea5ee812c28503",
+      "verifies": false
+    }
+  },
+  "rejects": [
+    {
+      "note": "a classic 1.1 manifest is not a rolling seal",
+      "error_kind": "not_rolling",
+      "manifest": {
+        "format_version": "1.1",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ]
+      }
+    },
+    {
+      "note": "a rolling manifest FILE covers exactly one session",
+      "error_kind": "wrong_session_count",
+      "manifest": {
+        "format_version": "1.2",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          {
+            "session_id": "44444444-4444-4444-8444-444444444444",
+            "prev_session_id": "33333333-3333-4333-8333-333333333333",
+            "slog_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+            "meta_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ]
+      }
+    },
+    {
+      "note": "a live recorder always knows its own session id",
+      "error_kind": "null_session_id",
+      "manifest": {
+        "format_version": "1.2",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": null,
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ]
+      }
+    },
+    {
+      "note": "copied sideways: the manifest names a session its filename does not",
+      "error_kind": "session_id_mismatch",
+      "expected_session_id": "44444444-4444-4444-8444-444444444444",
+      "manifest": {
+        "format_version": "1.2",
+        "assignment_id": "proj2",
+        "semester": "fa26",
+        "extension_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessions": [
+          {
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "prev_session_id": null,
+            "slog_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "meta_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ],
+        "submission_files": [
+          {
+            "path": "gitlet/Repository.java",
+            "status": "present",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          {
+            "path": "gitlet/Missing.java",
+            "status": "missing",
+            "sha256": null
+          }
+        ]
+      }
+    }
+  ]
+}

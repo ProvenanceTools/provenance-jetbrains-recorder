@@ -18,7 +18,7 @@ import org.junit.Test
  */
 class ExternalChangeEngineTest {
     private fun engine(vararg watched: String) =
-        ExternalChangeEngine(ExpectedContentRegistry(watched.toList()))
+        ExternalChangeEngine(ExpectedContentRegistry(trackOnly(*watched)))
 
     // ---- scope gate --------------------------------------------------------
 
@@ -28,7 +28,7 @@ class ExternalChangeEngineTest {
         assertNull(e.onSavedContent("other.txt", "x"))
         assertNull(e.onExternalModify("other.txt", "x"))
         assertNull(e.onExternalCreate("other.txt", "x"))
-        assertNull(e.onExternalDelete("other.txt"))
+        assertNull(e.onExternalDelete("other.txt", confirmedAbsent = true))
         assertNull(e.onReload("other.txt", "x"))
     }
 
@@ -127,7 +127,7 @@ class ExternalChangeEngineTest {
     fun `delete of a tracked file emits with old=expected new empty and drops the entry`() {
         val e = engine("a.txt")
         e.registry.getOrCreate("a.txt", "was here")
-        val p = e.onExternalDelete("a.txt")!!
+        val p = e.onExternalDelete("a.txt", confirmedAbsent = true)!!
         assertEquals("delete", p.operation)
         assertEquals(Sha256.hex("was here"), p.oldHash)
         assertEquals("", p.newHash)
@@ -140,11 +140,34 @@ class ExternalChangeEngineTest {
     @Test
     fun `delete of a watched-but-never-opened file still emits with empty hashes`() {
         val e = engine("a.txt")
-        val p = e.onExternalDelete("a.txt")!!
+        val p = e.onExternalDelete("a.txt", confirmedAbsent = true)!!
         assertEquals("delete", p.operation)
         assertEquals("", p.oldHash)
         assertEquals("", p.newHash)
         assertEquals(0, p.diffSize)
+    }
+
+    @Test
+    fun `a delete whose path is still on disk emits nothing and keeps the baseline`() {
+        // The VFS event kind is a CLAIM; absence is the observation. A platform that
+        // coalesces or mislabels an event must not be able to put "this file was deleted"
+        // into a signed log about a file the student still has. Create and modify already
+        // fail toward silence; this is delete joining them.
+        val e = engine("a.txt")
+        e.registry.getOrCreate("a.txt", "still here")
+        assertNull(e.onExternalDelete("a.txt", confirmedAbsent = false))
+        // The baseline must survive: the file exists, so the expected-content model for it
+        // is still correct and dropping it would desync the next comparison.
+        assertEquals(Sha256.hex("still here"), e.registry.get("a.txt")!!.hash)
+    }
+
+    @Test
+    fun `an unconfirmable delete is silent rather than asserted`() {
+        // notExists() is false both for a file that is present AND for one whose status
+        // cannot be determined (an unreadable parent directory). Neither confirms absence,
+        // so neither may be reported -- a missing fact, never a wrong one.
+        val e = engine("a.txt")
+        assertNull(e.onExternalDelete("a.txt", confirmedAbsent = false))
     }
 
     // ---- path 3: reload ----------------------------------------------------

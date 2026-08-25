@@ -119,8 +119,16 @@ signed **0.1.0** release hash is on it too; every new release needs its own entr
 ```sh
 K=~/cs61a-keys
 
-# Course key: embedded into the build so only this course's manifests activate the plugin.
-export PROVENANCE_COURSE_PUBLIC_KEY_HEX="$(python3 -c \
+# Root key: the Manifest 2.0 trust anchor. One build serves every course — a course's
+# authority comes from its root-signed course_cert, carried inline in the manifest.
+export PROVENANCE_ROOT_PUBLIC_KEY_HEX="$(python3 -c \
+  "import json;print(json.load(open('$K/provenance-root.json'))['public_key_hex'])")"
+
+# Legacy course key: OPTIONAL. Grandfathers Manifest 1.x files, which have no cert and
+# were signed directly by the course key, so they keep activating instead of silently
+# recording nothing. Omit this once every 1.x manifest in the field has been re-issued
+# as 2.0 — that omission is the retirement mechanism, and the build will say so.
+export PROVENANCE_LEGACY_COURSE_PUBLIC_KEY_HEX="$(python3 -c \
   "import json;print(json.load(open('$K/cs61a-fa26.json'))['public_key_hex'])")"
 
 # Signing identity. The key is decrypted in memory only — see "Code-signing certificate
@@ -133,13 +141,18 @@ unset PRIVATE_KEY_PASSWORD
 export PUBLISH_TOKEN=<Marketplace personal access token>
 
 # Bump `pluginVersion` in gradle.properties first — Marketplace rejects duplicates.
-./gradlew :recorder:buildProd     # embed key → build → sign → hash → revert key
+./gradlew :recorder:buildProd     # embed keys → build → sign → hash → revert keys
 ./gradlew :recorder:publishProd   # buildProd + verifyPlugin, then publishPlugin
 ```
 
-`buildProd` always reverts `CoursePublicKey.kt` to the dev key afterward — even on
-failure — so the real course key is never left in the working tree. Verify with
-`git status` regardless; the guarantee is worth trusting but cheap to check.
+`buildProd` always reverts `RootPublicKey.kt` and `LegacyCoursePublicKey.kt` to their dev
+keys afterward — even on failure — so a real key is never left in the working tree. Verify
+with `git status` regardless; the guarantee is worth trusting but cheap to check.
+
+`verifyEmbeddedTrustAnchors` then asserts the *built artifact* carries each supplied key
+and none of the dev keys. It only checks anchors whose env var you actually set, so
+dropping `PROVENANCE_LEGACY_COURSE_PUBLIC_KEY_HEX` is a supported release, not a silent
+gap — the build logs the omission at both the embed and verify steps.
 
 The signed artifact is `recorder/build/distributions/recorder-signed.zip`. **Upload that
 one, not `recorder.zip`** — both are produced, they sort adjacently, and only the signed

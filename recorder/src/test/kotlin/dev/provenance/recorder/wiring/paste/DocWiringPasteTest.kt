@@ -6,7 +6,6 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.DocChangePayload
 import dev.provenance.core.DocClosePayload
 import dev.provenance.core.DocOpenPayload
-import dev.provenance.core.DocSavePayload
 import dev.provenance.core.PastePayload
 import dev.provenance.core.SelectionChangePayload
 import dev.provenance.recorder.paste.PasteCorrelator
@@ -31,7 +30,7 @@ class DocWiringPasteTest : BasePlatformTestCase() {
     ) : RecordableSessionSink {
         override fun onDocOpen(payload: DocOpenPayload) = Unit
         override fun onDocChange(payload: DocChangePayload) { changes.add(payload) }
-        override fun onDocSave(payload: DocSavePayload) = Unit
+        override fun onSaveObserved(relativePath: String, onDiskContent: String) = Unit
         override fun onDocClose(payload: DocClosePayload) = Unit
         override fun onPaste(payload: PastePayload) { pastes.add(payload) }
         override fun onSelectionChange(payload: SelectionChangePayload) = Unit

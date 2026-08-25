@@ -34,15 +34,16 @@ const val DEFAULT_MAX_DISCOVERY_DEPTH: Int = 6
  */
 fun discoverManifestRoots(
     searchRoots: List<VirtualFile>,
-    coursePubkeyHex: String = COURSE_PUBLIC_KEY_HEX,
+    legacyCoursePubkeyHex: String = LEGACY_COURSE_PUBLIC_KEY_HEX,
     maxDepth: Int = DEFAULT_MAX_DISCOVERY_DEPTH,
     prunedDirNames: Set<String> = DISCOVERY_PRUNED_DIR_NAMES,
+    rootPubkeyHex: String = ROOT_PUBLIC_KEY_HEX,
 ): List<DiscoveredManifest> {
     val found = mutableListOf<DiscoveredManifest>()
     val visited = mutableSetOf<String>()
     for (searchRoot in searchRoots) {
         walk(searchRoot, depth = 0, maxDepth, prunedDirNames, visited) { dir ->
-            val result = loadAndVerifyManifest(dir, coursePubkeyHex)
+            val result = loadAndVerifyManifest(dir, legacyCoursePubkeyHex, rootPubkeyHex)
             if (result is ManifestActivation.Active) {
                 found += DiscoveredManifest(dir, result.manifest)
             }
@@ -75,9 +76,13 @@ private fun walk(
  * both the common single-content-root course project and a multi-module/attached-modules
  * layout) without requiring every consumer to assemble the search-root list by hand.
  */
-fun discoverManifestRoots(project: Project, coursePubkeyHex: String = COURSE_PUBLIC_KEY_HEX): List<DiscoveredManifest> {
+fun discoverManifestRoots(
+    project: Project,
+    legacyCoursePubkeyHex: String = LEGACY_COURSE_PUBLIC_KEY_HEX,
+    rootPubkeyHex: String = ROOT_PUBLIC_KEY_HEX,
+): List<DiscoveredManifest> {
     val roots = LinkedHashSet<VirtualFile>()
     project.guessProjectDir()?.let { roots += it }
     roots += ProjectRootManager.getInstance(project).contentRoots
-    return discoverManifestRoots(roots.toList(), coursePubkeyHex)
+    return discoverManifestRoots(roots.toList(), legacyCoursePubkeyHex, rootPubkeyHex = rootPubkeyHex)
 }

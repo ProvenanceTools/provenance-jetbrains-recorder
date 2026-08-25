@@ -10,7 +10,6 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.DocChangePayload
 import dev.provenance.core.DocClosePayload
 import dev.provenance.core.DocOpenPayload
-import dev.provenance.core.DocSavePayload
 import dev.provenance.core.PastePayload
 import dev.provenance.core.SelectionChangePayload
 import dev.provenance.core.Sha256
@@ -21,7 +20,7 @@ import java.nio.file.Paths
 class DocWiringTest : BasePlatformTestCase() {
     private val opens = mutableListOf<DocOpenPayload>()
     private val changes = mutableListOf<DocChangePayload>()
-    private val saves = mutableListOf<DocSavePayload>()
+    private val saves = mutableListOf<Pair<String, String>>()
     private val closes = mutableListOf<DocClosePayload>()
 
     private val workspaceRoot: Path = Paths.get("/ws")
@@ -37,7 +36,7 @@ class DocWiringTest : BasePlatformTestCase() {
         override val pasteCorrelator: PasteCorrelator? = null,
         val opens: MutableList<DocOpenPayload>,
         val changes: MutableList<DocChangePayload>,
-        val saves: MutableList<DocSavePayload>,
+        val saves: MutableList<Pair<String, String>>,
         val closes: MutableList<DocClosePayload>,
         val order: MutableList<String> = mutableListOf(),
         val openOnEdt: MutableList<Boolean> = mutableListOf(),
@@ -48,7 +47,10 @@ class DocWiringTest : BasePlatformTestCase() {
             openOnEdt.add(ApplicationManager.getApplication().isDispatchThread)
         }
         override fun onDocChange(payload: DocChangePayload) { changes.add(payload); order.add("doc.change") }
-        override fun onDocSave(payload: DocSavePayload) { saves.add(payload); order.add("doc.save") }
+        override fun onSaveObserved(relativePath: String, onDiskContent: String) {
+            saves.add(relativePath to onDiskContent)
+            order.add("doc.save")
+        }
         override fun onDocClose(payload: DocClosePayload) { closes.add(payload); order.add("doc.close") }
         override fun onPaste(payload: dev.provenance.core.PastePayload) = Unit
         override fun onSelectionChange(payload: SelectionChangePayload) = Unit
@@ -120,18 +122,6 @@ class DocWiringTest : BasePlatformTestCase() {
         assertEquals(1L, d.range.start.line)
         assertEquals(2L, d.range.start.character)
         assertEquals("Z", d.text)
-    }
-
-    fun testDocSaveEmitsHashOfSavedContent() {
-        myFixture.configureByText("hw.py", "print(1)\n")
-        install()
-        val doc = document()
-        WriteCommandAction.runWriteCommandAction(project) { doc.insertString(doc.textLength, "print(2)\n") }
-        val finalText = doc.text
-        WriteCommandAction.runWriteCommandAction(project) { FileDocumentManager.getInstance().saveDocument(doc) }
-        assertTrue("expected at least one save", saves.isNotEmpty())
-        assertEquals(Sha256.hex(finalText), saves.last().sha256)
-        assertEquals("hw.py", saves.last().path)
     }
 
     fun testNoOwningSessionEmitsNothing() {
