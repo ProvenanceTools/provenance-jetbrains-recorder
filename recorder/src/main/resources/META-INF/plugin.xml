@@ -98,6 +98,40 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <p><b>0.3.0</b> &mdash; enrollment, continuous sealing, and group work.</p>
+    <ul>
+      <li><b>Your submissions can now prove they are yours.</b> Use
+          <b>Tools &rarr; Provenance: Show My Enrollment Key</b> to get the key your course staff
+          asks for, then <b>Tools &rarr; Provenance: Import Enrollment Token</b> to paste back the
+          token they send you. Until you enroll, recording works exactly as it did before, but
+          nothing in the bundle says who produced it &mdash; the recorder now tells you that
+          instead of leaving it silent, and enrolling mid-session takes effect right away.</li>
+      <li><b>Working on a second computer.</b> <b>Provenance: Export Student Identity Secret</b>
+          and <b>Provenance: Import Student Identity Secret</b> move your enrolled identity to
+          another machine, so the work you do there is still attributed to you.</li>
+      <li><b>Assignments you submit with <code>git push</code> no longer need a seal step.</b>
+          The recorder keeps a sealed record up to date as you work, so whatever you commit is
+          already a valid seal of your work at that moment. <b>Prepare Submission Bundle</b> is
+          unchanged for assignments you upload as a file.</li>
+      <li><b>Partner and group work.</b> When you and a partner both record in the same
+          repository, each of you records the other's participation into your own signed
+          history, so joint work is attributed to both of you.</li>
+      <li>Your <b>git history</b> &mdash; commits, branches and merges &mdash; is now part of
+          the record, so a reviewer can see how the work was staged, not only how it was typed.</li>
+      <li>Course staff can now specify exactly which files a submission covers, so generated
+          output and dependencies stay out of your bundle. The recorder tells you when it
+          leaves files out, and that message is not a finding against you.</li>
+      <li>Fixed: when a file changed on disk outside the editor &mdash; a <code>git pull</code>,
+          a code formatter, another program &mdash; reloading it could be recorded as though
+          <b>you had pasted</b> the new contents.</li>
+      <li>Fixed: preparing a bundle could report files as <b>missing</b> that were present the
+          whole time.</li>
+      <li>Fixed: saving a file could record the contents from <b>before</b> the save rather than
+          what actually reached the disk.</li>
+      <li>Fixed: a file could be recorded as <b>deleted</b> when it had not been.</li>
+      <li>Fixed: a wrong system clock could cost part of your record its order. It can no longer
+          cost it its authorship.</li>
+    </ul>
     <p><b>0.2.1</b> &mdash; reliability fixes. No change to what is recorded.</p>
     <ul>
       <li>Fixed: on Windows, the recorder did not start at all for a project stored on the
