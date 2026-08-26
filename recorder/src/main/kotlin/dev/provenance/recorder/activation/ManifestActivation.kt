@@ -1,11 +1,14 @@
 package dev.provenance.recorder.activation
 
+import dev.provenance.core.DEFAULT_ENROLLMENT_POLICY
+import dev.provenance.core.EnrollmentPolicy
 import dev.provenance.core.MANIFEST_FORMAT_VERSION_2
 import dev.provenance.core.Manifest
 import dev.provenance.core.ManifestChain
 import dev.provenance.core.ManifestParse
 import dev.provenance.core.manifestFormatVersion
 import dev.provenance.core.parseManifest
+import dev.provenance.core.resolveEnrollmentPolicy
 import dev.provenance.core.verifyManifest
 import dev.provenance.core.verifyManifestChain
 
@@ -61,4 +64,29 @@ fun evaluateManifestText(
     } else {
         ManifestActivation.Inactive("signature_invalid")
     }
+}
+
+/**
+ * The effective enrollment policy for a manifest [evaluateManifestText] has ALREADY
+ * verified.
+ *
+ * **Only a 2.0 manifest may carry a policy.** Below 2.0 the `policy` block is not
+ * inside the signed payload (program spec §3 step 0 — the same gate
+ * [ManifestChain.NotManifest20] enforces for the trust chain), so honouring one
+ * here would let a student staple `enrollment: { required: false }` onto their own
+ * copy of an otherwise-legitimate 1.x manifest and switch off their own enrollment
+ * nudge. This function therefore gates on the format version itself rather than
+ * trusting the caller — or the fact that [dev.provenance.core.parseManifestValue]
+ * never populates `policy` below 2.0 — to have already enforced it: a [Manifest]
+ * reaching here may have been hand-built, or (per program spec §5) lifted straight
+ * out of a `session.start` payload without going through the parser at all. A 1.x
+ * manifest always resolves to [DEFAULT_ENROLLMENT_POLICY] — enrollment required,
+ * exactly today's behaviour.
+ *
+ * Never call this on a manifest that has not passed [evaluateManifestText] /
+ * [loadAndVerifyManifest].
+ */
+fun resolveVerifiedEnrollmentPolicy(manifest: Manifest): EnrollmentPolicy {
+    if (manifestFormatVersion(manifest) != MANIFEST_FORMAT_VERSION_2) return DEFAULT_ENROLLMENT_POLICY
+    return resolveEnrollmentPolicy(manifest.policy)
 }
