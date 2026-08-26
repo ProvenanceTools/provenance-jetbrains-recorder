@@ -168,35 +168,53 @@ class RecorderStateTest : BasePlatformTestCase() {
     }
 
     // -----------------------------------------------------------------------
-    // identityOutcomes — the enrollment-policy filter (program spec's
-    // "enrollment not required" flag)
+    // identitySessions — the enrollment-policy tagging (program spec's
+    // "enrollment not required" flag). Unlike an earlier version of this getter,
+    // it does NOT drop waived roots — see EnrollNudge.isUnenrolled's KDoc for why a
+    // wholesale filter here would misdiagnose a legacy 2.0 holder. It tags every
+    // started root with its resolved `enrollmentRequired`, and leaves the
+    // asymmetric filtering to isUnenrolled/shouldShowNudge/identitySuffix.
     // -----------------------------------------------------------------------
 
-    fun `test identityOutcomes excludes a root whose course does not require enrollment`() {
+    private fun emittedIdentity(): IdentityOutcome = dev.provenance.recorder.identity.buildSessionIdentity(
+        dev.provenance.recorder.identity.EnrollmentFixtures.manifest(),
+        "20".repeat(32),
+        "2026-09-08T12:00:00Z",
+        dev.provenance.recorder.identity.InstitutionFixtures.credentialedStore(),
+        null,
+        dev.provenance.recorder.identity.InstitutionFixtures.rootPubkeyHex,
+    ).also { check(it is IdentityOutcome.Emitted) { "fixture no longer emits: $it" } }
+
+    fun `test identitySessions tags a root whose course does not require enrollment`() {
         val state = project.service<RecorderState>()
         state.activate(root("optout"), manifestWithEnrollment(required = false))
         state.recordIdentity(root("optout"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61a")))
-        assertTrue(state.identityOutcomes.isEmpty())
+        val session = state.identitySessions.single()
+        assertFalse(session.enrollmentRequired)
     }
 
-    fun `test identityOutcomes includes a root whose course requires enrollment`() {
+    fun `test identitySessions tags a root whose course requires enrollment`() {
         val state = project.service<RecorderState>()
         state.activate(root("required"), manifestWithEnrollment(required = true))
         state.recordIdentity(root("required"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61b")))
-        assertEquals(1, state.identityOutcomes.size)
+        val session = state.identitySessions.single()
+        assertTrue(session.enrollmentRequired)
     }
 
-    fun `test identityOutcomes includes a root with no enrollment key at all (default required)`() {
+    fun `test identitySessions tags a root with no enrollment key at all as required (default)`() {
         val state = project.service<RecorderState>()
         state.activate(root("default"), manifestWithEnrollment(required = null))
         state.recordIdentity(root("default"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61c")))
-        assertEquals(1, state.identityOutcomes.size)
+        val session = state.identitySessions.single()
+        assertTrue(session.enrollmentRequired)
     }
 
     /**
      * The mixed case from the design brief: a student with one opted-out course and
-     * one ordinary course open still gets nudged, because the ordinary course's
-     * outcome is the only one that has to survive the filter.
+     * one ordinary course open still gets nudged, because
+     * [dev.provenance.recorder.identity.isUnenrolled] scopes "does anyone still
+     * need to enrol" to requiring roots only, and the requiring root's skip
+     * survives that scoping untouched.
      */
     fun `test a mixed project still nudges for the root that requires enrollment`() {
         val state = project.service<RecorderState>()
@@ -205,10 +223,39 @@ class RecorderStateTest : BasePlatformTestCase() {
         state.activate(root("required"), manifestWithEnrollment(required = true, assignmentId = "hw-b"))
         state.recordIdentity(root("required"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61b")))
 
-        assertEquals(1, state.identityOutcomes.size)
-        val only = state.identityOutcomes.single()
-        assertTrue(only is IdentityOutcome.Skipped)
-        assertEquals(IdentitySkipReason.NotEnrolled("cs61b"), (only as IdentityOutcome.Skipped).reason)
+        assertEquals(2, state.identitySessions.size)
+        assertTrue(dev.provenance.recorder.identity.isUnenrolled(state.identitySessions))
+        assertTrue(
+            dev.provenance.recorder.identity.shouldShowNudge(
+                state.identitySessions,
+                dev.provenance.recorder.identity.NudgeState.UNSEEN,
+            ),
+        )
+    }
+
+    /**
+     * MANDATORY regression (code review correction): a legacy 2.0 holder attributed
+     * through a WAIVED course, with a DIFFERENT, enrollment-requiring course also
+     * open and skipped for `not_enrolled`, must not be reported un-enrolled. A
+     * version of `identitySessions` that pre-filters waived roots before the
+     * emitted-check would drop the waived root's Emitted outcome and misdiagnose
+     * this exact student — see EnrollNudge.isUnenrolled's KDoc.
+     */
+    fun `test a student attributed through a waived course is not reported un-enrolled`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("optout"), manifestWithEnrollment(required = false, assignmentId = "hw-a"))
+        state.recordIdentity(root("optout"), emittedIdentity())
+        state.activate(root("required"), manifestWithEnrollment(required = true, assignmentId = "hw-b"))
+        state.recordIdentity(root("required"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61b")))
+
+        assertEquals(2, state.identitySessions.size)
+        assertFalse(dev.provenance.recorder.identity.isUnenrolled(state.identitySessions))
+        assertFalse(
+            dev.provenance.recorder.identity.shouldShowNudge(
+                state.identitySessions,
+                dev.provenance.recorder.identity.NudgeState.UNSEEN,
+            ),
+        )
     }
 
     /**
@@ -220,7 +267,8 @@ class RecorderStateTest : BasePlatformTestCase() {
         val state = project.service<RecorderState>()
         state.activate(root("legacy"), manifestWithEnrollment(required = false, formatVersion = null))
         state.recordIdentity(root("legacy"), IdentityOutcome.Skipped(IdentitySkipReason.ManifestNot20))
-        assertEquals(1, state.identityOutcomes.size)
+        val session = state.identitySessions.single()
+        assertTrue(session.enrollmentRequired)
     }
 
     fun `test deactivate removes an opted-out root from both maps together`() {
@@ -228,7 +276,7 @@ class RecorderStateTest : BasePlatformTestCase() {
         state.activate(root("optout"), manifestWithEnrollment(required = false))
         state.recordIdentity(root("optout"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61a")))
         state.deactivate(root("optout"))
-        assertTrue(state.identityOutcomes.isEmpty())
+        assertTrue(state.identitySessions.isEmpty())
         assertFalse(state.isActive)
     }
 }

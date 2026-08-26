@@ -29,6 +29,19 @@ class EnrollNudgeTest {
     private fun skipped(reason: IdentitySkipReason): IdentityOutcome = IdentityOutcome.Skipped(reason)
 
     /**
+     * Wrap an outcome as a session whose course requires enrollment — the ordinary case
+     * every test in this file that predates the waiver was written against. Most of this
+     * file uses this rather than a bare [IdentityOutcome], because [isUnenrolled] and
+     * friends now read [EnrollmentTrackedSession]s.
+     */
+    private fun required(outcome: IdentityOutcome): EnrollmentTrackedSession =
+        EnrollmentTrackedSession(outcome, enrollmentRequired = true)
+
+    /** Wrap an outcome as a session whose course has waived enrollment. */
+    private fun waived(outcome: IdentityOutcome): EnrollmentTrackedSession =
+        EnrollmentTrackedSession(outcome, enrollmentRequired = false)
+
+    /**
      * A real Emitted outcome, built through the real builder over real signatures — the same
      * route `InstitutionIdentityBuilderTest` uses. Only its tag matters here, but constructing
      * it honestly means a chain-walk regression shows up as a failure in this file too, rather
@@ -78,25 +91,25 @@ class EnrollNudgeTest {
     fun `a legacy 2 0 holder is enrolled — they emit, so they are attributed`() {
         // The regression this file exists to avoid: a credential lookup would call this
         // student un-enrolled and tell them their work is unattributed. It is not.
-        assertFalse(isUnenrolled(listOf(emitted())))
+        assertFalse(isUnenrolled(listOf(required(emitted()))))
         assertTrue(anyIdentityEmitted(listOf(emitted(), skipped(IdentitySkipReason.NotEnrolled("x")))))
     }
 
     @Test
     fun `one emitting root of several is enough`() {
-        assertFalse(isUnenrolled(listOf(skipped(IdentitySkipReason.NotEnrolled("x")), emitted())))
+        assertFalse(isUnenrolled(listOf(required(skipped(IdentitySkipReason.NotEnrolled("x"))), required(emitted()))))
     }
 
     @Test
     fun `every session skipped for want of a credential reads as un-enrolled`() {
-        assertTrue(isUnenrolled(listOf(skipped(IdentitySkipReason.NotEnrolled("cs61b")))))
-        assertTrue(isUnenrolled(listOf(skipped(IdentitySkipReason.ManifestNot20))))
+        assertTrue(isUnenrolled(listOf(required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))))))
+        assertTrue(isUnenrolled(listOf(required(skipped(IdentitySkipReason.ManifestNot20)))))
     }
 
     @Test
     fun `a broken keyring is not an enrollment problem`() {
-        assertFalse(isUnenrolled(listOf(skipped(IdentitySkipReason.NoRootPublicKey))))
-        assertFalse(isUnenrolled(listOf(skipped(IdentitySkipReason.MasterSecretUnavailable("locked")))))
+        assertFalse(isUnenrolled(listOf(required(skipped(IdentitySkipReason.NoRootPublicKey)))))
+        assertFalse(isUnenrolled(listOf(required(skipped(IdentitySkipReason.MasterSecretUnavailable("locked"))))))
     }
 
     @Test
@@ -104,8 +117,8 @@ class EnrollNudgeTest {
         assertTrue(
             isUnenrolled(
                 listOf(
-                    skipped(IdentitySkipReason.NoRootPublicKey),
-                    skipped(IdentitySkipReason.NotEnrolled("cs61c")),
+                    required(skipped(IdentitySkipReason.NoRootPublicKey)),
+                    required(skipped(IdentitySkipReason.NotEnrolled("cs61c"))),
                 ),
             ),
         )
@@ -223,26 +236,26 @@ class EnrollNudgeTest {
 
     @Test
     fun `an attributed session renders exactly as before`() {
-        assertEquals("", identitySuffix(listOf(emitted())))
-        assertEquals(emptyList<String>(), identityTooltipLines(listOf(emitted())))
+        assertEquals("", identitySuffix(listOf(required(emitted()))))
+        assertEquals(emptyList<String>(), identityTooltipLines(listOf(required(emitted()))))
     }
 
     @Test
     fun `the not-enrolled wording is untouched`() {
-        val outcomes = listOf(skipped(IdentitySkipReason.NotEnrolled("cs61b")))
-        assertEquals(" (not enrolled)", identitySuffix(outcomes))
-        assertEquals(listOf(enrollmentTooltipLine(true)), identityTooltipLines(outcomes))
+        val sessions = listOf(required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))))
+        assertEquals(" (not enrolled)", identitySuffix(sessions))
+        assertEquals(listOf(enrollmentTooltipLine(true)), identityTooltipLines(sessions))
     }
 
     @Test
     fun `a non-enrollment failure is visible in the bar and explained in the tooltip`() {
         // The reported bug, exactly: the status bar read plain "recording" and the bundle
         // came out unattributed with nothing said anywhere.
-        val outcomes = listOf(skipped(IdentitySkipReason.StudentKeyMismatch("aa", "bb")))
-        assertEquals(" (identity unavailable)", identitySuffix(outcomes))
+        val sessions = listOf(required(skipped(IdentitySkipReason.StudentKeyMismatch("aa", "bb"))))
+        assertEquals(" (identity unavailable)", identitySuffix(sessions))
         assertEquals(
             listOf(identitySkipAdvice(IdentitySkipReason.StudentKeyMismatch("aa", "bb"))),
-            identityTooltipLines(outcomes),
+            identityTooltipLines(sessions),
         )
     }
 
@@ -251,9 +264,9 @@ class EnrollNudgeTest {
         // The all-or-nothing rule in anyIdentityEmitted's docstring: one attributed session
         // makes "not enrolled" / "identity unavailable" the wrong thing to say.
         val mixed = listOf(
-            emitted(),
-            skipped(IdentitySkipReason.NotEnrolled("cs61b")),
-            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+            required(emitted()),
+            required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))),
+            required(skipped(IdentitySkipReason.MasterSecretUnavailable("locked"))),
         )
         assertEquals("", identitySuffix(mixed))
         assertEquals(emptyList<String>(), identityTooltipLines(mixed))
@@ -267,35 +280,35 @@ class EnrollNudgeTest {
 
     @Test
     fun `the enrollment line leads, and repeated reasons are said once`() {
-        val outcomes = listOf(
-            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
-            skipped(IdentitySkipReason.NotEnrolled("cs61b")),
-            skipped(IdentitySkipReason.NotEnrolled("cs61c")),
-            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
+        val sessions = listOf(
+            required(skipped(IdentitySkipReason.MasterSecretUnavailable("locked"))),
+            required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))),
+            required(skipped(IdentitySkipReason.NotEnrolled("cs61c"))),
+            required(skipped(IdentitySkipReason.MasterSecretUnavailable("locked"))),
         )
-        val lines = identityTooltipLines(outcomes)
+        val lines = identityTooltipLines(sessions)
         assertEquals(2, lines.size)
         assertEquals(enrollmentTooltipLine(true), lines.first())
     }
 
     @Test
     fun `the tooltip does not depend on the order the sessions happened to report in`() {
-        val outcomes = listOf(
-            skipped(IdentitySkipReason.NoRootPublicKey),
-            skipped(IdentitySkipReason.MasterSecretUnavailable("locked")),
-            skipped(IdentitySkipReason.InvalidSessionPubkey),
+        val sessions = listOf(
+            required(skipped(IdentitySkipReason.NoRootPublicKey)),
+            required(skipped(IdentitySkipReason.MasterSecretUnavailable("locked"))),
+            required(skipped(IdentitySkipReason.InvalidSessionPubkey)),
         )
         // RecorderState hands these over from a ConcurrentHashMap, whose iteration order is
         // not the insertion order — a tooltip that reshuffles between refreshes is a bug.
-        assertEquals(identityTooltipLines(outcomes), identityTooltipLines(outcomes.reversed()))
-        assertEquals(3, identityTooltipLines(outcomes).size)
+        assertEquals(identityTooltipLines(sessions), identityTooltipLines(sessions.reversed()))
+        assertEquals(3, identityTooltipLines(sessions).size)
     }
 
     // ---------------------------------------------------------------------
     // shouldShowNudge / nextNudgeState
     // ---------------------------------------------------------------------
 
-    private val unenrolled = listOf(skipped(IdentitySkipReason.NotEnrolled("cs61b")))
+    private val unenrolled = listOf(required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))))
 
     @Test
     fun `shows while unseen or intent, never once done`() {
@@ -307,13 +320,13 @@ class EnrollNudgeTest {
     @Test
     fun `never shows to an enrolled student whatever the state`() {
         for (state in NudgeState.entries) {
-            assertFalse(shouldShowNudge(listOf(emitted()), state))
+            assertFalse(shouldShowNudge(listOf(required(emitted())), state))
         }
     }
 
     @Test
     fun `never shows for a failure enrolling cannot fix`() {
-        assertFalse(shouldShowNudge(listOf(skipped(IdentitySkipReason.NoRootPublicKey)), NudgeState.UNSEEN))
+        assertFalse(shouldShowNudge(listOf(required(skipped(IdentitySkipReason.NoRootPublicKey))), NudgeState.UNSEEN))
     }
 
     @Test
@@ -367,68 +380,77 @@ class EnrollNudgeTest {
     }
 
     // ---------------------------------------------------------------------
-    // sessionsRequiringEnrollment — the multi-root enrollment-policy filter
+    // Multi-root enrollment waiver — isUnenrolled's asymmetric split
+    //
+    // "Did anyone claim an identity?" reads EVERY session, waived roots included.
+    // "Does anyone still need to enrol?" reads ONLY the roots that still require it.
+    // See isUnenrolled's KDoc for why a single upfront filter over the session list
+    // is wrong, not just simpler.
     // ---------------------------------------------------------------------
 
     @Test
-    fun `a session whose course does not require enrollment is dropped`() {
-        val tracked = listOf(
-            EnrollmentTrackedSession(skipped(IdentitySkipReason.NotEnrolled("cs61a")), enrollmentRequired = false),
+    fun `a lone waived root is never un-enrolled, whatever its outcome`() {
+        assertFalse(isUnenrolled(listOf(waived(skipped(IdentitySkipReason.NotEnrolled("cs61a"))))))
+        assertFalse(isUnenrolled(listOf(waived(emitted()))))
+    }
+
+    @Test
+    fun `a lone requiring root behaves exactly as before the waiver existed`() {
+        assertTrue(isUnenrolled(listOf(required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))))))
+        assertFalse(isUnenrolled(listOf(required(emitted()))))
+    }
+
+    @Test
+    fun `two skipped roots, one waived — the requiring root's skip still nudges`() {
+        // Both roots skipped; only the requiring one gets a vote on "does anyone still
+        // need to enrol", and it votes yes.
+        val sessions = listOf(
+            waived(skipped(IdentitySkipReason.NotEnrolled("cs61a"))),
+            required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))),
         )
-        assertEquals(emptyList<IdentityOutcome>(), sessionsRequiringEnrollment(tracked))
+        assertTrue(isUnenrolled(sessions))
+        assertTrue(shouldShowNudge(sessions, NudgeState.UNSEEN))
     }
 
+    /**
+     * MANDATORY regression. A filter-first implementation (drop waived roots, THEN run
+     * the ordinary all-or-nothing logic) would exclude the waived root's EMITTED
+     * identity before the emitted-check ever ran, see only the requiring root's
+     * `not_enrolled` skip, and report "not enrolled" about a student who IS
+     * attributed through the waived course. `isUnenrolled` must read the
+     * emitted-check over every session, waived roots included, and scope only the
+     * "still needs to enrol" half to requiring roots — that asymmetry is what this
+     * test pins.
+     */
     @Test
-    fun `a session whose course requires enrollment survives the filter`() {
-        val outcome = skipped(IdentitySkipReason.NotEnrolled("cs61b"))
-        val tracked = listOf(EnrollmentTrackedSession(outcome, enrollmentRequired = true))
-        assertEquals(listOf(outcome), sessionsRequiringEnrollment(tracked))
-    }
-
-    @Test
-    fun `a mixed project — one opted-out course does not suppress the other course's nudge`() {
-        val optedOut = skipped(IdentitySkipReason.NotEnrolled("cs61a"))
-        val requiring = skipped(IdentitySkipReason.NotEnrolled("cs61b"))
-        val filtered = sessionsRequiringEnrollment(
-            listOf(
-                EnrollmentTrackedSession(optedOut, enrollmentRequired = false),
-                EnrollmentTrackedSession(requiring, enrollmentRequired = true),
-            ),
+    fun `a legacy 2 0 holder attributed through a waived course is NOT reported un-enrolled`() {
+        val sessions = listOf(
+            waived(emitted()),
+            required(skipped(IdentitySkipReason.NotEnrolled("cs61b"))),
         )
-        assertEquals(listOf(requiring), filtered)
-        // The existing all-or-nothing logic, unmodified, still nudges: the
-        // requiring course's outcome reached it exactly as if the opted-out root
-        // were not open at all.
-        assertTrue(isUnenrolled(filtered))
-        assertTrue(shouldShowNudge(filtered, NudgeState.UNSEEN))
+        assertFalse(isUnenrolled(sessions))
+        assertFalse(shouldShowNudge(sessions, NudgeState.UNSEEN))
+        assertEquals("", identitySuffix(sessions))
+        assertEquals(emptyList<String>(), identityTooltipLines(sessions))
     }
 
     @Test
-    fun `a student with only an opted-out course sees nothing`() {
-        val filtered = sessionsRequiringEnrollment(
-            listOf(
-                EnrollmentTrackedSession(
-                    skipped(IdentitySkipReason.NotEnrolled("cs61a")),
-                    enrollmentRequired = false,
-                ),
-            ),
-        )
-        assertEquals(emptyList<IdentityOutcome>(), filtered)
-        assertFalse(isUnenrolled(filtered))
-        assertFalse(shouldShowNudge(filtered, NudgeState.UNSEEN))
-        assertEquals("", identitySuffix(filtered))
-        assertEquals(emptyList<String>(), identityTooltipLines(filtered))
+    fun `a student with only a waived course sees nothing, however it failed`() {
+        val sessions = listOf(waived(skipped(IdentitySkipReason.NotEnrolled("cs61a"))))
+        assertFalse(isUnenrolled(sessions))
+        assertFalse(shouldShowNudge(sessions, NudgeState.UNSEEN))
+        assertEquals("", identitySuffix(sessions))
+        assertEquals(emptyList<String>(), identityTooltipLines(sessions))
     }
 
     @Test
-    fun `an emitted session from an opted-out course still counts as emitted if it survives (it does not)`() {
-        // Emitted outcomes are unaffected by enrollment policy at the identity-builder
-        // level (buildSessionIdentity never consults it) — but the FILTER applies to
-        // Emitted outcomes exactly like Skipped ones, because the filter's whole job is
-        // to decide which roots are even IN the multi-root calculation, not to inspect
-        // what each root emitted.
-        val emittedFromOptOutCourse = EnrollmentTrackedSession(emitted(), enrollmentRequired = false)
-        assertEquals(emptyList<IdentityOutcome>(), sessionsRequiringEnrollment(listOf(emittedFromOptOutCourse)))
+    fun `a waived root's non-enrollment failure does not surface identity-unavailable either`() {
+        // The waiver is not narrowly scoped to the "not enrolled" wording — a course
+        // that opted out of enrollment tracking has no claim on any of this module's
+        // output for its own roots.
+        val sessions = listOf(waived(skipped(IdentitySkipReason.NoRootPublicKey)))
+        assertEquals("", identitySuffix(sessions))
+        assertEquals(emptyList<String>(), identityTooltipLines(sessions))
     }
 
     // ---------------------------------------------------------------------

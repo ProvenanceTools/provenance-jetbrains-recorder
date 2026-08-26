@@ -22,7 +22,7 @@ import org.junit.Test
  * resolution [RecordingSessionController][dev.provenance.recorder.session.RecordingSessionController]
  * does inline via `resolveCapturePolicy(activated.manifest.policy)`. Unlike that
  * call site, this one is a standalone function: `RecorderState` needs the same
- * resolution as session start does (see its `identityOutcomes` getter), so it has
+ * resolution as session start does (see its `identitySessions` getter), so it has
  * to be reachable without constructing a whole session.
  *
  * None of these manifests need a genuinely-signed `course_cert` — resolution reads
