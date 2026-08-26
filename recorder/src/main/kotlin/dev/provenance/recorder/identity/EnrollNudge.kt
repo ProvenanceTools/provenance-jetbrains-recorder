@@ -289,3 +289,42 @@ fun identityTooltipLines(outcomes: Collection<IdentityOutcome>): List<String> {
     return enrolling.map(::identitySkipAdvice).distinct() +
         other.map(::identitySkipAdvice).distinct().sorted()
 }
+
+// ---------------------------------------------------------------------------
+// Multi-root enrollment-policy filter
+// ---------------------------------------------------------------------------
+
+/**
+ * One assignment root's identity outcome, tagged with whether its course requires
+ * enrollment at all (`policy.enrollment.required`, Manifest 2.0 only — see
+ * `dev.provenance.recorder.activation.resolveVerifiedEnrollmentPolicy`).
+ *
+ * Exists only to get an [IdentityOutcome] and its root's enrollment requirement to
+ * [sessionsRequiringEnrollment] together as one value; nothing else in this file
+ * needs the pairing; see [sessionsRequiringEnrollment] for why.
+ */
+data class EnrollmentTrackedSession(val outcome: IdentityOutcome, val enrollmentRequired: Boolean)
+
+/**
+ * Keep only the sessions whose course requires enrollment.
+ *
+ * A course that has switched enrollment off has already decided that whether ITS
+ * students enrol is not worth surfacing — see
+ * [dev.provenance.core.EnrollmentPolicy]'s KDoc for why that is purely cosmetic and
+ * changes nothing about the bundle itself. Filtering the INPUT here, before it
+ * reaches [isUnenrolled], [shouldShowNudge], [identitySuffix], and
+ * [identityTooltipLines], is deliberately the only change any of those functions
+ * needed: their existing all-or-nothing logic keeps running exactly as documented,
+ * just over a narrower collection. In particular a MIXED project — one course that
+ * requires enrollment, one that does not — still nudges, because the requiring
+ * course's outcome survives the filter untouched and [anyIdentityEmitted] /
+ * [isUnenrolled] see it exactly as they would with no opted-out root in the
+ * picture at all.
+ *
+ * `RecorderState.identityOutcomes` is the one production call site: it builds the
+ * tagged collection (it is the join point that knows both a root's outcome and its
+ * manifest) and passes the result of this function to every consumer instead of
+ * the raw per-root map.
+ */
+fun sessionsRequiringEnrollment(sessions: Collection<EnrollmentTrackedSession>): List<IdentityOutcome> =
+    sessions.filter { it.enrollmentRequired }.map { it.outcome }

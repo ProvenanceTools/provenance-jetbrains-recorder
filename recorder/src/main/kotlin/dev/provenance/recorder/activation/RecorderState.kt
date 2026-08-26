@@ -2,7 +2,9 @@ package dev.provenance.recorder.activation
 
 import com.intellij.openapi.components.Service
 import dev.provenance.core.Manifest
+import dev.provenance.recorder.identity.EnrollmentTrackedSession
 import dev.provenance.recorder.identity.IdentityOutcome
+import dev.provenance.recorder.identity.sessionsRequiringEnrollment
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
@@ -42,8 +44,33 @@ class RecorderState {
 
     fun isDegraded(root: Path): Boolean = degraded.containsKey(root.normalize())
 
-    /** Every started root's identity outcome. Empty until the first session reports. */
-    val identityOutcomes: Collection<IdentityOutcome> get() = identities.values.toList()
+    /**
+     * Every started root's identity outcome, EXCLUDING roots whose course has
+     * switched enrollment off (`policy.enrollment.required = false`, Manifest 2.0
+     * only — see [resolveVerifiedEnrollmentPolicy]). Empty until the first session
+     * reports.
+     *
+     * This is the join point [dev.provenance.recorder.identity.sessionsRequiringEnrollment]'s
+     * KDoc refers to: it is the one place that knows both a root's identity outcome
+     * (`identities`) and its manifest (`active`), so it is the one place that can
+     * pair them before filtering. An opted-out root contributes nothing here, so it
+     * can neither read as "(not enrolled)" itself nor — because
+     * [dev.provenance.recorder.identity.isUnenrolled] is all-or-nothing over
+     * exactly this collection — suppress a DIFFERENT, enrollment-requiring root's
+     * un-enrolled status. A root with no manifest on record (should not happen:
+     * [activate] and [recordIdentity] are always called for the same root)
+     * defaults to requiring enrollment, the same fail-safe direction
+     * [resolveVerifiedEnrollmentPolicy] itself takes on malformed input.
+     */
+    val identityOutcomes: Collection<IdentityOutcome> get() =
+        sessionsRequiringEnrollment(
+            identities.entries.map { (root, outcome) ->
+                EnrollmentTrackedSession(
+                    outcome = outcome,
+                    enrollmentRequired = active[root]?.let { resolveVerifiedEnrollmentPolicy(it).required } ?: true,
+                )
+            },
+        )
 
     /** Record what [buildSessionIdentity] decided for [root]. Idempotent; last write wins. */
     fun recordIdentity(root: Path, outcome: IdentityOutcome) {

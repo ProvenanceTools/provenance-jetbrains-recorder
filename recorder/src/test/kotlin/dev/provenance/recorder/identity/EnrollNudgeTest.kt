@@ -367,6 +367,71 @@ class EnrollNudgeTest {
     }
 
     // ---------------------------------------------------------------------
+    // sessionsRequiringEnrollment — the multi-root enrollment-policy filter
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `a session whose course does not require enrollment is dropped`() {
+        val tracked = listOf(
+            EnrollmentTrackedSession(skipped(IdentitySkipReason.NotEnrolled("cs61a")), enrollmentRequired = false),
+        )
+        assertEquals(emptyList<IdentityOutcome>(), sessionsRequiringEnrollment(tracked))
+    }
+
+    @Test
+    fun `a session whose course requires enrollment survives the filter`() {
+        val outcome = skipped(IdentitySkipReason.NotEnrolled("cs61b"))
+        val tracked = listOf(EnrollmentTrackedSession(outcome, enrollmentRequired = true))
+        assertEquals(listOf(outcome), sessionsRequiringEnrollment(tracked))
+    }
+
+    @Test
+    fun `a mixed project — one opted-out course does not suppress the other course's nudge`() {
+        val optedOut = skipped(IdentitySkipReason.NotEnrolled("cs61a"))
+        val requiring = skipped(IdentitySkipReason.NotEnrolled("cs61b"))
+        val filtered = sessionsRequiringEnrollment(
+            listOf(
+                EnrollmentTrackedSession(optedOut, enrollmentRequired = false),
+                EnrollmentTrackedSession(requiring, enrollmentRequired = true),
+            ),
+        )
+        assertEquals(listOf(requiring), filtered)
+        // The existing all-or-nothing logic, unmodified, still nudges: the
+        // requiring course's outcome reached it exactly as if the opted-out root
+        // were not open at all.
+        assertTrue(isUnenrolled(filtered))
+        assertTrue(shouldShowNudge(filtered, NudgeState.UNSEEN))
+    }
+
+    @Test
+    fun `a student with only an opted-out course sees nothing`() {
+        val filtered = sessionsRequiringEnrollment(
+            listOf(
+                EnrollmentTrackedSession(
+                    skipped(IdentitySkipReason.NotEnrolled("cs61a")),
+                    enrollmentRequired = false,
+                ),
+            ),
+        )
+        assertEquals(emptyList<IdentityOutcome>(), filtered)
+        assertFalse(isUnenrolled(filtered))
+        assertFalse(shouldShowNudge(filtered, NudgeState.UNSEEN))
+        assertEquals("", identitySuffix(filtered))
+        assertEquals(emptyList<String>(), identityTooltipLines(filtered))
+    }
+
+    @Test
+    fun `an emitted session from an opted-out course still counts as emitted if it survives (it does not)`() {
+        // Emitted outcomes are unaffected by enrollment policy at the identity-builder
+        // level (buildSessionIdentity never consults it) — but the FILTER applies to
+        // Emitted outcomes exactly like Skipped ones, because the filter's whole job is
+        // to decide which roots are even IN the multi-root calculation, not to inspect
+        // what each root emitted.
+        val emittedFromOptOutCourse = EnrollmentTrackedSession(emitted(), enrollmentRequired = false)
+        assertEquals(emptyList<IdentityOutcome>(), sessionsRequiringEnrollment(listOf(emittedFromOptOutCourse)))
+    }
+
+    // ---------------------------------------------------------------------
     // NudgeState.parse
     // ---------------------------------------------------------------------
 

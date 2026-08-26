@@ -3,7 +3,11 @@ package dev.provenance.recorder.activation
 import com.intellij.openapi.components.service
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.provenance.core.Manifest
+import dev.provenance.recorder.identity.IdentityOutcome
+import dev.provenance.recorder.identity.IdentitySkipReason
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -21,6 +25,31 @@ class RecorderStateTest : BasePlatformTestCase() {
         Manifest(assignmentId, "fa26", "2026-09-15T00:00:00Z", listOf("hw03.py"), "a".repeat(128))
 
     private fun root(name: String): Path = Paths.get("/ws-$name")
+
+    /**
+     * A manifest carrying `policy.enrollment.required = <required>`, or none of that
+     * block at all when [required] is null. No `course_cert`/signature needed:
+     * [RecorderState] never verifies a manifest, it only stores whatever
+     * [dev.provenance.recorder.activation.ManifestActivation.Active] already verified —
+     * so the resolution under test ([dev.provenance.recorder.activation.resolveVerifiedEnrollmentPolicy])
+     * only ever looks at `format_version` and `policy`.
+     */
+    private fun manifestWithEnrollment(
+        required: Boolean?,
+        formatVersion: String? = "2.0",
+        assignmentId: String = "hw03",
+    ): Manifest {
+        val policyJson = required?.let { """{"enrollment":{"required":$it}}""" }
+        return Manifest(
+            assignmentId = assignmentId,
+            semester = "fa26",
+            issuedAt = "2026-09-15T00:00:00Z",
+            filesUnderReview = listOf("hw03.py"),
+            sig = "a".repeat(128),
+            formatVersion = formatVersion,
+            policy = policyJson?.let { Json.parseToJsonElement(it).jsonObject },
+        )
+    }
 
     fun `test isActive is false by default`() {
         assertFalse(project.service<RecorderState>().isActive)
@@ -136,5 +165,70 @@ class RecorderStateTest : BasePlatformTestCase() {
         activity.execute(project)
         assertFalse(state.isActive)
         assertNull(state.manifest)
+    }
+
+    // -----------------------------------------------------------------------
+    // identityOutcomes — the enrollment-policy filter (program spec's
+    // "enrollment not required" flag)
+    // -----------------------------------------------------------------------
+
+    fun `test identityOutcomes excludes a root whose course does not require enrollment`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("optout"), manifestWithEnrollment(required = false))
+        state.recordIdentity(root("optout"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61a")))
+        assertTrue(state.identityOutcomes.isEmpty())
+    }
+
+    fun `test identityOutcomes includes a root whose course requires enrollment`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("required"), manifestWithEnrollment(required = true))
+        state.recordIdentity(root("required"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61b")))
+        assertEquals(1, state.identityOutcomes.size)
+    }
+
+    fun `test identityOutcomes includes a root with no enrollment key at all (default required)`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("default"), manifestWithEnrollment(required = null))
+        state.recordIdentity(root("default"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61c")))
+        assertEquals(1, state.identityOutcomes.size)
+    }
+
+    /**
+     * The mixed case from the design brief: a student with one opted-out course and
+     * one ordinary course open still gets nudged, because the ordinary course's
+     * outcome is the only one that has to survive the filter.
+     */
+    fun `test a mixed project still nudges for the root that requires enrollment`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("optout"), manifestWithEnrollment(required = false, assignmentId = "hw-a"))
+        state.recordIdentity(root("optout"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61a")))
+        state.activate(root("required"), manifestWithEnrollment(required = true, assignmentId = "hw-b"))
+        state.recordIdentity(root("required"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61b")))
+
+        assertEquals(1, state.identityOutcomes.size)
+        val only = state.identityOutcomes.single()
+        assertTrue(only is IdentityOutcome.Skipped)
+        assertEquals(IdentitySkipReason.NotEnrolled("cs61b"), (only as IdentityOutcome.Skipped).reason)
+    }
+
+    /**
+     * MANDATORY: a 1.x manifest cannot switch enrollment off (policy is not in its
+     * signed payload), so its root must keep counting toward the un-enrolled
+     * calculation even if something stapled `enrollment.required = false` onto it.
+     */
+    fun `test a 1x manifest ignores a stapled required false and still counts`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("legacy"), manifestWithEnrollment(required = false, formatVersion = null))
+        state.recordIdentity(root("legacy"), IdentityOutcome.Skipped(IdentitySkipReason.ManifestNot20))
+        assertEquals(1, state.identityOutcomes.size)
+    }
+
+    fun `test deactivate removes an opted-out root from both maps together`() {
+        val state = project.service<RecorderState>()
+        state.activate(root("optout"), manifestWithEnrollment(required = false))
+        state.recordIdentity(root("optout"), IdentityOutcome.Skipped(IdentitySkipReason.NotEnrolled("cs61a")))
+        state.deactivate(root("optout"))
+        assertTrue(state.identityOutcomes.isEmpty())
+        assertFalse(state.isActive)
     }
 }
