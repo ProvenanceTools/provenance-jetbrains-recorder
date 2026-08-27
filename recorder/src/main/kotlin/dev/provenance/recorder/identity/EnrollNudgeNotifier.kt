@@ -54,9 +54,9 @@ object EnrollNudgeNotifier {
     fun maybeNudge(project: Project) {
         try {
             if (project.isDisposed) return
-            val outcomes = project.service<RecorderState>().identityOutcomes
+            val sessions = project.service<RecorderState>().identitySessions
             val state = read()
-            if (!shouldShowNudge(outcomes, state)) return
+            if (!shouldShowNudge(sessions, state)) return
             show(project, state)
         } catch (t: Throwable) {
             LOG.warn("could not surface the enrollment nudge", t)

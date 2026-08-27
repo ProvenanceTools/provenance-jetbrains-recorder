@@ -109,6 +109,19 @@ fun isUnenrolledSkip(reason: IdentitySkipReason): Boolean =
     reason is IdentitySkipReason.NotEnrolled || reason is IdentitySkipReason.ManifestNot20
 
 /**
+ * One assignment root, as this module needs to see it: its identity outcome, tagged with
+ * whether its course requires enrollment at all (`policy.enrollment.required`, Manifest 2.0
+ * only — see `dev.provenance.recorder.activation.resolveVerifiedEnrollmentPolicy`).
+ *
+ * `enrollmentRequired` MUST come from that root's ALREADY-VERIFIED manifest, never from the
+ * raw file: below 2.0 the `policy` block is unsigned, and a student must not be able to waive
+ * their own course's prompting. `RecorderState.identitySessions` is the one production
+ * builder of this collection — it is the join point that knows both a root's outcome and its
+ * manifest.
+ */
+data class EnrollmentTrackedSession(val outcome: IdentityOutcome, val enrollmentRequired: Boolean)
+
+/**
  * Did any session claim an identity?
  *
  * All-or-nothing on purpose. With several assignment roots open a 2.1 credential covers all of
@@ -123,13 +136,39 @@ fun anyIdentityEmitted(outcomes: Collection<IdentityOutcome>): Boolean =
 /**
  * Should the student see "(not enrolled)"?
  *
- * True only when no session emitted an identity AND at least one skipped for a reason enrolling
- * would fix. A machine whose keyring is broken reads as plain "recording": the identity is
- * missing, but "not enrolled" would be the wrong diagnosis and the wrong instruction.
+ * True only when no session emitted an identity AND at least one root whose course REQUIRES
+ * enrollment skipped for a reason enrolling would fix. A machine whose keyring is broken reads
+ * as plain "recording": the identity is missing, but "not enrolled" would be the wrong
+ * diagnosis and the wrong instruction. A root whose course waived enrollment reads as plain
+ * "recording" too, because nothing is missing that its course asked for.
+ *
+ * ## Why the two halves read a DIFFERENT slice of [sessions]
+ *
+ * This is deliberately asymmetric, and the asymmetry is load-bearing, not an oversight:
+ *
+ *  - **"Did anyone claim an identity?" reads EVERY session, waived roots included.**
+ *    Attribution is a property of the STUDENT, not of the root that happened to produce it.
+ *    Consider a student holding a LEGACY 2.0 per-course token, with a waived course open
+ *    (identity emitted there) alongside a requiring course (skipped [IdentitySkipReason.NotEnrolled]).
+ *    That student IS attributed. Excluding the waived root from the emitted-check first would
+ *    make this function see only the requiring root's skip and report "not enrolled" about a
+ *    student who is nothing of the sort — precisely the misdiagnosis this whole module exists
+ *    to prevent (see the "why this reads the identity outcome" section of the file KDoc). Only
+ *    reachable with legacy per-course 2.0 tokens — a 2.1 institution credential is global, so
+ *    it emits for every root or none — but the fix costs nothing and the bug would cost an
+ *    afternoon to diagnose two years from now.
+ *  - **"Does anyone still need to enrol?" reads ONLY the roots whose course still asks for
+ *    it.** A course that waived enrollment has no claim on a status bar shared with a course
+ *    that did not.
+ *
+ * Do not "simplify" this back into a single upfront filter over [sessions] — that is exactly
+ * the bug described above.
  */
-fun isUnenrolled(outcomes: Collection<IdentityOutcome>): Boolean {
-    if (anyIdentityEmitted(outcomes)) return false
-    return outcomes.any { it is IdentityOutcome.Skipped && isUnenrolledSkip(it.reason) }
+fun isUnenrolled(sessions: Collection<EnrollmentTrackedSession>): Boolean {
+    if (anyIdentityEmitted(sessions.map { it.outcome })) return false
+    return sessions.any {
+        it.enrollmentRequired && it.outcome is IdentityOutcome.Skipped && isUnenrolledSkip(it.outcome.reason)
+    }
 }
 
 /**
@@ -139,9 +178,9 @@ fun isUnenrolled(outcomes: Collection<IdentityOutcome>): Boolean {
  * exposure at two notifications: one on the first un-enrolled session, and one more only if they
  * showed intent and did not finish.
  */
-fun shouldShowNudge(outcomes: Collection<IdentityOutcome>, state: NudgeState): Boolean {
+fun shouldShowNudge(sessions: Collection<EnrollmentTrackedSession>, state: NudgeState): Boolean {
     if (state == NudgeState.DONE) return false
-    return isUnenrolled(outcomes)
+    return isUnenrolled(sessions)
 }
 
 /**
@@ -257,34 +296,44 @@ fun identitySkipAdvice(reason: IdentitySkipReason): String = when (reason) {
  *
  * Precedence, top down, and the first two rungs are load-bearing:
  *
- *  1. **Anything emitted wins.** [anyIdentityEmitted]'s all-or-nothing rule, unchanged — one
- *     attributed session makes both suffixes below the wrong thing to say.
- *  2. **"(not enrolled)" keeps its exact meaning.** Only the reasons enrolling would fix.
+ *  1. **Anything emitted wins.** [anyIdentityEmitted]'s all-or-nothing rule, evaluated over
+ *     EVERY session regardless of `enrollmentRequired` — see [isUnenrolled]'s KDoc for why.
+ *  2. **"(not enrolled)" keeps its exact meaning.** Only roots that still require enrollment,
+ *     skipped for a reason enrolling would fix.
  *  3. Everything else is an identity failure the student did not cause and cannot be told to
- *     enrol out of, so it gets the neutral [IDENTITY_UNAVAILABLE_SUFFIX].
+ *     enrol out of, so it gets the neutral [IDENTITY_UNAVAILABLE_SUFFIX] — but only when a
+ *     root that still requires enrollment is the one that failed. A course that waived
+ *     enrollment has opted its own roots out of this rung too, exactly as it opted them out
+ *     of rung 2; nothing about "identity unavailable" is more its business than "not enrolled"
+ *     is.
  */
-fun identitySuffix(outcomes: Collection<IdentityOutcome>): String = when {
-    anyIdentityEmitted(outcomes) -> ""
-    isUnenrolled(outcomes) -> enrollmentSuffix(true)
-    outcomes.any { it is IdentityOutcome.Skipped } -> IDENTITY_UNAVAILABLE_SUFFIX
+fun identitySuffix(sessions: Collection<EnrollmentTrackedSession>): String = when {
+    anyIdentityEmitted(sessions.map { it.outcome }) -> ""
+    isUnenrolled(sessions) -> enrollmentSuffix(true)
+    sessions.any { it.enrollmentRequired && it.outcome is IdentityOutcome.Skipped } -> IDENTITY_UNAVAILABLE_SUFFIX
     else -> ""
 }
 
 /**
  * Every distinct identity problem worth putting in the tooltip, most actionable first.
  *
- * Gated on [anyIdentityEmitted] for exactly the reason its docstring gives: with one session
- * attributed, the per-course gap is the analyzer's to report against the submission that lacks a
- * contributor, and the widget saying "your identity is unavailable" would be false.
+ * Gated on [anyIdentityEmitted] over EVERY session (see [isUnenrolled]'s KDoc for why): with
+ * one session attributed, the per-course gap is the analyzer's to report against the
+ * submission that lacks a contributor, and the widget saying "your identity is unavailable"
+ * would be false. The reasons themselves, once past that gate, come only from roots that still
+ * require enrollment — a waived root's failure is not this tooltip's business, matching
+ * [identitySuffix]'s rung 3.
  *
  * Ordered deterministically — enrollment first (it is the one the student can act on today),
- * then the rest sorted. `RecorderState.identityOutcomes` comes out of a `ConcurrentHashMap`,
+ * then the rest sorted. `RecorderState.identitySessions` comes out of a `ConcurrentHashMap`,
  * whose iteration order is neither insertion order nor stable across rehashes, and a tooltip
  * that reshuffles its lines between refreshes reads as noise.
  */
-fun identityTooltipLines(outcomes: Collection<IdentityOutcome>): List<String> {
-    if (anyIdentityEmitted(outcomes)) return emptyList()
-    val reasons = outcomes.filterIsInstance<IdentityOutcome.Skipped>().map { it.reason }
+fun identityTooltipLines(sessions: Collection<EnrollmentTrackedSession>): List<String> {
+    if (anyIdentityEmitted(sessions.map { it.outcome })) return emptyList()
+    val reasons = sessions
+        .filter { it.enrollmentRequired }
+        .mapNotNull { (it.outcome as? IdentityOutcome.Skipped)?.reason }
     val (enrolling, other) = reasons.partition { isUnenrolledSkip(it) }
     return enrolling.map(::identitySkipAdvice).distinct() +
         other.map(::identitySkipAdvice).distinct().sorted()

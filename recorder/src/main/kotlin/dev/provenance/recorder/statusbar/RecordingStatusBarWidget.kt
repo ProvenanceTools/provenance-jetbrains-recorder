@@ -59,7 +59,7 @@ class RecordingStatusBarWidget(private val project: Project) :
             recording == 0 -> if (degraded > 1) "Provenance: not recording ($degraded errors)" else "Provenance: not recording (error)"
             else -> "Provenance: recording ($recording of $total assignments, ${errors(degraded)})"
         }
-        return base + identitySuffix(state.identityOutcomes)
+        return base + identitySuffix(state.identitySessions)
     }
 
     /**
@@ -77,7 +77,7 @@ class RecordingStatusBarWidget(private val project: Project) :
             "Provenance is NOT recording for $what: " +
                 degraded.entries.joinToString("; ") { (root, reason) -> "$root ($reason)" }
         }
-        return (listOf(base) + identityTooltipLines(state.identityOutcomes)).joinToString(" ")
+        return (listOf(base) + identityTooltipLines(state.identitySessions)).joinToString(" ")
     }
 
     private fun errors(count: Int): String = if (count == 1) "1 error" else "$count errors"
