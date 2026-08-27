@@ -98,6 +98,18 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <p><b>0.3.1</b> &mdash; enrollment is now up to your course.</p>
+    <ul>
+      <li><b>If your course does not use enrollment, the recorder no longer asks you to
+          enroll.</b> Previously every assignment showed <b>&ldquo;(not enrolled)&rdquo;</b> in the
+          status bar and prompted you to get an enrollment token, even in courses that never
+          issue one. Courses that do use enrollment are unchanged &mdash; you will still be
+          asked, and your submissions still carry your signed identity.</li>
+      <li>If you have <b>both kinds of course open in the same window</b>, the recorder now keeps
+          them straight: a course that does not use enrollment no longer hides the prompt for one
+          that does, and an identity you have already enrolled in one course is no longer
+          mistaken for being un-enrolled everywhere.</li>
+    </ul>
     <p><b>0.3.0</b> &mdash; enrollment, continuous sealing, and group work.</p>
     <ul>
       <li><b>Your submissions can now prove they are yours.</b> Use
