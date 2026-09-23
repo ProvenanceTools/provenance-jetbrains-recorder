@@ -235,6 +235,41 @@ class SessionLifecycleIntegrationTest {
     }
 
     @Test
+    fun `a degraded session never rotates however far past the threshold it is`() = runBlocking {
+        // SIZE ROTATION (recorder PRD §4.6): the controller's rotation check lives INSIDE
+        // routeSessionEntry's scheduleCheckpoint lambda, precisely so the degraded branch returns
+        // before it. That is not a nicety — a degraded session is one whose writes are failing,
+        // and rotation ends the session, writes a final seal and starts a successor, every one of
+        // which is a write. Rotating there would trade a session that is at least ringing its
+        // critical events for two broken logs, and `session.end{reason:"rotate"}` would be a
+        // claim the recorder could not honour.
+        val writer = FakeWriter(failFromCall = 3)
+        val cadence = CheckpointCadence(interval = 2)
+        val diskFull = DiskFullHandler(onDegraded = {}, notify = {})
+        val scheduler = immediateScheduler(mutableListOf())
+        val rotations = mutableListOf<Long>()
+
+        // The controller's composition verbatim, with the threshold treated as already exceeded,
+        // so the ONLY thing that can keep a rotation from firing is the degraded branch.
+        val h = host { entry ->
+            routeSessionEntry(entry, writer::append, diskFull, cadence) { seq, hash ->
+                scheduler.schedule(seq, hash)
+                rotations.add(seq)
+            }
+        }
+
+        // Entries 1-2: fine, and entry 2 trips the cadence → one legitimate rotation request.
+        repeat(2) { h.emit("doc.change", buildJsonObject { }) }
+        assertEquals(listOf(1L), rotations)
+        // Entry 3 fails and degrades; entries 4-20 are all routed to the ring instead.
+        repeat(18) { h.emit("doc.change", buildJsonObject { }) }
+        scheduler.drain()
+
+        assertTrue(diskFull.degraded)
+        assertEquals("no rotation may be requested from the degraded state", listOf(1L), rotations)
+    }
+
+    @Test
     fun `a fake writer that fails once never receives a second append without an explicit clear`() = runBlocking {
         val writer = FakeWriter(failFromCall = 1)
         val cadence = CheckpointCadence()

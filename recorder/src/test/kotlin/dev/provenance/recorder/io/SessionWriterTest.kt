@@ -70,6 +70,34 @@ class SessionWriterTest {
         return e
     }
 
+    /**
+     * SIZE ROTATION (recorder PRD §4.6) reads this counter at the checkpoint cadence to decide
+     * whether the `.slog` has passed the rotation threshold. A flush must never reset it —
+     * `bufferedBytes` does, which is why the two cannot be the same field — and once everything
+     * is flushed it must equal the file's size on disk, or the threshold would be compared
+     * against the wrong number.
+     */
+    @Test
+    fun `bytesAppended is cumulative across flushes and matches the file size`() {
+        val slog = tmp.root.toPath().resolve("s.slog")
+        val w = SessionWriter.open(
+            slog,
+            FixedClock(0),
+            ManualScheduler(),
+            BufferPolicyConfig(maxBytes = 1_000_000, maxIntervalMs = 100_000),
+        )
+        assertEquals(0L, w.bytesAppended)
+        w.append(entry("session.start"))
+        val afterFirst = w.bytesAppended
+        assertTrue(afterFirst > 0L)
+        w.flush()
+        assertEquals("a flush must not reset the cumulative counter", afterFirst, w.bytesAppended)
+        w.append(entry("doc.open"))
+        assertTrue(w.bytesAppended > afterFirst)
+        w.dispose()
+        assertEquals(Files.size(slog), w.bytesAppended)
+    }
+
     @Test
     fun `append then flush writes serialized lines in order`() {
         val slog = tmp.root.toPath().resolve("s.slog")

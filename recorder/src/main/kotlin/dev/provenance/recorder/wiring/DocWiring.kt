@@ -69,6 +69,31 @@ class DocWiring(
     // relative-path key would wrongly treat the second as already-seen.
     private val seenPaths = mutableSetOf<Path>()
 
+    /**
+     * Forget the `doc.open` baselines already emitted for files under [root], so the next
+     * [catchUpOpenFiles] re-emits them.
+     *
+     * Needed by SIZE ROTATION (recorder PRD §4.6), and it is not optional. This wiring — and
+     * therefore this dedup set — is PROJECT-scoped: it is constructed once, on the first
+     * session, and outlives any individual session. When a rotated root's project still has
+     * another live session, [RecorderSessionManager.teardownRoutedWiringIfIdle] does not run,
+     * so the set survives the rotation with the rotated root's files still marked seen — and
+     * the successor `.slog` would then contain `doc.change` entries for files it holds no
+     * `doc.open` baseline for at all, i.e. a reconstruction with no starting content, which the
+     * analyzer treats as indeterminate rather than invalid and so fails silently.
+     *
+     * Only [root]'s entries are dropped: another concurrently-recording root's files keep their
+     * baselines, because their sessions are untouched and re-emitting a `doc.open` into a live
+     * log would fabricate a second baseline mid-stream.
+     *
+     * On the EDT, like every other mutation of [seenPaths] (the two listeners run inside write
+     * actions; [catchUpOpenFiles] hops deliberately) — the caller is a pooled rotation thread.
+     */
+    fun forgetRoot(root: Path) = runOnEdtAndWait {
+        val normalized = root.normalize()
+        seenPaths.removeIf { it.normalize().startsWith(normalized) }
+    }
+
     /** One completed editor save, triaged on the EDT and carried to [vfsDispatch]. */
     private data class SavedFile(
         val file: VirtualFile,

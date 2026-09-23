@@ -57,6 +57,8 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
             dev.provenance.recorder.identity.FakeSecretStore(),
         checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
         computeExtensionHash: () -> String = { EXT_HASH },
+        maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
+        onRotationNeeded: ((String) -> Unit)? = null,
     ) = RecordingSessionController(
         activated = ActivatedWorkspace(m, provDir, wsRoot),
         project = project,
@@ -70,6 +72,8 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         secrets = secrets,
         checkpointInterval = checkpointInterval,
         computeExtensionHash = computeExtensionHash,
+        maxSlogBytes = maxSlogBytes,
+        onRotationNeeded = onRotationNeeded,
         // Unconfined + a real Job so a scheduled checkpoint runs INLINE on the calling thread
         // (its Mutex is uncontended here), making the checkpoint-driven rolling seal
         // deterministic instead of a sleep-and-hope. cancel() still needs the Job.
@@ -445,6 +449,86 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         assertNotNull(rollingManifest(controller(m = gitCourse)))
     }
 
+
+    // -----------------------------------------------------------------------
+    // SIZE ROTATION (recorder PRD §4.6) — the controller's half: notice that the
+    // `.slog` has passed the threshold, and ask to be rotated. Performing the swap is
+    // RecorderSessionManager.rotate's job (covered in RecorderSessionManagerTest).
+    // -----------------------------------------------------------------------
+
+    private fun typing(text: String) =
+        buildDocChangePayload("hw.py", buildDocChangeDelta(0, 8, 0, 8, text))
+
+    /**
+     * The size is read ONLY when the checkpoint cadence fires — never per appended entry.
+     * `doc.change` handlers must stay under 1 ms p99 (PRD §4.7), and `session.start` alone
+     * already exceeds the 512-byte threshold used here, so a per-entry check would have
+     * requested rotation on the very first entry.
+     */
+    fun testRequestsRotationOnceTheLogPassesTheThresholdAtCheckpointCadence() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            onRotationNeeded = { endedId -> rotations.add(endedId) },
+        )
+        // session.start is the cadence's first entry, so nine more trip it at interval 10.
+        repeat(8) { c.onDocChange(typing("x")) }
+        assertTrue("the size must not even be read below the cadence", rotations.isEmpty())
+        c.flush()
+        assertTrue("and the log is already over the threshold", Files.size(c.slogPath) > 512L)
+
+        c.onDocChange(typing("y"))
+        assertEquals("the cadence firing over the threshold must request rotation", listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /** A session under the threshold is never rotated, however many checkpoints it reaches. */
+    fun testASmallLogIsNeverRotated() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 2,
+            maxSlogBytes = RecordingSessionController.ROTATE_AT_BYTES,
+            onRotationNeeded = { rotations.add(it) },
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue(rotations.isEmpty())
+    }
+
+    /**
+     * Requested at most once per session. The swap is asynchronous — the manager ends this
+     * session on another thread — so entries can keep arriving and tripping the cadence in
+     * between, and a second request would start a second successor for the same root.
+     */
+    fun testRotationIsRequestedOnlyOncePerSession() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 2,
+            maxSlogBytes = 512L,
+            onRotationNeeded = { rotations.add(it) },
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertEquals("exactly one rotation request, not one per checkpoint", 1, rotations.size)
+        c.endSession("rotate")
+    }
+
+    /** The threshold is 40 MiB: under GitHub's 100 MB push refusal and its 50 MB warning. */
+    fun testTheRotationThresholdIs40MiB() {
+        assertEquals(40L * 1024 * 1024, RecordingSessionController.ROTATE_AT_BYTES)
+    }
+
+    /** `rotate` goes through the ordinary teardown path, so the log still ends cleanly. */
+    fun testEndSessionWithTheRotateReasonIsAnOrdinaryCleanEnd() {
+        val c = controller()
+        c.onDocChange(typing("x"))
+        c.endSession("rotate")
+        val entries = readEntries(c)
+        assertEquals("session.end", entries.last().kind)
+        assertEquals("rotate", entries.last().data["reason"]!!.jsonPrimitive.content)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+        // And a rotated session's seal is final, exactly like any other clean end.
+        assertEquals(true, rollingManifest(c)!!["final"]!!.jsonPrimitive.boolean)
+    }
 
     private companion object {
         /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */

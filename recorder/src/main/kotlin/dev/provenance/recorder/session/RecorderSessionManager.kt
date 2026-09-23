@@ -46,6 +46,7 @@ import dev.provenance.recorder.wiring.runOnEdtAndWait
 import dev.provenance.recorder.wiring.sameAncestryLine
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import dev.provenance.recorder.wiring.snapshot.ExtActivateWiring
+import kotlinx.coroutines.runBlocking
 import org.jetbrains.annotations.TestOnly
 import java.nio.file.Path
 import java.time.Instant
@@ -264,7 +265,17 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
      * keyring, a lapsed cert. That is the common case today, it is handled explicitly inside
      * `recoverPreviousSession`, and it must never throw or block recording.
      */
-    suspend fun startFromActivation(root: Path, manifest: Manifest) {
+    suspend fun startFromActivation(
+        root: Path,
+        manifest: Manifest,
+        /**
+         * SIZE ROTATION (recorder PRD §4.6): the id of the session this one succeeds, when this
+         * start is a rotation rather than an activation. See
+         * [RecordingSessionController.prevSessionIdOverride] for why a cleanly-rotated
+         * predecessor has to name itself instead of being discovered by chain recovery.
+         */
+        prevSessionIdOverride: String? = null,
+    ) {
         if (sessions.containsKey(root.normalize())) return
         val provenanceDir = root.resolve(".provenance")
         val clock = SystemClock()
@@ -305,6 +316,7 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             clock = clock,
             preparedKeypair = keypair,
             preparedIdentity = identityOutcome,
+            prevSessionIdOverride = prevSessionIdOverride,
         )
     }
 
@@ -395,6 +407,16 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
          */
         preparedKeypair: SessionKeypair? = null,
         preparedIdentity: IdentityOutcome? = null,
+        /** See [startFromActivation]'s parameter of the same name. */
+        prevSessionIdOverride: String? = null,
+        /**
+         * SIZE ROTATION (recorder PRD §4.6): the rotation threshold for this session. Production
+         * always takes the default; a test overrides it so the threshold is reachable in a
+         * handful of entries. Deliberately NOT threaded through [startFromActivation], so a
+         * rotation's successor always gets the production threshold and a test cannot
+         * accidentally build a rotation cascade.
+         */
+        maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
     ): ActiveSession {
         val root = activated.workspaceRoot.normalize()
         check(sessions[root] == null) { "a recording session is already active for root $root" }
@@ -415,6 +437,13 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             computeExtensionHash = computeExtensionHash,
             preparedKeypair = preparedKeypair,
             preparedIdentity = preparedIdentity,
+            prevSessionIdOverride = prevSessionIdOverride,
+            maxSlogBytes = maxSlogBytes,
+            // SIZE ROTATION (recorder PRD §4.6). Handed to a pooled thread and not awaited: this
+            // callback fires from inside the controller's entry-routing path (on the checkpoint
+            // cadence), which may be the EDT inside a write action, and `rotate` ends a session,
+            // writes a final seal and starts a successor — none of which may happen there.
+            onRotationNeeded = { endedId -> launchRotation(root, endedId) },
         )
 
         // Shared explanation tagger, one PER SESSION: git wiring marks THIS session's tagger on
@@ -504,6 +533,93 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         controller.setSaveObserver { rel, onDisk -> coordinator.checkSavedContent(rel, onDisk) }
     }
 
+    // -------------------------------------------------------------------------------------
+    // SIZE ROTATION (recorder PRD §4.6)
+    //
+    // A `submission: "git"` assignment commits `.provenance/` to a GitHub repo, and GitHub
+    // refuses a push containing a file over 100 MB. So a session whose `.slog` passes
+    // RecordingSessionController.ROTATE_AT_BYTES is ended and immediately succeeded by a fresh
+    // session in the same scope, chained to it by `prev_session_id`.
+    // -------------------------------------------------------------------------------------
+
+    /** Roots with a rotation in flight — the re-entrancy guard for [rotate]. */
+    private val rotating = ConcurrentHashMap.newKeySet<Path>()
+
+    /**
+     * Completes when the rotation in flight for a root has finished, whether it swapped or gave
+     * up. Registered BEFORE the pooled task is submitted, so the task cannot complete and
+     * deregister itself before the entry exists. Exists so a test can wait for the swap
+     * deterministically (`PlatformTestUtil.waitForFuture` pumps the EDT queue, which the swap's
+     * own EDT hops need) instead of sleeping.
+     */
+    private val rotationTasks = ConcurrentHashMap<Path, java.util.concurrent.CompletableFuture<Void?>>()
+
+    /** The rotation in flight for [root], if any. Test seam; null in steady state. */
+    @TestOnly
+    fun rotationInFlight(root: Path): java.util.concurrent.Future<*>? = rotationTasks[root.normalize()]
+
+    private fun launchRotation(root: Path, endedSessionId: String) {
+        val normalized = root.normalize()
+        val done = java.util.concurrent.CompletableFuture<Void?>()
+        rotationTasks[normalized] = done
+        // One-shot and bounded, not a long-lived background task, and its shutdown path is
+        // [stop] rather than an interrupt: project close empties the registry first, so a
+        // rotation that has not begun yet finds no session and returns. Interrupting one that HAS
+        // begun could leave a session ended with no successor and no final seal, which is
+        // strictly worse than letting a bounded teardown finish.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                runBlocking { rotate(normalized, endedSessionId) }
+            } catch (t: Throwable) {
+                // A failed rotation must never take the IDE — or the student's next keystroke —
+                // with it. At worst the root stops recording, which is the same outcome (and the
+                // same RecorderState story) as a failed restart.
+                LOG.warn("provenance: could not rotate the session at $normalized", t)
+            } finally {
+                rotationTasks.remove(normalized, done)
+                done.complete(null)
+            }
+        }
+    }
+
+    /**
+     * Rotate the session at [root]: end it with `session.end{reason:"rotate"}`, seal it, then
+     * start its successor linked by `prev_session_id`.
+     *
+     * END-THEN-START, never the reverse: the old session's doc/selection wiring is detached only
+     * during its teardown, and [start] refuses a second session for a live root — starting first
+     * would record one keystroke into two logs, or simply throw.
+     *
+     * `endSession("rotate")` is called EXPLICITLY, before [stop]. [stop] reaches teardown through
+     * the session Disposable, whose hook passes `"dispose"`; `endSession` is idempotent, so the
+     * explicit call wins and the Disposer's becomes a no-op. That is what puts the real reason in
+     * the log instead of a shutdown-shaped one.
+     *
+     * [DocWiring.forgetRoot] is what makes the successor emit its own `doc.open` baselines: that
+     * wiring is project-scoped, so with another root still recording it survives this rotation
+     * with our files still marked seen. See its KDoc.
+     *
+     * @param expectedSessionId when non-null, rotate only if the live session is still the one
+     *   that asked — a rotation whose root was stopped and restarted in the meantime is stale and
+     *   must not end the innocent successor.
+     */
+    suspend fun rotate(root: Path, expectedSessionId: String? = null) {
+        val normalized = root.normalize()
+        if (!rotating.add(normalized)) return
+        try {
+            val current = sessions[normalized] ?: return
+            val endedId = current.controller.sessionId
+            if (expectedSessionId != null && expectedSessionId != endedId) return
+            val manifest = current.activated.manifest
+            current.controller.endSession("rotate")
+            stop(normalized)
+            routedWiring?.docWiring?.forgetRoot(normalized)
+            startFromActivation(normalized, manifest, prevSessionIdOverride = endedId)
+        } finally {
+            rotating.remove(normalized)
+        }
+    }
+
     /** End one session (root != null) or every session (root == null — project close / test
      * teardown, preserving every existing no-arg `manager.stop()` call site). Idempotent. */
     fun stop(root: Path? = null) {
@@ -567,6 +683,12 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         return sealSession(entry.key, now, computeExtensionHash)
     }
 
+    /**
+     * Project close. Stopping every session IS the rotation shutdown path (CLAUDE.md: no
+     * background task without an explicit one): [rotate] reads the registry, so a rotation that
+     * has not begun yet finds nothing and returns, and one already in flight is a bounded
+     * teardown+start that is better left to finish than interrupted. See [launchRotation].
+     */
     override fun dispose() = stop()
 
     companion object {

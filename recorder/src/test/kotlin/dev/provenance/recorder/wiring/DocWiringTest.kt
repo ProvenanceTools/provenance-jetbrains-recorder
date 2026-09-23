@@ -272,6 +272,57 @@ class DocWiringTest : BasePlatformTestCase() {
     }
 
     // -----------------------------------------------------------------------------------
+    // SIZE ROTATION (recorder PRD §4.6): forgetRoot
+    //
+    // This wiring is PROJECT-scoped and its seenPaths dedup set outlives any one session. When
+    // one of two concurrently-recording roots is rotated, the other keeps its session, so the
+    // wiring is not torn down and the rotated root's files are still marked seen — the
+    // successor .slog would then hold doc.change entries with no doc.open baseline at all.
+    // -----------------------------------------------------------------------------------
+
+    fun testForgetRootReEmitsOnlyThatRootsBaselinesOnTheNextCatchUp() {
+        val otherRoot = Paths.get("/ws-other")
+        val vfA = myFixture.addFileToProject("a/hw.py", "print('a')\n").virtualFile
+        val vfB = myFixture.addFileToProject("b/hog.py", "print('b')\n").virtualFile
+        FileEditorManager.getInstance(project).openFile(vfA, false)
+        FileEditorManager.getInstance(project).openFile(vfB, false)
+        val sinkA = fakeSink()
+        val opensB = mutableListOf<DocOpenPayload>()
+        val sinkB = FakeSink(otherRoot, null, opensB, mutableListOf(), mutableListOf(), mutableListOf())
+        val wiring = DocWiring(
+            project = project,
+            router = SessionRouter { path ->
+                when {
+                    path.startsWith(workspaceRoot) -> sinkA
+                    path.startsWith(otherRoot) -> sinkB
+                    else -> null
+                }
+            },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> if (vf == vfA) workspaceRoot.resolve("hw.py") else otherRoot.resolve("hog.py") },
+        )
+        assertEquals(1, opens.size)
+        assertEquals(1, opensB.size)
+
+        // A plain re-run is idempotent — this is what makes the rotation case a real gap rather
+        // than something the existing per-start catch-up already handles.
+        wiring.catchUpOpenFiles()
+        assertEquals("the dedup set must still suppress both", 1, opens.size)
+        assertEquals(1, opensB.size)
+
+        wiring.forgetRoot(workspaceRoot)
+        wiring.catchUpOpenFiles()
+        assertEquals("the rotated root's baseline must be re-emitted", 2, opens.size)
+        assertEquals("print('a')\n", opens[1].content)
+        assertEquals(
+            "an untouched root's live session must NOT get a second baseline mid-stream",
+            1,
+            opensB.size,
+        )
+    }
+
+    // -----------------------------------------------------------------------------------
     // Tab-less documents (Replace in Files, rename refactor, reformat-on-directory, codegen)
     //
     // doc.open used to come only from editor-TAB signals (fileOpened + the getOpenFiles()

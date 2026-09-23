@@ -131,6 +131,36 @@ class RecordingSessionController(
      */
     recovery: RecoveryDecision = RecoveryDecision.CleanStart,
     checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
+    /**
+     * SIZE ROTATION (recorder PRD §4.6): rotate this session once its `.slog` passes this many
+     * bytes. Overridable only so a test can reach the threshold with a handful of entries
+     * instead of 40 MiB of them — production always takes the default.
+     */
+    private val maxSlogBytes: Long = ROTATE_AT_BYTES,
+    /**
+     * SIZE ROTATION: called ONCE, with THIS session's logical `session_id`, the first time the
+     * checkpoint cadence fires with the `.slog` over [maxSlogBytes]. The callee
+     * ([RecorderSessionManager.rotate]) ends this session with `session.end{reason:"rotate"}`
+     * and starts its successor with `prev_session_id` set to the id handed over here. Null (the
+     * default) means "never rotate", which is what every test that constructs a controller
+     * directly wants.
+     *
+     * It is invoked from inside the entry-routing path, so it must not block: the real callee
+     * hands the swap to a pooled thread and returns immediately.
+     */
+    private val onRotationNeeded: ((String) -> Unit)? = null,
+    /**
+     * SIZE ROTATION: `session.start.prev_session_id` for this session, when the caller knows it
+     * for a reason chain recovery cannot see.
+     *
+     * Recovery deliberately links only a DANGLING prior session (see [prevSessionIdFor] and
+     * ChainRecovery.kt): a crash with no trailing `session.end`. A rotated predecessor ends
+     * cleanly, so recovery reports `PreviousSessionComplete` and contributes no link — and
+     * faking a dangling decision to get one would mislabel a clean end as a crash, which the
+     * analyzer reads as an integrity signal. So a clean rotation states its predecessor here
+     * instead, and neither RecoveryLinkage.kt nor ChainRecovery.kt changes.
+     */
+    prevSessionIdOverride: String? = null,
     /** Plan 8: disk-full user disclosure. Defaults to the real balloon notifier. */
     degradedNotify: (String) -> Unit = { DegradedModeNotifier(project).notifyDegraded() },
     /**
@@ -275,6 +305,15 @@ class RecordingSessionController(
     private val peerWatcher: PeerWatcher
     private var ended = false
 
+    /**
+     * SIZE ROTATION: has [onRotationNeeded] already been called? Latched, so a session asks to
+     * be rotated at most once — the swap is asynchronous, so the cadence can fire again (over
+     * the threshold, since the log only grows) before this session is torn down, and a second
+     * request would start a second successor for the same root.
+     */
+    @Volatile
+    private var rotationRequested = false
+
     init {
         // Step 0: resolve the course's capture policy BEFORE anything can emit. Total by
         // construction — an absent, malformed, or out-of-range block resolves to a
@@ -310,7 +349,11 @@ class RecordingSessionController(
         // session (crash: no trailing session.end) — never for a cleanly-completed one, and
         // never for a corrupt one (corruption is surfaced via recorder.recovered_from_corruption
         // below, not chain linkage). Mirrors chain-recovery.ts's documented rule.
-        val prevSessionId = prevSessionIdFor(recovery)
+        //
+        // The one exception is a SIZE ROTATION, whose predecessor ended cleanly and so is
+        // invisible to recovery — it names itself through prevSessionIdOverride. See that
+        // parameter's KDoc for why this is an override rather than a faked recovery decision.
+        val prevSessionId = prevSessionIdOverride ?: prevSessionIdFor(recovery)
 
         // Step 2a: the enrollment identity, if the student has one for this course. Assembled
         // and chain-verified before it is written; a failure at ANY point here yields no
@@ -502,6 +545,17 @@ class RecordingSessionController(
         host = createSessionHost(sessionId, clock) { entry ->
             routeSessionEntry(entry, { writer.append(it) }, diskFullHandler, checkpointCadence) { seq, hash ->
                 checkpointScheduler.schedule(seq, hash)
+                // SIZE ROTATION (PRD §4.6): the size is read HERE, on the checkpoint cadence,
+                // and never per appended entry — a doc.change handler must stay under 1 ms p99
+                // (§4.7), and this reads a volatile counter rather than stat()ing the file for
+                // the same reason. The degraded branch in routeSessionEntry returns BEFORE this
+                // lambda can run, so a disk-full session never rotates: required, because
+                // rotation writes two new files and seals the old one, which is precisely what
+                // a session that just failed to write cannot do.
+                if (!rotationRequested && writer.bytesAppended >= maxSlogBytes) {
+                    rotationRequested = true
+                    onRotationNeeded?.invoke(sessionId)
+                }
             }
         }
         sessionHostEmit = { kind, data -> host.emit(kind, data) }
@@ -756,6 +810,14 @@ class RecordingSessionController(
 
     companion object {
         private val LOG = Logger.getInstance(RecordingSessionController::class.java)
+
+        /**
+         * Rotate a session once its `.slog` passes this size (recorder PRD §4.6).
+         * `submission: "git"` assignments commit `.provenance/` to a GitHub repo; GitHub warns
+         * at 50 MB and REFUSES a push containing a file over 100 MB, so a single long-lived
+         * session's log could otherwise make a student's submission unpushable.
+         */
+        const val ROTATE_AT_BYTES: Long = 40L * 1024 * 1024
 
         val DEFAULT_SCHEDULER: FlushScheduler = FlushScheduler { periodMs, task ->
             AppExecutorUtil.getAppScheduledExecutorService()
