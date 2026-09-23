@@ -708,23 +708,28 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
      * "lateinit property wsRoot has not been initialized".
      *
      * This drives the real race — request the rotation, then stop WITHOUT awaiting it — so the
-     * assertion has to hold for every interleaving, not one lucky one.
+     * assertion has to hold for every interleaving, not one lucky one. Repeated, because the
+     * interleaving that actually leaks (the swap already past its own teardown when the stop lands)
+     * is a narrow window and one attempt rarely lands in it.
      */
     fun testAStopDuringAnInFlightRotationLeavesNothingBehind() {
         val m = manager()
         m.extensionHashOverride = { EXT_HASH }
         installFsSeams(m)
-        val session = start(m, maxSlogBytes = 1L)
 
-        driveToCheckpoint(session)
-        m.stop() // racing the pooled swap, deliberately un-awaited
-        m.rotationInFlight(wsRoot)?.let { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
+        repeat(10) { attempt ->
+            val session = start(m, maxSlogBytes = 1L)
+            driveToCheckpoint(session)
+            m.stop() // racing the pooled swap, deliberately un-awaited
+            m.rotationInFlight(wsRoot)?.let { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
 
-        assertTrue("a stop must win over an in-flight rotation", m.activeSessions.isEmpty())
-        assertNull(
-            "the project-scoped wiring must be torn down, not left live by a late successor",
-            project.service<RecorderPasteState>().resolveCorrelator,
-        )
+            assertTrue("attempt $attempt: a stop must win over an in-flight rotation", m.activeSessions.isEmpty())
+            assertNull(
+                "attempt $attempt: the project-scoped wiring must be torn down, not left live by a late successor",
+                project.service<RecorderPasteState>().resolveCorrelator,
+            )
+            provDir.toFile().deleteRecursively()
+        }
     }
 
     /** A rotation whose root was stopped in the meantime must not end an innocent successor. */

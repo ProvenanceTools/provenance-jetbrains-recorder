@@ -592,6 +592,65 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * Concurrent `endSession` calls must produce EXACTLY ONE `session.end`.
+     *
+     * Newly reachable because of rotation: the swap ends the session from a pooled thread while the
+     * Disposer hook can end the same one on the EDT, so two teardowns can genuinely arrive at once.
+     * Two `session.end` entries in one log is a format artifact in evidence — an entry after the
+     * log's own end — and it would also run the teardown twice.
+     *
+     * A [java.util.concurrent.CyclicBarrier] releases every thread into `endSession` at the same
+     * instant, which is as close to deterministic as this gets without a production seam.
+     *
+     * HONEST LIMIT, measured rather than assumed: this test does NOT fail when the re-check inside
+     * the `emitLock` block is removed. I instrumented it — with the re-check deleted, the log still
+     * contains exactly one `session.end`. The reason is that `endSession`'s FIRST statement is its
+     * own `if (ended) return`, and `peerWatcher.drain()` sits between that read and the latch while
+     * being monitor-serialized internally: the first thread through latches before any other thread
+     * has re-read `ended`, so the rest bail at the outer check. Widening the window via the
+     * `peerFiles` seam (parking inside `drain`) deadlocks, because `drain` takes its lock outside
+     * the parked call.
+     *
+     * The re-check is still correct and is kept: the JVM puts no bound on how long a thread can be
+     * descheduled between passing the outer read and reaching the latch, so the window is real even
+     * though it is not reachable on demand. Demonstrating it would need a test-only hook between
+     * the two, and removing the outer check to make the latch the only gate would trade a genuinely
+     * more defensive structure (no redundant drain on a second call) for testability. What this
+     * test does buy is the only coverage of eight concurrent teardowns of one session, and it pins
+     * the invariant against a coarser regression.
+     */
+    fun testConcurrentEndSessionCallsEmitExactlyOneSessionEnd() {
+        val threadCount = 8
+        val c = controller()
+        c.onDocChange(typing("x"))
+
+        val barrier = java.util.concurrent.CyclicBarrier(threadCount)
+        val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val threads = (0 until threadCount).map { i ->
+            Thread {
+                try {
+                    barrier.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                    c.endSession(if (i == 0) "rotate" else "dispose")
+                } catch (t: Throwable) {
+                    thrown.add(t)
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(30_000) }
+
+        assertTrue("no endSession call may throw: $thrown", thrown.isEmpty())
+        val entries = readEntries(c)
+        assertEquals(
+            "exactly one session.end, however many threads end the session at once",
+            1,
+            entries.count { it.kind == "session.end" },
+        )
+        assertEquals("and it must be the last entry", "session.end", entries.last().kind)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+    }
+
     private companion object {
         /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */
         private const val EXT_HASH = "1111111111111111111111111111111111111111111111111111111111111111"

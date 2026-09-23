@@ -661,9 +661,18 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         // `Disposer.newDisposable(this, …)` inside [start] on an already-disposed service, which
         // throws and would be swallowed as a rotation failure: a confusing WARN, and (before the
         // guard in [markRotationFailed]) a degraded mark against a root that is merely going away.
+        // ORDER IS LOAD-BEARING: clear the stale mark BEFORE publishing into [rotating], never
+        // after. `stop` only marks a root it observes in `rotating`, so clearing afterwards leaves
+        // a window in which a `stop` sees this rotation, sets the mark, and has it immediately
+        // erased — the rotation would then run to completion and leave a successor in a registry
+        // the caller just emptied. That is exactly the leaked-successor bug the mark exists to
+        // prevent, and the mechanism behind the 61-test cascade. In this order the two cases are
+        // both safe: a `stop` before `rotating.add` cannot see this rotation, but its `stopOne`
+        // empties the registry so the `sessions[normalized]` read below returns; a `stop` after it
+        // sets a mark that no longer gets cleared, so the next `abandoned` check aborts.
+        rotationsAbandoned.remove(normalized)
         if (!rotating.add(normalized)) return
         try {
-            rotationsAbandoned.remove(normalized)
             if (abandoned(normalized)) return
             val current = sessions[normalized] ?: return
             val endedId = current.controller.sessionId
@@ -687,8 +696,20 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             // rest of the system has forgotten.
             if (abandoned(normalized)) stopOne(normalized)
         } finally {
-            rotating.remove(normalized)
+            // Mirror of the order above: clear the mark, THEN leave [rotating]. The mark belongs to
+            // this rotation, so it must not outlive it — a mark left behind is one that would abort
+            // this root's next rotation for a stop that had nothing to do with it.
+            //
+            // This order does not by itself make that impossible, and it is worth being precise
+            // about why rather than trusting it: `stop`'s own filter-then-add is two steps, so a
+            // stop that reads `root in rotating` as true can have its `add` land after BOTH
+            // statements here, whichever way round they are. What actually makes a leftover mark
+            // harmless is the pre-clear at the top of this method — the next rotation erases the
+            // mark before it joins `rotating`, so it starts clean. This clear is what keeps the set
+            // from holding marks for roots nothing is rotating; the top of the method is the
+            // correctness guarantee.
             rotationsAbandoned.remove(normalized)
+            rotating.remove(normalized)
         }
     }
 
