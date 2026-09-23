@@ -161,11 +161,16 @@ class RecordingSessionController(
      *
      * A student who types continuously for hours would otherwise defer the rotation forever and
      * push the `.slog` past GitHub's refusal limit, i.e. make their own submission unpushable —
-     * the worse outcome. **This is the one path on which a rotation can still lose an edit**, and
-     * therefore the one path that can still produce a false `inter_session_external_change`
-     * finding. Skipping chain recovery (see [RecorderSessionManager.startFromActivation]) shrinks
-     * that window to a flush plus a seal, but it does not close it. Stated here rather than
-     * hidden, because a reader of an accusatory flag deserves to know this path exists.
+     * the worse outcome. **This is the only path on which a rotation can lose a KEYSTROKE** — the
+     * quiet gate makes the keyboard safe and nothing else. It does NOT make an external writer
+     * safe: a formatter daemon, a build tool, or a partner's `git pull` is not synchronised to the
+     * student's pause, so an `fs.external_change` landing inside any teardown window is dropped
+     * and produces a false `inter_session_external_change` — at HIGH severity, since an external
+     * write rewrites a whole file. The gate even concentrates rotations into the moments the
+     * student is idle, which is when background repo activity is most likely. Skipping chain
+     * recovery (see [RecorderSessionManager.startFromActivation]) shrinks that window to a flush
+     * plus a seal, but it does not close it. Stated here rather than hidden, because a reader of
+     * an accusatory flag deserves to know this path exists.
      */
     private val rotateHardCeilingBytes: Long = ROTATE_HARD_CEILING_BYTES,
     /**
