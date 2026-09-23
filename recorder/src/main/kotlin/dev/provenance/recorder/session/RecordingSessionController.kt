@@ -393,10 +393,11 @@ class RecordingSessionController(
      *
      * Maintained in [record] — the single funnel every emitted event passes through, for the same
      * reason the capture-policy gate lives there: a future wiring module cannot forget it. The
-     * whole per-event cost is a set membership test on an interned literal plus one volatile store
-     * of a value the caller already has, against an entry path that already does JCS
-     * canonicalization, SHA-256 and a buffered write — so the `doc.change` p99 < 1 ms budget
-     * (PRD §4.7) is not in play. The IDLE COMPARISON itself never happens here; it happens on the
+     * whole per-event cost is a set membership test on an interned literal and, only on a match,
+     * one `clock.now()` read plus one volatile store — against an entry path that already does JCS
+     * canonicalization, SHA-256 and a buffered write, so the `doc.change` p99 < 1 ms budget
+     * (PRD §4.7) is not in play. (That clock read is this gate's own; it is not the one
+     * [SessionHost] takes for `t`.) The IDLE COMPARISON itself never happens here; it happens on the
      * checkpoint cadence and on [idlePoll], both off the event path.
      *
      * A session that has recorded no content-mutating event at all counts as quiet: there is no
@@ -404,6 +405,18 @@ class RecordingSessionController(
      */
     @Volatile
     private var lastContentChangeAtMs: Long = Long.MIN_VALUE
+
+    /**
+     * SIZE ROTATION — THE IDLE GATE: has the rotation been ARMED (the size threshold crossed at
+     * least once)? Latched, and deliberately NOT cleared when the poll is stopped.
+     *
+     * Separate from [idlePoll] precisely so that abandoning a rotation is expressible: the degraded
+     * branch in [considerRotation] stops the poll while leaving this set, so nothing can ever
+     * re-arm this session. `idlePoll != null` would have conflated "armed" with "a timer is
+     * currently scheduled", and a stopped poll would then silently re-arm on the next cadence.
+     */
+    @Volatile
+    private var rotationArmed = false
 
     /**
      * SIZE ROTATION — THE IDLE GATE: the armed rotation's quiet-window poll, or null.
@@ -841,6 +854,7 @@ class RecordingSessionController(
      *
      * Three outcomes:
      *
+     *  - degraded → never, and the poll is stopped;
      *  - under [maxSlogBytes] → nothing at all, not even a timer;
      *  - over it, mid-burst → ARM: start the quiet-window poll and return without rotating;
      *  - over it and quiet (or over [rotateHardCeilingBytes]) → request the rotation, once.
@@ -850,6 +864,40 @@ class RecordingSessionController(
         // so there is nothing to arm and no reason to create a timer.
         if (onRotationNeeded == null) return
         if (rotationRequested.get() || ended) return
+
+        // DEGRADED ABANDONS THE ROTATION (design §3.2). This is a real check, not a restatement
+        // of the structural one, and it lives HERE — at the single point of commit that BOTH
+        // triggers pass through — rather than at either call site. The cadence path was protected
+        // structurally (routeSessionEntry's degraded branch returns before the checkpoint lambda
+        // can run) and the poll simply was not: guarding call sites individually is how that hole
+        // existed, and a third trigger added later would repeat it.
+        //
+        // The reachable sequence: a session crosses [maxSlogBytes] mid-burst and arms the poll
+        // while healthy; the disk then fills; the student pauses to read the disk-full
+        // notification — which IS the quiet window this gate waits for — and the still-live poll
+        // commits with `bytesAppended` frozen above the threshold. That calls
+        // `endSession("rotate")` on a session whose writes are failing, so its `session.end` is
+        // ENQUEUED into the degraded ring instead of written, while teardown proceeds anyway to
+        // the rolling seal's `final = true` claim — a log sealed as COMPLETE that is missing its
+        // own terminal entry — and a successor starts recording onto the same full disk. A
+        // falsely-`final` seal is an evidence-integrity defect, worse than anything rotation was
+        // meant to solve.
+        //
+        // ABANDON, DO NOT DEFER. Degraded is one-way (DiskFullHandler: "no auto-recovery loop, no
+        // probe timer"), so it never becomes healthy again without an IDE restart. The poll is
+        // stopped and [rotationArmed] is deliberately LEFT SET, so nothing can re-arm; a deferred
+        // rotation would be one that waits forever while pretending it might still happen.
+        //
+        // Accepted consequence, spec'd in §3.2 and identical in all three ports: a degraded
+        // session's log can exceed [maxSlogBytes], and in the extreme GitHub's 50 MB warning.
+        // That is the right trade — a degraded session writes almost nothing, so it barely grows,
+        // and an oversized log is recoverable whereas a falsely-`final` seal is not. There is
+        // deliberately NO second ceiling to compensate.
+        if (diskFullHandler.degraded) {
+            stopIdlePoll()
+            return
+        }
+
         val bytes = writer.bytesAppended
         if (bytes < maxSlogBytes) return
 
@@ -868,14 +916,20 @@ class RecordingSessionController(
         // CAS, not a plain write: the cadence hook and the poll can reach this concurrently, and
         // two requests would start two successors for one root.
         if (!rotationRequested.compareAndSet(false, true)) return
-        cancelIdlePoll()
+        stopIdlePoll()
         onRotationNeeded.invoke(sessionId)
     }
 
-    /** Start the quiet-window poll, at most once per session. See [idlePoll]. */
+    /**
+     * Arm the rotation and start its quiet-window poll, at most once per session.
+     *
+     * Keyed on [rotationArmed], never on `idlePoll != null`: a rotation that was ABANDONED while
+     * degraded has no poll but is still armed, and must not be re-armed by the next cadence.
+     */
     private fun armIdlePoll() {
         synchronized(rotationGate) {
-            if (idlePoll != null) return
+            if (rotationArmed) return
+            rotationArmed = true
             // One period = one quiet window: the rotation therefore lands between one and two
             // quiet windows after the typing stops. For a log that has been growing for days,
             // paying up to two extra seconds to know the seam is empty is not a trade worth
@@ -889,8 +943,12 @@ class RecordingSessionController(
         }
     }
 
-    /** Cancel the quiet-window poll if it was ever armed. Idempotent; safe after teardown. */
-    private fun cancelIdlePoll() {
+    /**
+     * Stop the quiet-window poll, leaving [rotationArmed] set so nothing re-arms. Idempotent, safe
+     * after teardown, and safe to call from the poll's own thread (`cancel(false)` lets the
+     * in-flight run finish and prevents every later one).
+     */
+    private fun stopIdlePoll() {
         synchronized(rotationGate) {
             idlePoll?.cancel(false)
             idlePoll = null
@@ -960,7 +1018,7 @@ class RecordingSessionController(
             // SIZE ROTATION: the armed rotation's quiet-window poll, if any. Its own
             // [considerRotation] would return on the `ended` guard anyway, but a background task
             // with no shutdown path is not something this codebase leaves lying around.
-            cancelIdlePoll()
+            stopIdlePoll()
             pasteTicker.dispose()
             heartbeat.dispose()
             peerWatcher.dispose()
@@ -990,6 +1048,18 @@ class RecordingSessionController(
             checkpointScope.cancel()
         }
     }
+
+    /**
+     * THIS session's real disk-full handler, for tests that need to drive the degraded transition.
+     *
+     * Read-only, and deliberately the real instance rather than an injected stand-in: a test that
+     * supplied its own handler would lose the `onDegraded` → `recorder.degraded` wiring built in
+     * the constructor, and so would be testing a different object than production runs. There is
+     * no other way in: degradation is reached through a write failure on an already-open
+     * FileChannel, which a unit test cannot provoke.
+     */
+    val diskFullHandlerForTest: DiskFullHandler
+        @org.jetbrains.annotations.TestOnly get() = diskFullHandler
 
     /** Force a flush of buffered .slog bytes (used by tests and the seal path). */
     fun flush() = writer.flush()

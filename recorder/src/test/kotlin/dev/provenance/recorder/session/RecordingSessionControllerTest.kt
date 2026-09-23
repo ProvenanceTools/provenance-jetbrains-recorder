@@ -101,6 +101,7 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         onRotationNeeded: ((String) -> Unit)? = null,
         clock: FixedClock = FixedClock(0),
         scheduler: FlushScheduler = NoopScheduler(),
+        degradedNotify: (String) -> Unit = { },
     ) = RecordingSessionController(
         activated = ActivatedWorkspace(m, provDir, wsRoot),
         project = project,
@@ -118,6 +119,7 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         rotateIdleQuietMs = rotateIdleQuietMs,
         rotateHardCeilingBytes = rotateHardCeilingBytes,
         onRotationNeeded = onRotationNeeded,
+        degradedNotify = degradedNotify,
         // Unconfined + a real Job so a scheduled checkpoint runs INLINE on the calling thread
         // (its Mutex is uncontended here), making the checkpoint-driven rolling seal
         // deterministic instead of a sleep-and-hope. cancel() still needs the Job.
@@ -812,6 +814,67 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
                 kind in RecordingSessionController.CONTENT_MUTATING_KINDS,
             )
         }
+    }
+
+    /**
+     * DEGRADED NEVER ROTATES — including from the idle poll, which is the path the structural
+     * argument never covered.
+     *
+     * "The degraded branch in `routeSessionEntry` returns before the checkpoint lambda" protects
+     * the CADENCE trigger only. The poll is a second, independent trigger: a session can arm it
+     * while healthy and degrade a moment later, and the student then pausing to read the disk-full
+     * dialog IS the quiet window the gate is waiting for. Without the explicit guard the poll
+     * fires with the byte count frozen above the threshold, `endSession("rotate")` runs on a
+     * session whose writes are failing — so its `session.end` is enqueued into the degraded ring
+     * rather than written, while teardown still claims `final = true` over that log — and a
+     * successor starts recording onto the same full disk.
+     *
+     * The handler is degraded through the real `handleWriteError` transition on the session's own
+     * handler, so this drives the production state machine rather than a stand-in.
+     */
+    fun testAnArmedRotationNeverFiresOnceTheSessionHasDegraded() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // Armed while healthy, mid-burst: over the threshold, poll scheduled, nothing rotated.
+        repeat(20) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("the fixture must be over the threshold", Files.size(c.slogPath) > 512L)
+        assertTrue("armed, not rotated", rotations.isEmpty())
+        assertTrue("the poll must be armed for this test to mean anything", sched.hasTaskAt(7_331L))
+
+        // The disk fills.
+        c.diskFullHandlerForTest.handleWriteError(java.io.IOException("ENOSPC"))
+        assertTrue("the session must really be degraded", c.diskFullHandlerForTest.degraded)
+
+        // The student stops to read the dialog — the quiet window the gate waits for — and the
+        // still-armed poll fires. Without the degraded guard this is where it rotates.
+        clock.advance(7_331L)
+        sched.tick(7_331L)
+        assertTrue("a degraded session must never rotate, from ANY trigger", rotations.isEmpty())
+        assertTrue(
+            "and the poll must be stopped: degraded is one-way, so it can never rotate again",
+            7_331L in sched.cancelled,
+        )
+
+        // ABANDONED, NOT DEFERRED (design §3.2). Degraded never clears, so a rotation that is
+        // merely postponed is one that waits forever while pretending it might still happen. A
+        // full minute later — and after further cadence-driven evaluations, which is what would
+        // re-arm a rotation keyed on `idlePoll != null` — there is still no rotation, and still
+        // exactly one poll task ever registered (tick() fails if a second was scheduled).
+        clock.advance(60_000L)
+        repeat(30) { c.append("git.event", gitEvent()) }
+        sched.tick(7_331L)
+        assertTrue("a degraded session's rotation is abandoned, not deferred", rotations.isEmpty())
     }
 
     /** The idle gate and the hard ceiling, as the design fixes them (§3.3). */
