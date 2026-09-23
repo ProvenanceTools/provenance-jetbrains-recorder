@@ -31,6 +31,7 @@ import dev.provenance.recorder.identity.buildSessionIdentity
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.plugin.ownPluginDescriptor
 import dev.provenance.recorder.startup.NioRecoveryDeps
+import dev.provenance.recorder.startup.RecoveryDeps
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.startup.recoverPreviousSession
 import dev.provenance.recorder.watch.ExternalChangeCoordinator
@@ -304,7 +305,29 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
         runCatching { project.service<RecorderState>().recordIdentity(root, identityOutcome) }
             .onFailure { LOG.warn("could not record the identity outcome for the status bar", it) }
 
-        val recovery = recoverPreviousSession(NioRecoveryDeps(provenanceDir.toString(), ownStudentRef))
+        // SIZE ROTATION — NO CHAIN RECOVERY ON A ROTATION (design §3.3).
+        //
+        // A rotation's successor already knows its predecessor's id (that is what
+        // `prevSessionIdOverride` IS), so recovery has nothing to discover: the predecessor ended
+        // cleanly, is not dangling, and recovery would report `PreviousSessionComplete` and
+        // contribute no link. What it WOULD do is read, parse and `validateChain` a 40 MiB log —
+        // ~150k entries of JCS canonicalization and SHA-256 — while the old session's document
+        // wiring is already detached and the new one is not yet attached. That is the largest term
+        // in the teardown window by orders of magnitude, and every keystroke inside that window is
+        // dropped and then read by the analyzer as the student editing outside the recorder (see
+        // [RecordingSessionController.rotateIdleQuietMs]). Skipping it shrinks the window from
+        // seconds to a flush plus a seal.
+        //
+        // Not an optimization, and not conditional on anything subtle: `prevSessionIdOverride`
+        // is set on exactly one call path — [rotate] — and on that path a CleanStart decision is
+        // the CORRECT one, not merely a cheaper one.
+        val recovery = if (prevSessionIdOverride != null) {
+            RecoveryDecision.CleanStart
+        } else {
+            (recoveryForTest ?: { deps -> recoverPreviousSession(deps) })(
+                NioRecoveryDeps(provenanceDir.toString(), ownStudentRef),
+            )
+        }
         val descriptor = ownPluginDescriptor()
         start(
             activated = ActivatedWorkspace(manifest, provenanceDir, root),
@@ -417,6 +440,15 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
          * accidentally build a rotation cascade.
          */
         maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
+        /**
+         * SIZE ROTATION — the idle gate and the hard ceiling (design §3.3). Same rule as
+         * [maxSlogBytes]: production always takes the defaults, a test shortens the quiet window
+         * or lowers the ceiling so it can reach either in a test's lifetime, and neither is
+         * threaded through [startFromActivation] so a rotation's successor always runs with
+         * production values.
+         */
+        rotateIdleQuietMs: Long = RecordingSessionController.ROTATE_IDLE_QUIET_MS,
+        rotateHardCeilingBytes: Long = RecordingSessionController.ROTATE_HARD_CEILING_BYTES,
     ): ActiveSession {
         val root = activated.workspaceRoot.normalize()
         check(sessions[root] == null) { "a recording session is already active for root $root" }
@@ -439,6 +471,8 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
             preparedIdentity = preparedIdentity,
             prevSessionIdOverride = prevSessionIdOverride,
             maxSlogBytes = maxSlogBytes,
+            rotateIdleQuietMs = rotateIdleQuietMs,
+            rotateHardCeilingBytes = rotateHardCeilingBytes,
             // SIZE ROTATION (recorder PRD §4.6). Handed to a pooled thread and not awaited: this
             // callback fires from inside the controller's entry-routing path (on the checkpoint
             // cadence), which may be the EDT inside a write action, and `rotate` ends a session,
@@ -753,6 +787,20 @@ class RecorderSessionManager(private val project: Project) : Disposable, Session
     @TestOnly
     @Volatile
     var extensionHashOverride: (() -> String)? = null
+
+    /**
+     * SIZE ROTATION — the chain-recovery seam, so "a rotation does not run chain recovery" is
+     * provable BY CONSTRUCTION rather than by timing.
+     *
+     * [startFromActivation] calls this instead of `recoverPreviousSession` when it is set, and a
+     * test sets it to a function that FAILS the test if it is ever invoked. There is no way to
+     * observe the absence of that call otherwise: a skipped recovery and a fast one look the same
+     * from outside, and the whole point of the skip (design §3.3) is the teardown window it
+     * removes. Null in production.
+     */
+    @TestOnly
+    @Volatile
+    var recoveryForTest: (suspend (RecoveryDeps) -> RecoveryDecision)? = null
 
     /** Seal a specific assignment root's session (the seal action always specifies which
      * root once it knows there is more than one). */

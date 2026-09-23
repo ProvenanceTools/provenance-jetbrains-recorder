@@ -77,6 +77,7 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             m?.localFsOfOverride = null
             m?.nioPathOfOverride = null
             m?.extensionHashOverride = null
+            m?.recoveryForTest = null
             // The restart tests drive the REAL startFromActivation, which records an identity
             // outcome (and, on the failure path, a degraded mark) into RecorderState. That
             // service hangs off the shared light-fixture project, so leaving it populated leaks
@@ -730,6 +731,53 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             )
             provDir.toFile().deleteRecursively()
         }
+    }
+
+    /**
+     * A ROTATION MUST NOT RUN CHAIN RECOVERY (design §3.3), and the proof is by construction:
+     * the recovery seam is replaced with one that counts its invocations, and the count must be
+     * zero.
+     *
+     * Why it matters, and why it is not a micro-optimisation: recovery reads, parses and
+     * `validateChain`s the predecessor's ENTIRE log — at the real threshold, 40 MiB and ~150k
+     * entries of JCS canonicalization and SHA-256 — and it does so after the old session's
+     * document wiring is detached and before the new one's is attached. Every keystroke in that
+     * window is dropped, and the analyzer compares session A's reconstructed content against
+     * session B's live `doc.open` buffer read by exact string equality, so a dropped keystroke is
+     * reported as the student having edited the file outside the recorder. Recovery is also the
+     * one thing here it buys nothing: the successor is handed its predecessor's id directly, and
+     * a cleanly-ended predecessor is not dangling, so recovery would find no link to contribute.
+     *
+     * The seam counts rather than calling `fail()` because an AssertionError thrown on the pooled
+     * rotation thread would be caught by `launchRotation`'s `catch (t: Throwable)` and reported as
+     * a degraded root — a confusing failure for the real cause. Counting keeps the diagnosis exact.
+     */
+    fun testARotationDoesNotRunChainRecoveryForItsSuccessor() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+        val recoveryCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        m.recoveryForTest = {
+            recoveryCalls.incrementAndGet()
+            RecoveryDecision.CleanStart
+        }
+
+        val old = start(m, maxSlogBytes = 1L)
+        val oldId = old.controller.sessionId
+        driveToCheckpoint(old)
+        awaitRotation(m, wsRoot)
+
+        val fresh = m.activeSessions[wsRoot]
+        assertNotNull("the successor must have started", fresh)
+        assertEquals("a rotation must not run chain recovery", 0, recoveryCalls.get())
+        // And skipping it costs nothing: the link the successor needs came from the rotation, not
+        // from recovery.
+        fresh!!.controller.flush()
+        val freshEntries = entriesOfFile(fresh.controller.slogPath)
+        assertEquals(
+            oldId,
+            freshEntries.first().data["prev_session_id"]!!.jsonPrimitive.content,
+        )
     }
 
     /** A rotation whose root was stopped in the meantime must not end an innocent successor. */

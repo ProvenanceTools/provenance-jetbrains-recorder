@@ -32,6 +32,44 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
             }
     }
 
+    /**
+     * A scheduler that keeps every task it is handed instead of running it, so a test can fire a
+     * specific periodic task by its period. The rotation idle poll (§3.3) is the only task here
+     * whose period a test chooses, so filtering by period identifies it unambiguously — and
+     * running captured tasks blindly would also tick the heartbeat, the clock-skew watcher and the
+     * paste ticker, which have nothing to do with rotation.
+     */
+    private class CapturingScheduler : FlushScheduler {
+        val tasks = mutableListOf<Pair<Long, Runnable>>()
+        val cancelled = mutableSetOf<Long>()
+
+        override fun scheduleAtFixedRate(periodMs: Long, task: Runnable): ScheduledFuture<*> {
+            tasks.add(periodMs to task)
+            return object : ScheduledFuture<Any?> {
+                override fun cancel(m: Boolean): Boolean {
+                    cancelled.add(periodMs)
+                    return true
+                }
+
+                override fun isCancelled() = periodMs in cancelled
+                override fun isDone() = periodMs in cancelled
+                override fun get(): Any? = null
+                override fun get(t: Long, u: java.util.concurrent.TimeUnit): Any? = null
+                override fun getDelay(u: java.util.concurrent.TimeUnit) = 0L
+                override fun compareTo(o: java.util.concurrent.Delayed?) = 0
+            }
+        }
+
+        /** Run every task registered with [periodMs]; there must be exactly one. */
+        fun tick(periodMs: Long) {
+            val matching = tasks.filter { it.first == periodMs }
+            if (matching.size != 1) throw AssertionError("expected exactly one task at ${periodMs}ms, got ${matching.size}")
+            matching.single().second.run()
+        }
+
+        fun hasTaskAt(periodMs: Long) = tasks.any { it.first == periodMs }
+    }
+
     private lateinit var wsRoot: Path
     private lateinit var provDir: Path
 
@@ -58,7 +96,11 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
         computeExtensionHash: () -> String = { EXT_HASH },
         maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
+        rotateIdleQuietMs: Long = RecordingSessionController.ROTATE_IDLE_QUIET_MS,
+        rotateHardCeilingBytes: Long = RecordingSessionController.ROTATE_HARD_CEILING_BYTES,
         onRotationNeeded: ((String) -> Unit)? = null,
+        clock: FixedClock = FixedClock(0),
+        scheduler: FlushScheduler = NoopScheduler(),
     ) = RecordingSessionController(
         activated = ActivatedWorkspace(m, provDir, wsRoot),
         project = project,
@@ -67,12 +109,14 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         recorderVersion = "0.1.0",
         recorderExtensionId = "com.aaryanmehta.provenance.recorder",
         parentDisposable = testRootDisposable,
-        clock = FixedClock(0),
-        scheduler = NoopScheduler(),
+        clock = clock,
+        scheduler = scheduler,
         secrets = secrets,
         checkpointInterval = checkpointInterval,
         computeExtensionHash = computeExtensionHash,
         maxSlogBytes = maxSlogBytes,
+        rotateIdleQuietMs = rotateIdleQuietMs,
+        rotateHardCeilingBytes = rotateHardCeilingBytes,
         onRotationNeeded = onRotationNeeded,
         // Unconfined + a real Job so a scheduled checkpoint runs INLINE on the calling thread
         // (its Mutex is uncontended here), making the checkpoint-driven rolling seal
@@ -459,18 +503,29 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
     private fun typing(text: String) =
         buildDocChangePayload("hw.py", buildDocChangeDelta(0, 8, 0, 8, text))
 
+    private fun gitEvent() =
+        dev.provenance.core.GitEventPayload(operation = "state_change", commitSha = "deadbeef").toJsonObject()
+
     /**
      * The size is read ONLY when the checkpoint cadence fires — never per appended entry.
      * `doc.change` handlers must stay under 1 ms p99 (PRD §4.7), and `session.start` alone
      * already exceeds the 512-byte threshold used here, so a per-entry check would have
      * requested rotation on the very first entry.
+     *
+     * The entry that trips the cadence here is deliberately NOT a `doc.change`: after the idle
+     * gate (§3.3) a `doc.change` resets the quiet window it is measured against, so a burst can
+     * never rotate on its own final keystroke. The clock is advanced first to represent the
+     * student having stopped typing.
      */
     fun testRequestsRotationOnceTheLogPassesTheThresholdAtCheckpointCadence() {
         val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
         val c = controller(
             checkpointInterval = 10,
             maxSlogBytes = 512L,
+            rotateIdleQuietMs = 100L,
             onRotationNeeded = { endedId -> rotations.add(endedId) },
+            clock = clock,
         )
         // session.start is the cadence's first entry, so nine more trip it at interval 10.
         repeat(8) { c.onDocChange(typing("x")) }
@@ -478,8 +533,111 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         c.flush()
         assertTrue("and the log is already over the threshold", Files.size(c.slogPath) > 512L)
 
-        c.onDocChange(typing("y"))
+        clock.advance(100L)
+        c.append("git.event", gitEvent())
         assertEquals("the cadence firing over the threshold must request rotation", listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    // -----------------------------------------------------------------------
+    // THE IDLE GATE (design §3.3). End-then-start DROPS any event that lands inside the
+    // predecessor's teardown window, and the analyzer compares session A's side of a seam as a
+    // RECONSTRUCTION FROM A'S EVENTS against session B's first doc.open, which is a LIVE BUFFER
+    // READ, by exact string equality — so one lost keystroke is reported, at confidence 0.85, as
+    // the student editing the file outside the recorder. Rotating only while nothing is being
+    // typed is what makes the seam empty by construction instead of by hope.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Crossing the threshold mid-burst ARMS the rotation and does not perform it; it fires only
+     * once a full quiet window has passed with no `doc.change`.
+     */
+    fun testCrossingTheThresholdMidBurstArmsTheRotationButDoesNotRotate() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // A burst that crosses the threshold: the cadence fires, the log is over 512 bytes, and
+        // the student is still typing.
+        repeat(20) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("the log must be over the threshold", Files.size(c.slogPath) > 512L)
+        assertTrue("a mid-burst crossing must NOT rotate", rotations.isEmpty())
+        assertTrue("but it must arm the quiet-window poll", sched.hasTaskAt(7_331L))
+
+        // The poll firing while the burst is still recent changes nothing.
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertTrue("one millisecond short of the quiet window is still a burst", rotations.isEmpty())
+
+        // A full quiet window later, it fires — once.
+        clock.advance(1L)
+        sched.tick(7_331L)
+        assertEquals("the rotation must fire once the session goes quiet", listOf(c.sessionId), rotations)
+        sched.tick(7_331L)
+        assertEquals("and only once", 1, rotations.size)
+        assertTrue("the poll must be cancelled once it has fired", 7_331L in sched.cancelled)
+        c.endSession("rotate")
+    }
+
+    /**
+     * THE HARD CEILING, and the one rotation path that can still lose an edit.
+     *
+     * A student who never pauses would otherwise defer the rotation forever and push the `.slog`
+     * past GitHub's refusal limit — an unpushable submission, which is the worse outcome. So past
+     * [RecordingSessionController.ROTATE_HARD_CEILING_BYTES] the recorder rotates mid-burst.
+     */
+    fun testATypingSessionPastTheHardCeilingRotatesWithoutEverGoingQuiet() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0) // never advanced: the student never stops typing
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 5,
+            maxSlogBytes = 512L,
+            rotateHardCeilingBytes = 20_000L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // Over the threshold but under the ceiling: armed, not rotated.
+        repeat(10) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("over the threshold, under the ceiling, still typing: no rotation", rotations.isEmpty())
+        assertTrue("the fixture must actually be in the deferred band", Files.size(c.slogPath) in 513L..19_999L)
+
+        // Keep typing until the ceiling is passed.
+        while (run { c.flush(); Files.size(c.slogPath) } < 20_000L) {
+            repeat(5) { c.onDocChange(typing("x")) }
+        }
+        assertEquals("past the hard ceiling a session rotates mid-burst", listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * A session that has recorded no `doc.change` at all counts as quiet — there is no in-flight
+     * burst to lose an edit out of — so it rotates at the first cadence over the threshold without
+     * waiting for a window it could never observe.
+     */
+    fun testASessionThatHasNeverRecordedADocChangeIsAlreadyQuiet() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 3,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+        )
+        repeat(2) { c.append("git.event", gitEvent()) }
+        assertEquals(listOf(c.sessionId), rotations)
         c.endSession("rotate")
     }
 
@@ -502,12 +660,19 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
      */
     fun testRotationIsRequestedOnlyOncePerSession() {
         val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
         val c = controller(
             checkpointInterval = 2,
             maxSlogBytes = 512L,
+            rotateIdleQuietMs = 100L,
             onRotationNeeded = { rotations.add(it) },
+            clock = clock,
         )
         repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue("the burst itself must not rotate", rotations.isEmpty())
+        // The student stops, then more non-typing entries keep tripping the cadence.
+        clock.advance(100L)
+        repeat(10) { c.append("git.event", gitEvent()) }
         assertEquals("exactly one rotation request, not one per checkpoint", 1, rotations.size)
         c.endSession("rotate")
     }
@@ -515,6 +680,16 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
     /** The threshold is 40 MiB: under GitHub's 100 MB push refusal and its 50 MB warning. */
     fun testTheRotationThresholdIs40MiB() {
         assertEquals(40L * 1024 * 1024, RecordingSessionController.ROTATE_AT_BYTES)
+    }
+
+    /** The idle gate and the hard ceiling, as the design fixes them (§3.3). */
+    fun testTheIdleGateAndHardCeilingConstants() {
+        assertEquals(2000L, RecordingSessionController.ROTATE_IDLE_QUIET_MS)
+        assertEquals(48L * 1024 * 1024, RecordingSessionController.ROTATE_HARD_CEILING_BYTES)
+        assertTrue(
+            "the ceiling must sit above the threshold, or the idle gate could never defer anything",
+            RecordingSessionController.ROTATE_HARD_CEILING_BYTES > RecordingSessionController.ROTATE_AT_BYTES,
+        )
     }
 
     /** `rotate` goes through the ordinary teardown path, so the log still ends cleanly. */

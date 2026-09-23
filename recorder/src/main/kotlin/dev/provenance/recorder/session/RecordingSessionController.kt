@@ -99,8 +99,8 @@ class RecordingSessionController(
     recorderVersion: String,
     recorderExtensionId: String,
     private val parentDisposable: Disposable,
-    clock: Clock = SystemClock(),
-    scheduler: FlushScheduler = DEFAULT_SCHEDULER,
+    private val clock: Clock = SystemClock(),
+    private val scheduler: FlushScheduler = DEFAULT_SCHEDULER,
     /**
      * Explicit heartbeat cadence, overriding the course's capture policy. Null (the
      * default) means "use the policy", whose own default is [Heartbeat.DEFAULT_INTERVAL_MS]
@@ -138,15 +138,45 @@ class RecordingSessionController(
      */
     private val maxSlogBytes: Long = ROTATE_AT_BYTES,
     /**
+     * SIZE ROTATION — THE IDLE GATE (design §3.3). Once [maxSlogBytes] is crossed the rotation is
+     * ARMED, and it only fires after this many milliseconds with no `doc.change`.
+     *
+     * This is not a politeness knob; it is what keeps the recorder from accusing the student.
+     * End-then-start means any keystroke landing inside the predecessor's teardown window is
+     * DROPPED, and the analyzer's `inter_session_external_change` compares A's side as a
+     * RECONSTRUCTION FROM A'S EVENT STREAM against B's first `doc.open.content`, which is a LIVE
+     * BUFFER READ, by exact string equality. So one lost character makes the two differ and the
+     * heuristic reports, at confidence 0.85, that the student edited the file outside the
+     * recorder. Rotating only while nothing is being typed makes "nobody typed during teardown" a
+     * property of WHEN we rotate rather than a hope about how fast teardown is.
+     *
+     * Overridable only so a test can reach a quiet window without waiting two real seconds.
+     */
+    private val rotateIdleQuietMs: Long = ROTATE_IDLE_QUIET_MS,
+    /**
+     * SIZE ROTATION — THE HARD CEILING (design §3.3). A log this large rotates even if the
+     * session has never gone quiet.
+     *
+     * A student who types continuously for hours would otherwise defer the rotation forever and
+     * push the `.slog` past GitHub's refusal limit, i.e. make their own submission unpushable —
+     * the worse outcome. **This is the one path on which a rotation can still lose an edit**, and
+     * therefore the one path that can still produce a false `inter_session_external_change`
+     * finding. Skipping chain recovery (see [RecorderSessionManager.startFromActivation]) shrinks
+     * that window to a flush plus a seal, but it does not close it. Stated here rather than
+     * hidden, because a reader of an accusatory flag deserves to know this path exists.
+     */
+    private val rotateHardCeilingBytes: Long = ROTATE_HARD_CEILING_BYTES,
+    /**
      * SIZE ROTATION: called ONCE, with THIS session's logical `session_id`, the first time the
-     * checkpoint cadence fires with the `.slog` over [maxSlogBytes]. The callee
+     * `.slog` is over [maxSlogBytes] AND the idle gate above opens. The callee
      * ([RecorderSessionManager.rotate]) ends this session with `session.end{reason:"rotate"}`
      * and starts its successor with `prev_session_id` set to the id handed over here. Null (the
      * default) means "never rotate", which is what every test that constructs a controller
      * directly wants.
      *
-     * It is invoked from inside the entry-routing path, so it must not block: the real callee
-     * hands the swap to a pooled thread and returns immediately.
+     * It is invoked from inside the entry-routing path, or from the idle poll's scheduler thread,
+     * so it must not block: the real callee hands the swap to a pooled thread and returns
+     * immediately.
      */
     private val onRotationNeeded: ((String) -> Unit)? = null,
     /**
@@ -333,13 +363,51 @@ class RecordingSessionController(
     private var ended = false
 
     /**
-     * SIZE ROTATION: has [onRotationNeeded] already been called? Latched, so a session asks to
-     * be rotated at most once — the swap is asynchronous, so the cadence can fire again (over
-     * the threshold, since the log only grows) before this session is torn down, and a second
-     * request would start a second successor for the same root.
+     * SIZE ROTATION: has [onRotationNeeded] already been called? Latched with a CAS, so a session
+     * asks to be rotated at most once — the swap is asynchronous, so the cadence can fire again
+     * (over the threshold, since the log only grows) before this session is torn down, and the
+     * idle poll can fire concurrently with it on another thread. A second request would start a
+     * second successor for the same root.
+     */
+    private val rotationRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * SIZE ROTATION — THE IDLE GATE: guards [idlePoll]'s at-most-once creation and cancellation.
+     *
+     * Deliberately NOT [emitLock]. The poll runs on a scheduler thread and the size check runs
+     * inside the emit path, which already holds [emitLock]; making the poll take that lock would
+     * put a timer in front of the student's keystrokes for no gain. This lock protects nothing
+     * but the [ScheduledFuture] reference, and nothing that takes it does I/O.
+     */
+    private val rotationGate = Any()
+
+    /**
+     * SIZE ROTATION — THE IDLE GATE: monotonic time of the last `doc.change` this session
+     * recorded, or [Long.MIN_VALUE] if it has recorded none.
+     *
+     * Written on the hot path, and that is the whole cost of the gate: one volatile store of a
+     * value the caller already has. No clock is read per keystroke beyond the one [SessionHost]
+     * reads anyway for `t`, and the IDLE COMPARISON itself never happens here — it happens on the
+     * checkpoint cadence and on [idlePoll], both off the `doc.change` path (PRD §4.7, p99 < 1 ms).
+     *
+     * A session that has recorded no `doc.change` at all counts as quiet: there is no in-flight
+     * burst to lose an edit out of.
      */
     @Volatile
-    private var rotationRequested = false
+    private var lastDocChangeAtMs: Long = Long.MIN_VALUE
+
+    /**
+     * SIZE ROTATION — THE IDLE GATE: the armed rotation's quiet-window poll, or null.
+     *
+     * Required, not a belt-and-braces addition: the size check rides the checkpoint cadence, which
+     * is driven by ENTRIES. The moment the student stops typing the entry stream all but stops
+     * too (heartbeats are minutes apart), so a cadence-only re-check would notice the quiet window
+     * only after ~100 further entries — i.e. potentially not for an hour, which is exactly the
+     * wrong direction for a log already over 40 MiB. The poll exists so that "stopped typing" is
+     * itself the trigger. Created at most once per session, cancelled by [endSession].
+     */
+    @Volatile
+    private var idlePoll: java.util.concurrent.ScheduledFuture<*>? = null
 
     init {
         // Step 0: resolve the course's capture policy BEFORE anything can emit. Total by
@@ -579,10 +647,7 @@ class RecordingSessionController(
                 // lambda can run, so a disk-full session never rotates: required, because
                 // rotation writes two new files and seals the old one, which is precisely what
                 // a session that just failed to write cannot do.
-                if (!rotationRequested && writer.bytesAppended >= maxSlogBytes) {
-                    rotationRequested = true
-                    onRotationNeeded?.invoke(sessionId)
-                }
+                considerRotation()
             }
         }
         sessionHostEmit = { kind, data -> host.emit(kind, data) }
@@ -684,6 +749,10 @@ class RecordingSessionController(
     override fun onDocOpen(payload: dev.provenance.core.DocOpenPayload) = record("doc.open", payload.toJsonObject())
 
     override fun onDocChange(payload: dev.provenance.core.DocChangePayload) {
+        // SIZE ROTATION — THE IDLE GATE (design §3.3). One volatile store per keystroke, and
+        // nothing else: the comparison against [rotateIdleQuietMs] happens on the checkpoint
+        // cadence and on the idle poll, never here. See [lastDocChangeAtMs].
+        lastDocChangeAtMs = clock.now()
         heartbeat.recordActivity()
         record("doc.change", payload.toJsonObject())
     }
@@ -757,6 +826,72 @@ class RecordingSessionController(
      * not less. (The 64 KB inline size cap in the payload builders is a separate mechanism
      * and is untouched by any of this.)
      */
+    /**
+     * SIZE ROTATION (design §3.2, §3.3): decide whether this session should be rotated NOW.
+     *
+     * Called from exactly two places, both off the `doc.change` path: the checkpoint-cadence hook
+     * (which is what bounds the size read to once per [CheckpointCadence] entries) and
+     * [idlePoll]. Reads a volatile byte counter and a volatile timestamp; never stats the file,
+     * never takes [emitLock], never blocks.
+     *
+     * Three outcomes:
+     *
+     *  - under [maxSlogBytes] → nothing at all, not even a timer;
+     *  - over it, mid-burst → ARM: start the quiet-window poll and return without rotating;
+     *  - over it and quiet (or over [rotateHardCeilingBytes]) → request the rotation, once.
+     */
+    private fun considerRotation() {
+        // No callee means "never rotate" (the default for every directly-constructed controller),
+        // so there is nothing to arm and no reason to create a timer.
+        if (onRotationNeeded == null) return
+        if (rotationRequested.get() || ended) return
+        val bytes = writer.bytesAppended
+        if (bytes < maxSlogBytes) return
+
+        // Armed from the first crossing, so the quiet window is being watched for even if no
+        // further entry ever trips the cadence.
+        armIdlePoll()
+
+        val last = lastDocChangeAtMs
+        val quiet = last == Long.MIN_VALUE || clock.now() - last >= rotateIdleQuietMs
+        // THE ONE LOSSY PATH, stated plainly: past the hard ceiling we rotate mid-burst, which can
+        // drop a keystroke inside the teardown window and so can produce a false
+        // `inter_session_external_change` finding against the student. It is accepted only because
+        // the alternative is an unpushable submission. See [rotateHardCeilingBytes].
+        if (!quiet && bytes < rotateHardCeilingBytes) return
+
+        // CAS, not a plain write: the cadence hook and the poll can reach this concurrently, and
+        // two requests would start two successors for one root.
+        if (!rotationRequested.compareAndSet(false, true)) return
+        cancelIdlePoll()
+        onRotationNeeded.invoke(sessionId)
+    }
+
+    /** Start the quiet-window poll, at most once per session. See [idlePoll]. */
+    private fun armIdlePoll() {
+        synchronized(rotationGate) {
+            if (idlePoll != null) return
+            // One period = one quiet window: the rotation therefore lands between one and two
+            // quiet windows after the typing stops. For a log that has been growing for days,
+            // paying up to two extra seconds to know the seam is empty is not a trade worth
+            // tuning, and a shorter period would only add wakeups.
+            idlePoll = scheduler.scheduleAtFixedRate(rotateIdleQuietMs.coerceAtLeast(1L)) {
+                // A throw here would kill the scheduled task silently and strand the armed
+                // rotation, so it is contained and logged.
+                runCatching { considerRotation() }
+                    .onFailure { LOG.warn("provenance: rotation idle poll failed", it) }
+            }
+        }
+    }
+
+    /** Cancel the quiet-window poll if it was ever armed. Idempotent; safe after teardown. */
+    private fun cancelIdlePoll() {
+        synchronized(rotationGate) {
+            idlePoll?.cancel(false)
+            idlePoll = null
+        }
+    }
+
     private fun record(kind: String, data: kotlinx.serialization.json.JsonObject) {
         // The guard and the emit are ONE critical section — see [emitLock]. Testing `ended` and
         // then emitting non-atomically let an entry reach a disposed writer.
@@ -810,6 +945,10 @@ class RecordingSessionController(
             // The paste privacy gate is closed by RecorderSessionManager removing this session
             // from the registry before disposal, so the path-routed resolver stops handing out
             // this session's correlator; nothing to clear here anymore.
+            // SIZE ROTATION: the armed rotation's quiet-window poll, if any. Its own
+            // [considerRotation] would return on the `ended` guard anyway, but a background task
+            // with no shutdown path is not something this codebase leaves lying around.
+            cancelIdlePoll()
             pasteTicker.dispose()
             heartbeat.dispose()
             peerWatcher.dispose()
@@ -863,6 +1002,22 @@ class RecordingSessionController(
          * session's log could otherwise make a student's submission unpushable.
          */
         const val ROTATE_AT_BYTES: Long = 40L * 1024 * 1024
+
+        /**
+         * How long a session must have recorded no `doc.change` before an armed rotation fires
+         * (design §3.3). Students pause constantly, so in practice this costs nothing; what it
+         * buys is an EMPTY SEAM, and an empty seam is what keeps a rotation from being read as
+         * the student editing the file outside the recorder. See [rotateIdleQuietMs].
+         */
+        const val ROTATE_IDLE_QUIET_MS: Long = 2000
+
+        /**
+         * The size at which a rotation stops waiting for a quiet window (design §3.3). A
+         * continuous-typing session must not grow without bound — an unpushable repo is the worse
+         * outcome — and this is the one rotation path that can still drop an edit. See
+         * [rotateHardCeilingBytes].
+         */
+        const val ROTATE_HARD_CEILING_BYTES: Long = 48L * 1024 * 1024
 
         val DEFAULT_SCHEDULER: FlushScheduler = FlushScheduler { periodMs, task ->
             AppExecutorUtil.getAppScheduledExecutorService()
