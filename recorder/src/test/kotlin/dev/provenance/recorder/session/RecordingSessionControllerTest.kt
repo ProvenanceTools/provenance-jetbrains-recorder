@@ -503,6 +503,25 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
     private fun typing(text: String) =
         buildDocChangePayload("hw.py", buildDocChangeDelta(0, 8, 0, 8, text))
 
+    private fun paste(text: String) = dev.provenance.core.PastePayload(
+        path = "hw.py",
+        range = dev.provenance.core.Range(
+            dev.provenance.core.Position(0L, 0L),
+            dev.provenance.core.Position(0, text.length.toLong()),
+        ),
+        length = text.length.toLong(),
+        sha256 = dev.provenance.core.Sha256.hex(text),
+        content = text,
+    )
+
+    private fun externalChange() = dev.provenance.core.FsExternalChangePayload(
+        path = "hw.py",
+        oldHash = dev.provenance.core.Sha256.hex("print(1)\n"),
+        newHash = dev.provenance.core.Sha256.hex("print(2)\n"),
+        diffSize = 1,
+        explanation = "formatter",
+    ).toJsonObject()
+
     private fun gitEvent() =
         dev.provenance.core.GitEventPayload(operation = "state_change", commitSha = "deadbeef").toJsonObject()
 
@@ -624,11 +643,12 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
     }
 
     /**
-     * A session that has recorded no `doc.change` at all counts as quiet — there is no in-flight
-     * burst to lose an edit out of — so it rotates at the first cadence over the threshold without
-     * waiting for a window it could never observe.
+     * A session that has recorded no CONTENT-MUTATING event at all counts as quiet — there is no
+     * in-flight change to lose an edit out of — so it rotates at the first cadence over the
+     * threshold without waiting for a window it could never observe. `git.event` is not
+     * content-mutating, which is what this fixture leans on.
      */
-    fun testASessionThatHasNeverRecordedADocChangeIsAlreadyQuiet() {
+    fun testASessionThatHasNeverRecordedAContentMutatingEventIsAlreadyQuiet() {
         val rotations = mutableListOf<String>()
         val c = controller(
             checkpointInterval = 3,
@@ -680,6 +700,118 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
     /** The threshold is 40 MiB: under GitHub's 100 MB push refusal and its 50 MB warning. */
     fun testTheRotationThresholdIs40MiB() {
         assertEquals(40L * 1024 * 1024, RecordingSessionController.ROTATE_AT_BYTES)
+    }
+
+    // -----------------------------------------------------------------------
+    // THE GATE QUIETS CONTENT, NOT TYPING (design §3.3). The flag this defuses compares file
+    // CONTENT and does not care which event changed it, so a `paste` or an `fs.external_change`
+    // inside the quiet window must defer the rotation exactly as a keystroke does. Both tests
+    // below run the poll EXPLICITLY before asserting "has not rotated", so the assertion cannot
+    // pass merely because the pending work had not been given a chance to run.
+    // -----------------------------------------------------------------------
+
+    /**
+     * A `paste` re-closes the quiet window.
+     *
+     * The case this is about: a student pauses to read documentation — legitimately opening the
+     * gate — and then hits paste just as the rotation fires. Under a `doc.change`-only gate that
+     * paste is dropped by the teardown guard, and because a paste is large the resulting
+     * divergence clears `highSeverityCharsChanged`, so the false `inter_session_external_change`
+     * is reported at HIGH severity.
+     */
+    fun testAPasteInsideTheQuietWindowDefersTheRotation() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+        repeat(20) { c.onDocChange(typing("x")) } // armed, over the threshold
+        assertTrue(rotations.isEmpty())
+
+        // The typing stops and the window all but elapses — then a paste lands.
+        clock.advance(7_330L)
+        c.onPaste(paste("some pasted block"))
+        clock.advance(1L) // the old window would now be open; the paste's is not
+        sched.tick(7_331L)
+        assertTrue("a paste must re-close the quiet window", rotations.isEmpty())
+
+        // A full window after the PASTE, it fires.
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertEquals(listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * An `fs.external_change` re-closes the quiet window.
+     *
+     * A formatter-on-save or a `git checkout` is a whole-file rewrite, so losing it at the seam is
+     * the same false finding as a lost keystroke and a larger one. Quieting only the keyboard
+     * would leave unguarded precisely the event class the flag is named after.
+     */
+    fun testAnExternalChangeInsideTheQuietWindowDefersTheRotation() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue(rotations.isEmpty())
+
+        clock.advance(7_330L)
+        // Through `append`, which is the production path: the per-session
+        // ExternalChangeCoordinator emits fs.external_change through exactly this seam.
+        c.append("fs.external_change", externalChange())
+        clock.advance(1L)
+        sched.tick(7_331L)
+        assertTrue("an external write must re-close the quiet window", rotations.isEmpty())
+
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertEquals(listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * The gate's kind set, pinned — including the exclusions, which are the load-bearing half.
+     *
+     * `session.heartbeat` in particular must NOT be in it: heartbeats fire on a timer whether or
+     * not the student is present, so admitting one would mean an idle session never reaches a quiet
+     * window at all — silently making the hard ceiling the only rotation path there is.
+     *
+     * And all three included kinds must be on the CAPTURE FLOOR. If a course policy could suppress
+     * one, that policy setting would quietly re-narrow the gate and reintroduce the false-accusation
+     * path — a privacy knob must never be able to manufacture an accusation.
+     */
+    fun testTheContentMutatingKindSetIsExactlyTheThreeAndAllAreOnTheCaptureFloor() {
+        assertEquals(
+            setOf("doc.change", "paste", "fs.external_change"),
+            RecordingSessionController.CONTENT_MUTATING_KINDS,
+        )
+        for (kind in RecordingSessionController.CONTENT_MUTATING_KINDS) {
+            assertTrue(
+                "$kind must be on the capture floor, or a policy could re-narrow the idle gate",
+                kind in dev.provenance.core.FLOOR_EVENT_KINDS,
+            )
+        }
+        for (kind in listOf("session.heartbeat", "doc.save", "doc.open", "selection.change", "git.event")) {
+            assertFalse(
+                "$kind must not quiet the gate — see CONTENT_MUTATING_KINDS",
+                kind in RecordingSessionController.CONTENT_MUTATING_KINDS,
+            )
+        }
     }
 
     /** The idle gate and the hard ceiling, as the design fixes them (§3.3). */

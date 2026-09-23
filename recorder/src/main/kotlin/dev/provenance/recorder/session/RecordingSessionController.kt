@@ -139,7 +139,8 @@ class RecordingSessionController(
     private val maxSlogBytes: Long = ROTATE_AT_BYTES,
     /**
      * SIZE ROTATION — THE IDLE GATE (design §3.3). Once [maxSlogBytes] is crossed the rotation is
-     * ARMED, and it only fires after this many milliseconds with no `doc.change`.
+     * ARMED, and it only fires after this many milliseconds with no CONTENT-MUTATING event
+     * ([CONTENT_MUTATING_KINDS]: `doc.change`, `paste`, `fs.external_change`).
      *
      * This is not a politeness knob; it is what keeps the recorder from accusing the student.
      * End-then-start means any keystroke landing inside the predecessor's teardown window is
@@ -147,8 +148,9 @@ class RecordingSessionController(
      * RECONSTRUCTION FROM A'S EVENT STREAM against B's first `doc.open.content`, which is a LIVE
      * BUFFER READ, by exact string equality. So one lost character makes the two differ and the
      * heuristic reports, at confidence 0.85, that the student edited the file outside the
-     * recorder. Rotating only while nothing is being typed makes "nobody typed during teardown" a
-     * property of WHEN we rotate rather than a hope about how fast teardown is.
+     * recorder — and an external write dropped the same way is a whole-file divergence, reported
+     * at HIGH severity. Rotating only while the file is not changing makes "nothing changed during
+     * teardown" a property of WHEN we rotate rather than a hope about how fast teardown is.
      *
      * Overridable only so a test can reach a quiet window without waiting two real seconds.
      */
@@ -382,19 +384,26 @@ class RecordingSessionController(
     private val rotationGate = Any()
 
     /**
-     * SIZE ROTATION — THE IDLE GATE: monotonic time of the last `doc.change` this session
-     * recorded, or [Long.MIN_VALUE] if it has recorded none.
+     * SIZE ROTATION — THE IDLE GATE: monotonic time of the last CONTENT-MUTATING event this
+     * session recorded ([CONTENT_MUTATING_KINDS]), or [Long.MIN_VALUE] if it has recorded none.
      *
-     * Written on the hot path, and that is the whole cost of the gate: one volatile store of a
-     * value the caller already has. No clock is read per keystroke beyond the one [SessionHost]
-     * reads anyway for `t`, and the IDLE COMPARISON itself never happens here — it happens on the
-     * checkpoint cadence and on [idlePoll], both off the `doc.change` path (PRD §4.7, p99 < 1 ms).
+     * Content-mutating, not "typing". The heuristic this gate exists to defuse compares file
+     * CONTENT and does not care which event changed it, so quieting only the keyboard would leave
+     * the very event class the flag is named after unguarded. See [CONTENT_MUTATING_KINDS].
      *
-     * A session that has recorded no `doc.change` at all counts as quiet: there is no in-flight
-     * burst to lose an edit out of.
+     * Maintained in [record] — the single funnel every emitted event passes through, for the same
+     * reason the capture-policy gate lives there: a future wiring module cannot forget it. The
+     * whole per-event cost is a set membership test on an interned literal plus one volatile store
+     * of a value the caller already has, against an entry path that already does JCS
+     * canonicalization, SHA-256 and a buffered write — so the `doc.change` p99 < 1 ms budget
+     * (PRD §4.7) is not in play. The IDLE COMPARISON itself never happens here; it happens on the
+     * checkpoint cadence and on [idlePoll], both off the event path.
+     *
+     * A session that has recorded no content-mutating event at all counts as quiet: there is no
+     * in-flight change to lose an edit out of.
      */
     @Volatile
-    private var lastDocChangeAtMs: Long = Long.MIN_VALUE
+    private var lastContentChangeAtMs: Long = Long.MIN_VALUE
 
     /**
      * SIZE ROTATION — THE IDLE GATE: the armed rotation's quiet-window poll, or null.
@@ -749,10 +758,6 @@ class RecordingSessionController(
     override fun onDocOpen(payload: dev.provenance.core.DocOpenPayload) = record("doc.open", payload.toJsonObject())
 
     override fun onDocChange(payload: dev.provenance.core.DocChangePayload) {
-        // SIZE ROTATION — THE IDLE GATE (design §3.3). One volatile store per keystroke, and
-        // nothing else: the comparison against [rotateIdleQuietMs] happens on the checkpoint
-        // cadence and on the idle poll, never here. See [lastDocChangeAtMs].
-        lastDocChangeAtMs = clock.now()
         heartbeat.recordActivity()
         record("doc.change", payload.toJsonObject())
     }
@@ -852,7 +857,7 @@ class RecordingSessionController(
         // further entry ever trips the cadence.
         armIdlePoll()
 
-        val last = lastDocChangeAtMs
+        val last = lastContentChangeAtMs
         val quiet = last == Long.MIN_VALUE || clock.now() - last >= rotateIdleQuietMs
         // THE ONE LOSSY PATH, stated plainly: past the hard ceiling we rotate mid-burst, which can
         // drop a keystroke inside the teardown window and so can produce a false
@@ -898,6 +903,13 @@ class RecordingSessionController(
         synchronized(emitLock) {
             if (ended) return
             if (!isEventKindCaptured(kind, policy)) return
+            // SIZE ROTATION — THE IDLE GATE (design §3.3). Updated here, for the same reason the
+            // policy gate is here: this is the ONE funnel every emitted event passes through, so
+            // no present or future wiring module can change file content without the gate
+            // noticing. After the policy check, so the gate tracks what was actually RECORDED —
+            // though all three kinds are on the capture floor, so the two orders agree (there is a
+            // test pinning that).
+            if (kind in CONTENT_MUTATING_KINDS) lastContentChangeAtMs = clock.now()
             host.emit(kind, data)
         }
     }
@@ -1004,12 +1016,43 @@ class RecordingSessionController(
         const val ROTATE_AT_BYTES: Long = 40L * 1024 * 1024
 
         /**
-         * How long a session must have recorded no `doc.change` before an armed rotation fires
+         * How long a session must have recorded no content-mutating event before an armed
+         * rotation fires
          * (design §3.3). Students pause constantly, so in practice this costs nothing; what it
          * buys is an EMPTY SEAM, and an empty seam is what keeps a rotation from being read as
          * the student editing the file outside the recorder. See [rotateIdleQuietMs].
          */
         const val ROTATE_IDLE_QUIET_MS: Long = 2000
+
+        /**
+         * The events the idle gate treats as "the file just changed" (design §3.3).
+         *
+         * **Why these three.** The gate exists to keep a rotation seam empty, and the thing it is
+         * protecting against — `inter_session_external_change` — compares session A's
+         * RECONSTRUCTED content against session B's live `doc.open` buffer read, by exact string
+         * equality. It therefore does not care WHICH event changed the content:
+         *
+         *  - `doc.change` — typing, the obvious case;
+         *  - `paste` — a single-shot paste is its own event kind in this recorder, so a student who
+         *    pauses to read documentation (legitimately opening the gate) and then hits paste as
+         *    the rotation fires would have that paste dropped. A paste is large, so the resulting
+         *    divergence clears `highSeverityCharsChanged` and the false finding is reported at
+         *    HIGH severity;
+         *  - `fs.external_change` — a formatter-on-save or a `git checkout` is a whole-file
+         *    rewrite, i.e. the same false finding and worse. Quieting only the keyboard would leave
+         *    unguarded exactly the event class the flag is named after. These are rare, so
+         *    resetting on them costs nothing in practice.
+         *
+         * **Why NOT the others, and this matters more than it looks.** `session.heartbeat` fires on
+         * a timer whether or not the student is present, so admitting it would mean an idle session
+         * NEVER reaches a quiet window — which would silently make the hard ceiling the only
+         * rotation path there is, i.e. would convert the one lossy path from an exception into the
+         * rule. `doc.save` writes content that was already recorded by the `doc.change`s that
+         * produced it, and `doc.open` is a baseline READ, not a mutation; `selection.change`,
+         * `focus.change`, `git.event`, `terminal.*` and the `recorder.*` kinds do not touch file
+         * content at all. Adding a kind here is safe only if it can change a file's bytes.
+         */
+        val CONTENT_MUTATING_KINDS: Set<String> = setOf("doc.change", "paste", "fs.external_change")
 
         /**
          * The size at which a rotation stops waiting for a quiet window (design §3.3). A
