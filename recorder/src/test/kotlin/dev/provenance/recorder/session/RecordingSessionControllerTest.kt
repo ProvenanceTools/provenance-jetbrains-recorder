@@ -530,6 +530,68 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         assertEquals(true, rollingManifest(c)!!["final"]!!.jsonPrimitive.boolean)
     }
 
+    /**
+     * A doc.change racing an OFF-THREAD `endSession` must never append past the end of the log.
+     *
+     * Rotation is what makes this reachable: every other teardown is either on the EDT (the
+     * Disposer hook) or a rare manual action, whereas rotation ends the session from a pooled
+     * thread automatically — and the only way a log reaches 40 MiB is a student typing fast, so
+     * the two interleave maximally. The guard in `record` and the latch in `endSession` therefore
+     * share one lock. Without it an emitter can pass `if (ended) return`, block, and then append
+     * to a writer that has since been disposed: `writer.append` throws, `routeSessionEntry` feeds
+     * it to the DiskFullHandler, and the student gets a FALSE disk-full balloon on a healthy disk.
+     * Landing on the other side of the window is no better — the sealed log would carry an entry
+     * AFTER `session.end`.
+     *
+     * HONEST LIMIT ON THIS TEST: it asserts the invariant, and it is the only test that runs an
+     * emitter concurrently with an off-thread teardown at all — but it does NOT fail when the lock
+     * is removed. I checked: with the lock stripped and a `Thread.yield()` inserted between the
+     * guard and the emit, eight iterations x three runs all still passed, because the gap between
+     * `ended = true` and `writer.dispose()` is a long stretch of teardown work that an emitter
+     * almost always clears. The lock's value is that it makes the invariant a guarantee rather
+     * than a probability; this test's value is that it pins the invariant and would catch a
+     * coarser regression. Forcing the bad interleaving deterministically would need a test-only
+     * hook between the guard and the emit, which is production surface added for a test.
+     */
+    fun testAnEmitRacingAnOffThreadEndSessionNeverAppendsPastTheEnd() {
+        repeat(8) {
+            val c = controller()
+            val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+            val emitting = java.util.concurrent.CountDownLatch(1)
+            val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+            val typist = Thread {
+                while (!stop.get()) {
+                    try {
+                        c.onDocChange(typing("x"))
+                    } catch (t: Throwable) {
+                        thrown.add(t)
+                    }
+                    emitting.countDown()
+                }
+            }
+            typist.start()
+            try {
+                // No sleep: wait until the other thread is demonstrably emitting, so the end
+                // genuinely overlaps it, then end from THIS thread as a rotation would.
+                assertTrue(emitting.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                c.endSession("rotate")
+            } finally {
+                stop.set(true)
+                typist.join(10_000)
+            }
+
+            assertTrue("an emit must never throw out of the sink: $thrown", thrown.isEmpty())
+            val entries = readEntries(c)
+            assertEquals("session.end must be the LAST entry", "session.end", entries.last().kind)
+            assertFalse(
+                "a healthy disk must not be reported degraded by the teardown race",
+                entries.any { it.kind == "recorder.degraded" },
+            )
+            assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+            provDir.toFile().deleteRecursively()
+        }
+    }
+
     private companion object {
         /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */
         private const val EXT_HASH = "1111111111111111111111111111111111111111111111111111111111111111"

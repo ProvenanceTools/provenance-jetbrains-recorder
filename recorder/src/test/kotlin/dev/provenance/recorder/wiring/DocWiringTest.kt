@@ -322,6 +322,59 @@ class DocWiringTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * NESTED roots, which is where a plain `startsWith(root)` prefix test is actively harmful.
+     *
+     * Ownership is nearest-enclosing, so with outer root `/ws` rotating while inner root
+     * `/ws/inner` is still recording, forgetting everything under `/ws` would also drop
+     * `/ws/inner/hw.py` — and the next catch-up would emit a fresh `doc.open` into the INNER
+     * session's LIVE log. That is a fabricated second baseline mid-stream, in a log that is
+     * evidence. The sibling-roots test above passes either way, because siblings are not
+     * prefixes of one another, so this case needs its own test.
+     */
+    fun testForgetRootLeavesANestedLiveSessionsBaselineAlone() {
+        val innerRoot = workspaceRoot.resolve("inner")
+        val vfOuter = myFixture.addFileToProject("hw.py", "print('outer')\n").virtualFile
+        val vfInner = myFixture.addFileToProject("inner/hw.py", "print('inner')\n").virtualFile
+        FileEditorManager.getInstance(project).openFile(vfOuter, false)
+        FileEditorManager.getInstance(project).openFile(vfInner, false)
+
+        val sinkOuter = fakeSink()
+        val opensInner = mutableListOf<DocOpenPayload>()
+        val sinkInner = FakeSink(innerRoot, null, opensInner, mutableListOf(), mutableListOf(), mutableListOf())
+        // The outer session goes away during its own rotation (end-then-start), then comes back.
+        var outerLive = true
+        val wiring = DocWiring(
+            project = project,
+            router = SessionRouter { path ->
+                when {
+                    // Nearest-enclosing: the inner root wins for anything beneath it.
+                    path.startsWith(innerRoot) -> sinkInner
+                    outerLive && path.startsWith(workspaceRoot) -> sinkOuter
+                    else -> null
+                }
+            },
+            parentDisposable = testRootDisposable,
+            localFsOf = { true },
+            nioPathOf = { vf -> if (vf == vfInner) innerRoot.resolve("hw.py") else workspaceRoot.resolve("hw.py") },
+        )
+        assertEquals(1, opens.size)
+        assertEquals(1, opensInner.size)
+
+        outerLive = false // the rotated session is stopped before forgetRoot runs
+        wiring.forgetRoot(workspaceRoot)
+        outerLive = true // its successor is live
+        wiring.catchUpOpenFiles()
+
+        assertEquals("the rotated outer root's own baseline must be re-emitted", 2, opens.size)
+        assertEquals("print('outer')\n", opens[1].content)
+        assertEquals(
+            "a nested root that is still recording must NOT get a fabricated second baseline",
+            1,
+            opensInner.size,
+        )
+    }
+
     // -----------------------------------------------------------------------------------
     // Tab-less documents (Replace in Files, rename refactor, reformat-on-directory, codegen)
     //

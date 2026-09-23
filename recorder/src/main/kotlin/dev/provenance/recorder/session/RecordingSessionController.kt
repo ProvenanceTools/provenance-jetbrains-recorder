@@ -303,6 +303,33 @@ class RecordingSessionController(
      * capability with no `policy.capture` key, so there is nothing to gate it on.
      */
     private val peerWatcher: PeerWatcher
+
+    /**
+     * Serializes the `ended` CHECK-AND-EMIT in [record] against the `ended` LATCH-AND-EMIT in
+     * [endSession], so a session cannot be ended between an emitter's guard and its append.
+     *
+     * Size rotation is why this is needed now. Every other teardown either runs on the EDT (the
+     * Disposer hook) or is a rare manual action (`restartSessions`), whereas rotation calls
+     * `endSession` from a POOLED thread automatically — and the only way a log reaches 40 MiB is
+     * a student typing fast, so the two are maximally likely to interleave. Without this lock a
+     * doc.change could pass `if (ended) return`, block, and then append to a writer that has
+     * since been disposed: `writer.append` throws IllegalStateException, `routeSessionEntry`
+     * routes it to [DiskFullHandler.handleWriteError], and the student gets a FALSE disk-full
+     * balloon and a degraded session. Landing on the other side of the window is no better — the
+     * sealed log would carry an entry after `session.end`, i.e. a chain-order artifact in
+     * evidence.
+     *
+     * Always taken BEFORE [SessionHost]'s own lock, never the reverse, so the two cannot
+     * deadlock; a JVM monitor is re-entrant, so the disk-full handler's `recorder.degraded`
+     * re-entry from inside `onEntry` still works. It is deliberately NOT held across [endSession]'s
+     * teardown (the checkpoint drain, the writer/meta close, the final seal): once `ended` is
+     * latched and `session.end` emitted inside the lock, no further entry can reach the writer,
+     * so holding it longer would only stall the EDT for the drain's duration.
+     */
+    private val emitLock = Any()
+
+    /** Read and written under [emitLock]; @Volatile so the teardown path's own reads are safe. */
+    @Volatile
     private var ended = false
 
     /**
@@ -731,9 +758,13 @@ class RecordingSessionController(
      * and is untouched by any of this.)
      */
     private fun record(kind: String, data: kotlinx.serialization.json.JsonObject) {
-        if (ended) return
-        if (!isEventKindCaptured(kind, policy)) return
-        host.emit(kind, data)
+        // The guard and the emit are ONE critical section — see [emitLock]. Testing `ended` and
+        // then emitting non-atomically let an entry reach a disposed writer.
+        synchronized(emitLock) {
+            if (ended) return
+            if (!isEventKindCaptured(kind, policy)) return
+            host.emit(kind, data)
+        }
     }
 
     /**
@@ -758,7 +789,21 @@ class RecordingSessionController(
         // while `record` still emits. drain() never throws.
         peerWatcher.drain()
 
-        ended = true
+        // THE LATCH, under the same lock [record]'s guard-and-emit takes — see [emitLock]. An
+        // emitter that already holds it finishes its append first; one that arrives after sees
+        // `ended` and drops. So by the time this block returns, no further entry can reach the
+        // writer, which is what makes the teardown below (and `session.end` being the last entry)
+        // safe without holding the lock across either — holding it longer would only stall
+        // whichever thread is typing for the duration of the checkpoint drain and the final seal.
+        //
+        // The `ended` re-check inside is not redundant with the one above: two threads can reach
+        // here at once now that rotation ends a session off the EDT while the Disposer hook may
+        // end the same one on it, and a double `session.end` would be an entry after the log's
+        // own end.
+        synchronized(emitLock) {
+            if (ended) return
+            ended = true
+        }
         try {
             host.emit("session.end", SessionEndPayload(reason).toJsonObject())
         } finally {

@@ -55,7 +55,28 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
 
     override fun tearDown() {
         try {
-            runCatching { project.service<RecorderSessionManager>().stop() }
+            val m = runCatching { project.service<RecorderSessionManager>() }.getOrNull()
+            // 1. Let any in-flight rotation finish BEFORE stopping. A rotation runs on a pooled
+            //    thread; stopping underneath one is handled in production (see
+            //    RecorderSessionManager.rotationsAbandoned), but waiting here keeps teardown
+            //    deterministic instead of relying on that undo path. waitForFuture pumps the EDT
+            //    queue, which the rotation's own EDT hops need.
+            for (root in listOf(wsRoot, wsRoot2)) {
+                m?.rotationInFlight(root)?.let {
+                    runCatching { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
+                }
+            }
+            runCatching { m?.stop() }
+            // 2. Clear the @TestOnly seams. They live on a PROJECT-SCOPED service, and the light
+            //    fixture's project outlives this test class — so a closure left here captures
+            //    THIS (now dead) instance's lateinit `wsRoot`, and the next class whose session
+            //    start reconstructs DocWiring gets it. That listener is application-wide, so the
+            //    first document edit anywhere afterwards throws
+            //    "lateinit property wsRoot has not been initialized" and cascades through every
+            //    remaining wiring test. Nothing ever cleared these.
+            m?.localFsOfOverride = null
+            m?.nioPathOfOverride = null
+            m?.extensionHashOverride = null
             // The restart tests drive the REAL startFromActivation, which records an identity
             // outcome (and, on the failure path, a degraded mark) into RecorderState. That
             // service hangs off the shared light-fixture project, so leaving it populated leaks
@@ -636,6 +657,73 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             "B's live log must NOT get a second baseline mid-stream",
             bOpensBefore,
             kinds(b).count { it == "doc.open" },
+        )
+    }
+
+    /**
+     * A rotation whose successor cannot start must DEGRADE LOUDLY, exactly as a failed restart
+     * does — not just log a warning.
+     *
+     * By the time a swap can fail the old session is already ended and sealed, so the root is
+     * recording nothing. Unmarked, the widget would keep rendering the ordinary "recording"
+     * indicator while the student worked unrecorded: the active-but-silent failure the degraded
+     * marking exists to make impossible.
+     *
+     * The failure is injected the way it would really happen (a `git checkout` or a stray file
+     * leaving `.provenance` unusable): the session under test writes to a different provenance
+     * directory, and `<root>/.provenance` — the path `startFromActivation` resolves for the
+     * successor — is occupied by a regular FILE, so the successor's `createDirectories` throws.
+     */
+    fun testARotationThatCannotStartItsSuccessorMarksTheRootDegraded() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        val usableProvDir = wsRoot.resolve("prov-elsewhere")
+        Files.createDirectories(usableProvDir)
+        Files.write(wsRoot.resolve(".provenance"), byteArrayOf())
+
+        val old = start(m, provDir = usableProvDir, maxSlogBytes = 1L)
+        driveToCheckpoint(old)
+        awaitRotation(m, wsRoot)
+
+        assertNull("the failed swap must leave no session for the root", m.activeSessions[wsRoot])
+        assertTrue(
+            "a root that stopped recording must render as degraded, never as recording",
+            project.service<dev.provenance.recorder.activation.RecorderState>().isDegraded(wsRoot),
+        )
+        // And the old log is still a clean, valid, rotate-reasoned end — the failure is the
+        // successor's, and it must not corrupt the evidence already written.
+        val oldEntries = entriesOfFile(old.controller.slogPath)
+        assertEquals("session.end", oldEntries.last().kind)
+        assertEquals("rotate", oldEntries.last().data["reason"]!!.jsonPrimitive.content)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(oldEntries))
+    }
+
+    /**
+     * A `stop()` that lands while a rotation is in flight must WIN. The rotation runs on a pooled
+     * thread that no Disposable owns, so it is the one thing here that can put a session back into
+     * a registry the caller just emptied — and the successor's registration re-creates the
+     * project-scoped [DocWiring], whose document listener is application-wide. In production that
+     * listener would keep recording into a session the rest of the system has forgotten; in the
+     * test JVM it leaked across test classes and failed 61 tests in six later classes with
+     * "lateinit property wsRoot has not been initialized".
+     *
+     * This drives the real race — request the rotation, then stop WITHOUT awaiting it — so the
+     * assertion has to hold for every interleaving, not one lucky one.
+     */
+    fun testAStopDuringAnInFlightRotationLeavesNothingBehind() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+        val session = start(m, maxSlogBytes = 1L)
+
+        driveToCheckpoint(session)
+        m.stop() // racing the pooled swap, deliberately un-awaited
+        m.rotationInFlight(wsRoot)?.let { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
+
+        assertTrue("a stop must win over an in-flight rotation", m.activeSessions.isEmpty())
+        assertNull(
+            "the project-scoped wiring must be torn down, not left live by a late successor",
+            project.service<RecorderPasteState>().resolveCorrelator,
         )
     }
 

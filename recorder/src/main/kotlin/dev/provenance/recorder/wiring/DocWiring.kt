@@ -82,16 +82,34 @@ class DocWiring(
      * `doc.open` baseline for at all, i.e. a reconstruction with no starting content, which the
      * analyzer treats as indeterminate rather than invalid and so fails silently.
      *
-     * Only [root]'s entries are dropped: another concurrently-recording root's files keep their
-     * baselines, because their sessions are untouched and re-emitting a `doc.open` into a live
-     * log would fabricate a second baseline mid-stream.
+     * Only the paths [root] actually OWNED are dropped, which is not the same as every path under
+     * it — ownership here is nearest-enclosing ([SessionRouter.sinkFor]), and nested assignment
+     * roots are a shipped feature. With an outer root rotating while an inner root beneath it is
+     * still recording, a plain `startsWith(root)` prefix test would also forget the inner root's
+     * files, and the next [catchUpOpenFiles] would emit a fresh `doc.open` into the INNER
+     * session's LIVE log — a fabricated second baseline mid-stream, which is precisely the
+     * artifact this method's dedup set exists to prevent and the kind of thing an analyzer can
+     * read as evidence. So a path is forgotten only when its resolved owner is not a session
+     * nested strictly beneath [root].
+     *
+     * A path whose owner resolves to null, or to a root at-or-above [root], IS forgotten: by the
+     * time rotation calls this the rotated session has already been stopped (end-then-start), so
+     * "no owner" and "an enclosing root owns it now" are both spellings of "[root] is the one that
+     * had this baseline".
      *
      * On the EDT, like every other mutation of [seenPaths] (the two listeners run inside write
      * actions; [catchUpOpenFiles] hops deliberately) — the caller is a pooled rotation thread.
      */
     fun forgetRoot(root: Path) = runOnEdtAndWait {
         val normalized = root.normalize()
-        seenPaths.removeIf { it.normalize().startsWith(normalized) }
+        seenPaths.removeIf { path ->
+            val p = path.normalize()
+            if (!p.startsWith(normalized)) return@removeIf false
+            val owner = router.sinkFor(p)?.workspaceRoot?.normalize()
+            // Keep it only for a session nested STRICTLY beneath the rotated root — that session
+            // is untouched by this rotation and its baseline is still live.
+            owner == null || owner == normalized || !owner.startsWith(normalized)
+        }
     }
 
     /** One completed editor save, triaged on the EDT and carried to [vfsDispatch]. */
