@@ -9,12 +9,14 @@ import dev.provenance.core.Manifest
 import dev.provenance.core.ParseResult
 import dev.provenance.core.TerminalOpenPayload
 import dev.provenance.core.parseEntries
+import dev.provenance.core.toJsonObject
 import dev.provenance.recorder.io.FlushScheduler
 import dev.provenance.recorder.startup.RecoveryDecision
 import dev.provenance.recorder.wiring.RecorderGitState
 import dev.provenance.recorder.wiring.RecorderTerminalState
 import dev.provenance.recorder.wiring.paste.RecorderPasteState
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ScheduledFuture
@@ -53,7 +55,29 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
 
     override fun tearDown() {
         try {
-            runCatching { project.service<RecorderSessionManager>().stop() }
+            val m = runCatching { project.service<RecorderSessionManager>() }.getOrNull()
+            // 1. Let any in-flight rotation finish BEFORE stopping. A rotation runs on a pooled
+            //    thread; stopping underneath one is handled in production (see
+            //    RecorderSessionManager.rotationsAbandoned), but waiting here keeps teardown
+            //    deterministic instead of relying on that undo path. waitForFuture pumps the EDT
+            //    queue, which the rotation's own EDT hops need.
+            for (root in listOf(wsRoot, wsRoot2)) {
+                m?.rotationInFlight(root)?.let {
+                    runCatching { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
+                }
+            }
+            runCatching { m?.stop() }
+            // 2. Clear the @TestOnly seams. They live on a PROJECT-SCOPED service, and the light
+            //    fixture's project outlives this test class — so a closure left here captures
+            //    THIS (now dead) instance's lateinit `wsRoot`, and the next class whose session
+            //    start reconstructs DocWiring gets it. That listener is application-wide, so the
+            //    first document edit anywhere afterwards throws
+            //    "lateinit property wsRoot has not been initialized" and cascades through every
+            //    remaining wiring test. Nothing ever cleared these.
+            m?.localFsOfOverride = null
+            m?.nioPathOfOverride = null
+            m?.extensionHashOverride = null
+            m?.recoveryForTest = null
             // The restart tests drive the REAL startFromActivation, which records an identity
             // outcome (and, on the failure path, a degraded mark) into RecorderState. That
             // service hangs off the shared light-fixture project, so leaving it populated leaks
@@ -78,7 +102,13 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
         m.nioPathOfOverride = { vf -> if (vf.name == "hw.py") wsRoot.resolve(vf.name) else wsRoot2.resolve(vf.name) }
     }
 
-    private fun start(m: RecorderSessionManager, root: Path = wsRoot, provDir: Path = this.provDir, assignmentId: String = "hw03"): RecorderSessionManager.ActiveSession =
+    private fun start(
+        m: RecorderSessionManager,
+        root: Path = wsRoot,
+        provDir: Path = this.provDir,
+        assignmentId: String = "hw03",
+        maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
+    ): RecorderSessionManager.ActiveSession =
         m.start(
             activated = ActivatedWorkspace(manifest(assignmentId, root), provDir, root),
             recovery = RecoveryDecision.CleanStart,
@@ -88,6 +118,7 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
             recorderExtensionId = "com.aaryanmehta.provenance.recorder",
             clock = FixedClock(0),
             scheduler = NoopScheduler(),
+            maxSlogBytes = maxSlogBytes,
         )
 
     private fun kinds(session: RecorderSessionManager.ActiveSession): List<String> {
@@ -503,6 +534,270 @@ class RecorderSessionManagerTest : BasePlatformTestCase() {
     fun testSealWithNoActiveSessionReturnsNoSessions() {
         val m = manager()
         assertTrue(m.sealActiveSession() is dev.provenance.recorder.commands.SealResult.NoSessions)
+    }
+
+    // -------------------------------------------------------------------------------------
+    // SIZE ROTATION (recorder PRD §4.6)
+    //
+    // A `submission: "git"` assignment commits `.provenance/` to a GitHub repo, and GitHub
+    // refuses a push containing a file over 100 MB. So a session whose `.slog` passes the
+    // threshold is ended through the ORDINARY teardown path (session.end{reason:"rotate"}, final
+    // seal) and immediately succeeded by a fresh session in the same scope, chained to it by
+    // `prev_session_id`. Neither log is a format change: same version, same kinds, same chain.
+    // -------------------------------------------------------------------------------------
+
+    /** Drives entries until the checkpoint cadence fires: session.start + 99 = 100. */
+    private fun driveToCheckpoint(session: RecorderSessionManager.ActiveSession) {
+        repeat(CheckpointCadence.DEFAULT_INTERVAL - 1) {
+            session.controller.append(
+                "git.event",
+                GitEventPayload(operation = "state_change", commitSha = "deadbeef").toJsonObject(),
+            )
+        }
+    }
+
+    private fun awaitRotation(m: RecorderSessionManager, root: Path) {
+        val inFlight = m.rotationInFlight(root)
+        assertNotNull("the controller must have requested a rotation", inFlight)
+        // waitForFuture pumps the EDT queue while waiting — the swap's own EDT hops (registry
+        // insert, doc.open catch-up) need it, since this test thread IS the EDT.
+        com.intellij.testFramework.PlatformTestUtil.waitForFuture(inFlight!!, 60_000)
+    }
+
+    fun testASessionOverTheThresholdIsRotatedIntoALinkedSuccessor() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+        // A file already open under the root, so the successor has a baseline to re-emit.
+        val file = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        myFixture.openFileInEditor(file)
+
+        val old = start(m, maxSlogBytes = 1L)
+        val oldId = old.controller.sessionId
+        val oldSlog = old.controller.slogPath
+
+        driveToCheckpoint(old)
+        awaitRotation(m, wsRoot)
+
+        // 1. The old log ended cleanly, with the rotation reason, and validates.
+        val oldEntries = entriesOfFile(oldSlog)
+        assertEquals("session.start", oldEntries.first().kind)
+        assertEquals("a rotated session must end, not be truncated", "session.end", oldEntries.last().kind)
+        assertEquals(
+            "rotate",
+            oldEntries.last().data["reason"]!!.jsonPrimitive.content,
+        )
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(oldEntries))
+
+        // 2. A successor is live for the same root, with its own log.
+        val fresh = m.activeSessions[wsRoot]
+        assertNotNull("the root must keep recording after a rotation", fresh)
+        assertNotSame(old.controller, fresh!!.controller)
+        assertNotSame(oldSlog, fresh.controller.slogPath)
+
+        // 3. It names its predecessor — the ended session's LOGICAL session_id.
+        fresh.controller.flush()
+        val freshEntries = entriesOfFile(fresh.controller.slogPath)
+        assertEquals("session.start", freshEntries.first().kind)
+        assertEquals(
+            "the successor must be chained to the session that just ended",
+            oldId,
+            freshEntries.first().data["prev_session_id"]!!.jsonPrimitive.content,
+        )
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(freshEntries))
+
+        // 4. A clean rotation is NOT reported as a crash recovery.
+        assertTrue(
+            "a cleanly rotated predecessor must not be quarantined or reported corrupt",
+            freshEntries.none { it.kind == "recorder.recovered_from_corruption" },
+        )
+
+        // 5. And the successor carries its own doc.open baseline — the whole point of
+        //    DocWiring.forgetRoot, since that wiring is project-scoped and outlives a session.
+        assertTrue(
+            "the successor must re-emit the open file's doc.open baseline",
+            freshEntries.any { it.kind == "doc.open" },
+        )
+    }
+
+    /** Rotating one root must not disturb another that is recording concurrently. */
+    fun testRotatingOneRootLeavesTheOtherSessionUntouched() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+        // Both roots have a file open, so the project-scoped DocWiring's seenPaths holds entries
+        // for both — and B's live session must keep its entry while A's is forgotten.
+        val fileA = myFixture.addFileToProject("hw.py", "print(1)\n").virtualFile
+        val fileB = myFixture.addFileToProject("hog.py", "print(2)\n").virtualFile
+        myFixture.openFileInEditor(fileA)
+        myFixture.openFileInEditor(fileB)
+
+        val a = start(m, root = wsRoot, provDir = provDir, assignmentId = "cats", maxSlogBytes = 1L)
+        val b = start(m, root = wsRoot2, provDir = provDir2, assignmentId = "hog")
+        val bSlog = b.controller.slogPath
+        val bOpensBefore = kinds(b).count { it == "doc.open" }
+
+        driveToCheckpoint(a)
+        awaitRotation(m, wsRoot)
+
+        assertNotSame("A must have been replaced", a.controller, m.activeSessions[wsRoot]!!.controller)
+        assertSame("B must be the very same session", b.controller, m.activeSessions[wsRoot2]!!.controller)
+        assertEquals("B's log must not have been ended", bSlog, b.controller.slogPath)
+        assertFalse("B must not have been ended", kinds(b).contains("session.end"))
+
+        // The forgetRoot case that only shows up with another root still recording: the wiring
+        // (and its dedup set) survives the rotation, so without forgetRoot A's successor would
+        // get NO doc.open baseline at all.
+        val successor = m.activeSessions[wsRoot]!!
+        successor.controller.flush()
+        assertTrue(
+            "A's successor must re-emit its own doc.open baseline",
+            entriesOfFile(successor.controller.slogPath).any { it.kind == "doc.open" },
+        )
+        assertEquals(
+            "B's live log must NOT get a second baseline mid-stream",
+            bOpensBefore,
+            kinds(b).count { it == "doc.open" },
+        )
+    }
+
+    /**
+     * A rotation whose successor cannot start must DEGRADE LOUDLY, exactly as a failed restart
+     * does — not just log a warning.
+     *
+     * By the time a swap can fail the old session is already ended and sealed, so the root is
+     * recording nothing. Unmarked, the widget would keep rendering the ordinary "recording"
+     * indicator while the student worked unrecorded: the active-but-silent failure the degraded
+     * marking exists to make impossible.
+     *
+     * The failure is injected the way it would really happen (a `git checkout` or a stray file
+     * leaving `.provenance` unusable): the session under test writes to a different provenance
+     * directory, and `<root>/.provenance` — the path `startFromActivation` resolves for the
+     * successor — is occupied by a regular FILE, so the successor's `createDirectories` throws.
+     */
+    fun testARotationThatCannotStartItsSuccessorMarksTheRootDegraded() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        val usableProvDir = wsRoot.resolve("prov-elsewhere")
+        Files.createDirectories(usableProvDir)
+        Files.write(wsRoot.resolve(".provenance"), byteArrayOf())
+
+        val old = start(m, provDir = usableProvDir, maxSlogBytes = 1L)
+        driveToCheckpoint(old)
+        awaitRotation(m, wsRoot)
+
+        assertNull("the failed swap must leave no session for the root", m.activeSessions[wsRoot])
+        assertTrue(
+            "a root that stopped recording must render as degraded, never as recording",
+            project.service<dev.provenance.recorder.activation.RecorderState>().isDegraded(wsRoot),
+        )
+        // And the old log is still a clean, valid, rotate-reasoned end — the failure is the
+        // successor's, and it must not corrupt the evidence already written.
+        val oldEntries = entriesOfFile(old.controller.slogPath)
+        assertEquals("session.end", oldEntries.last().kind)
+        assertEquals("rotate", oldEntries.last().data["reason"]!!.jsonPrimitive.content)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(oldEntries))
+    }
+
+    /**
+     * A `stop()` that lands while a rotation is in flight must WIN. The rotation runs on a pooled
+     * thread that no Disposable owns, so it is the one thing here that can put a session back into
+     * a registry the caller just emptied — and the successor's registration re-creates the
+     * project-scoped [DocWiring], whose document listener is application-wide. In production that
+     * listener would keep recording into a session the rest of the system has forgotten; in the
+     * test JVM it leaked across test classes and failed 61 tests in six later classes with
+     * "lateinit property wsRoot has not been initialized".
+     *
+     * This drives the real race — request the rotation, then stop WITHOUT awaiting it — so the
+     * assertion has to hold for every interleaving, not one lucky one. Repeated, because the
+     * interleaving that actually leaks (the swap already past its own teardown when the stop lands)
+     * is a narrow window and one attempt rarely lands in it.
+     */
+    fun testAStopDuringAnInFlightRotationLeavesNothingBehind() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+
+        repeat(10) { attempt ->
+            val session = start(m, maxSlogBytes = 1L)
+            driveToCheckpoint(session)
+            m.stop() // racing the pooled swap, deliberately un-awaited
+            m.rotationInFlight(wsRoot)?.let { com.intellij.testFramework.PlatformTestUtil.waitForFuture(it, 60_000) }
+
+            assertTrue("attempt $attempt: a stop must win over an in-flight rotation", m.activeSessions.isEmpty())
+            assertNull(
+                "attempt $attempt: the project-scoped wiring must be torn down, not left live by a late successor",
+                project.service<RecorderPasteState>().resolveCorrelator,
+            )
+            provDir.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * A ROTATION MUST NOT RUN CHAIN RECOVERY (design §3.3), and the proof is by construction:
+     * the recovery seam is replaced with one that counts its invocations, and the count must be
+     * zero.
+     *
+     * Why it matters, and why it is not a micro-optimisation: recovery reads, parses and
+     * `validateChain`s the predecessor's ENTIRE log — at the real threshold, 40 MiB and ~150k
+     * entries of JCS canonicalization and SHA-256 — and it does so after the old session's
+     * document wiring is detached and before the new one's is attached. Every keystroke in that
+     * window is dropped, and the analyzer compares session A's reconstructed content against
+     * session B's live `doc.open` buffer read by exact string equality, so a dropped keystroke is
+     * reported as the student having edited the file outside the recorder. Recovery is also the
+     * one thing here it buys nothing: the successor is handed its predecessor's id directly, and
+     * a cleanly-ended predecessor is not dangling, so recovery would find no link to contribute.
+     *
+     * The seam counts rather than calling `fail()` because an AssertionError thrown on the pooled
+     * rotation thread would be caught by `launchRotation`'s `catch (t: Throwable)` and reported as
+     * a degraded root — a confusing failure for the real cause. Counting keeps the diagnosis exact.
+     */
+    fun testARotationDoesNotRunChainRecoveryForItsSuccessor() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        installFsSeams(m)
+        val recoveryCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        m.recoveryForTest = {
+            recoveryCalls.incrementAndGet()
+            RecoveryDecision.CleanStart
+        }
+
+        val old = start(m, maxSlogBytes = 1L)
+        val oldId = old.controller.sessionId
+        driveToCheckpoint(old)
+        awaitRotation(m, wsRoot)
+
+        val fresh = m.activeSessions[wsRoot]
+        assertNotNull("the successor must have started", fresh)
+        assertEquals("a rotation must not run chain recovery", 0, recoveryCalls.get())
+        // And skipping it costs nothing: the link the successor needs came from the rotation, not
+        // from recovery.
+        fresh!!.controller.flush()
+        val freshEntries = entriesOfFile(fresh.controller.slogPath)
+        assertEquals(
+            oldId,
+            freshEntries.first().data["prev_session_id"]!!.jsonPrimitive.content,
+        )
+    }
+
+    /** A rotation whose root was stopped in the meantime must not end an innocent successor. */
+    fun testAStaleRotationRequestIsIgnored() {
+        val m = manager()
+        m.extensionHashOverride = { EXT_HASH }
+        val current = start(m)
+        runBlocking { m.rotate(wsRoot, expectedSessionId = "some-other-session") }
+        assertSame("a stale request must not touch the live session", current.controller, m.activeSessions[wsRoot]!!.controller)
+        assertFalse(kinds(current).contains("session.end"))
+    }
+
+    private fun entriesOfFile(slog: Path): List<dev.provenance.core.HashedEnvelope> {
+        val text = String(Files.readAllBytes(slog), Charsets.UTF_8)
+        return (parseEntries(text) as ParseResult.Ok).entries
+    }
+
+    private companion object {
+        /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */
+        private const val EXT_HASH = "2222222222222222222222222222222222222222222222222222222222222222"
     }
 
     fun testNestedRootRoutesToTheInnerSessionNotTheOuter() {

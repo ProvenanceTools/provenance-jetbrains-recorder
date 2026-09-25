@@ -67,6 +67,20 @@ class SessionWriter private constructor(
     private val writeLock = Object()
     private var buffer = StringBuilder()
     private var bufferedBytes = 0
+
+    /**
+     * Total bytes appended over this writer's lifetime. Unlike [bufferedBytes] a flush never
+     * resets it, so once everything is flushed it equals the `.slog`'s size on disk. Size
+     * rotation (recorder PRD §4.6) reads it at the checkpoint cadence; the hot path pays one
+     * addition.
+     *
+     * @Volatile because the reader is whichever thread trips the checkpoint cadence, which is
+     * not necessarily the thread that last appended.
+     */
+    @Volatile
+    var bytesAppended: Long = 0L
+        private set
+
     private var lastFlushAtMs = clock.now()
 
     @Volatile
@@ -109,7 +123,9 @@ class SessionWriter private constructor(
         val doInlineFlush: Boolean
         synchronized(writeLock) {
             buffer.append(line)
-            bufferedBytes += line.toByteArray(StandardCharsets.UTF_8).size
+            val lineBytes = line.toByteArray(StandardCharsets.UTF_8).size
+            bufferedBytes += lineBytes
+            bytesAppended += lineBytes
             doInlineFlush = shouldFlush(BufferPolicyInput(bufferedBytes, lastFlushAtMs, clock.now()), bufferPolicy)
         }
         if (doInlineFlush) flush()

@@ -32,6 +32,44 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
             }
     }
 
+    /**
+     * A scheduler that keeps every task it is handed instead of running it, so a test can fire a
+     * specific periodic task by its period. The rotation idle poll (§3.3) is the only task here
+     * whose period a test chooses, so filtering by period identifies it unambiguously — and
+     * running captured tasks blindly would also tick the heartbeat, the clock-skew watcher and the
+     * paste ticker, which have nothing to do with rotation.
+     */
+    private class CapturingScheduler : FlushScheduler {
+        val tasks = mutableListOf<Pair<Long, Runnable>>()
+        val cancelled = mutableSetOf<Long>()
+
+        override fun scheduleAtFixedRate(periodMs: Long, task: Runnable): ScheduledFuture<*> {
+            tasks.add(periodMs to task)
+            return object : ScheduledFuture<Any?> {
+                override fun cancel(m: Boolean): Boolean {
+                    cancelled.add(periodMs)
+                    return true
+                }
+
+                override fun isCancelled() = periodMs in cancelled
+                override fun isDone() = periodMs in cancelled
+                override fun get(): Any? = null
+                override fun get(t: Long, u: java.util.concurrent.TimeUnit): Any? = null
+                override fun getDelay(u: java.util.concurrent.TimeUnit) = 0L
+                override fun compareTo(o: java.util.concurrent.Delayed?) = 0
+            }
+        }
+
+        /** Run every task registered with [periodMs]; there must be exactly one. */
+        fun tick(periodMs: Long) {
+            val matching = tasks.filter { it.first == periodMs }
+            if (matching.size != 1) throw AssertionError("expected exactly one task at ${periodMs}ms, got ${matching.size}")
+            matching.single().second.run()
+        }
+
+        fun hasTaskAt(periodMs: Long) = tasks.any { it.first == periodMs }
+    }
+
     private lateinit var wsRoot: Path
     private lateinit var provDir: Path
 
@@ -57,6 +95,13 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
             dev.provenance.recorder.identity.FakeSecretStore(),
         checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
         computeExtensionHash: () -> String = { EXT_HASH },
+        maxSlogBytes: Long = RecordingSessionController.ROTATE_AT_BYTES,
+        rotateIdleQuietMs: Long = RecordingSessionController.ROTATE_IDLE_QUIET_MS,
+        rotateHardCeilingBytes: Long = RecordingSessionController.ROTATE_HARD_CEILING_BYTES,
+        onRotationNeeded: ((String) -> Unit)? = null,
+        clock: FixedClock = FixedClock(0),
+        scheduler: FlushScheduler = NoopScheduler(),
+        degradedNotify: (String) -> Unit = { },
     ) = RecordingSessionController(
         activated = ActivatedWorkspace(m, provDir, wsRoot),
         project = project,
@@ -65,11 +110,16 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         recorderVersion = "0.1.0",
         recorderExtensionId = "com.aaryanmehta.provenance.recorder",
         parentDisposable = testRootDisposable,
-        clock = FixedClock(0),
-        scheduler = NoopScheduler(),
+        clock = clock,
+        scheduler = scheduler,
         secrets = secrets,
         checkpointInterval = checkpointInterval,
         computeExtensionHash = computeExtensionHash,
+        maxSlogBytes = maxSlogBytes,
+        rotateIdleQuietMs = rotateIdleQuietMs,
+        rotateHardCeilingBytes = rotateHardCeilingBytes,
+        onRotationNeeded = onRotationNeeded,
+        degradedNotify = degradedNotify,
         // Unconfined + a real Job so a scheduled checkpoint runs INLINE on the calling thread
         // (its Mutex is uncontended here), making the checkpoint-driven rolling seal
         // deterministic instead of a sleep-and-hope. cancel() still needs the Job.
@@ -445,6 +495,531 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         assertNotNull(rollingManifest(controller(m = gitCourse)))
     }
 
+
+    // -----------------------------------------------------------------------
+    // SIZE ROTATION (recorder PRD §4.6) — the controller's half: notice that the
+    // `.slog` has passed the threshold, and ask to be rotated. Performing the swap is
+    // RecorderSessionManager.rotate's job (covered in RecorderSessionManagerTest).
+    // -----------------------------------------------------------------------
+
+    private fun typing(text: String) =
+        buildDocChangePayload("hw.py", buildDocChangeDelta(0, 8, 0, 8, text))
+
+    private fun paste(text: String) = dev.provenance.core.PastePayload(
+        path = "hw.py",
+        range = dev.provenance.core.Range(
+            dev.provenance.core.Position(0L, 0L),
+            dev.provenance.core.Position(0, text.length.toLong()),
+        ),
+        length = text.length.toLong(),
+        sha256 = dev.provenance.core.Sha256.hex(text),
+        content = text,
+    )
+
+    private fun externalChange() = dev.provenance.core.FsExternalChangePayload(
+        path = "hw.py",
+        oldHash = dev.provenance.core.Sha256.hex("print(1)\n"),
+        newHash = dev.provenance.core.Sha256.hex("print(2)\n"),
+        diffSize = 1,
+        explanation = "formatter",
+    ).toJsonObject()
+
+    private fun gitEvent() =
+        dev.provenance.core.GitEventPayload(operation = "state_change", commitSha = "deadbeef").toJsonObject()
+
+    /**
+     * The size is read ONLY when the checkpoint cadence fires — never per appended entry.
+     * `doc.change` handlers must stay under 1 ms p99 (PRD §4.7), and `session.start` alone
+     * already exceeds the 512-byte threshold used here, so a per-entry check would have
+     * requested rotation on the very first entry.
+     *
+     * The entry that trips the cadence here is deliberately NOT a `doc.change`: after the idle
+     * gate (§3.3) a `doc.change` resets the quiet window it is measured against, so a burst can
+     * never rotate on its own final keystroke. The clock is advanced first to represent the
+     * student having stopped typing.
+     */
+    fun testRequestsRotationOnceTheLogPassesTheThresholdAtCheckpointCadence() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 100L,
+            onRotationNeeded = { endedId -> rotations.add(endedId) },
+            clock = clock,
+        )
+        // session.start is the cadence's first entry, so nine more trip it at interval 10.
+        repeat(8) { c.onDocChange(typing("x")) }
+        assertTrue("the size must not even be read below the cadence", rotations.isEmpty())
+        c.flush()
+        assertTrue("and the log is already over the threshold", Files.size(c.slogPath) > 512L)
+
+        clock.advance(100L)
+        c.append("git.event", gitEvent())
+        assertEquals("the cadence firing over the threshold must request rotation", listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    // -----------------------------------------------------------------------
+    // THE IDLE GATE (design §3.3). End-then-start DROPS any event that lands inside the
+    // predecessor's teardown window, and the analyzer compares session A's side of a seam as a
+    // RECONSTRUCTION FROM A'S EVENTS against session B's first doc.open, which is a LIVE BUFFER
+    // READ, by exact string equality — so one lost keystroke is reported, at confidence 0.85, as
+    // the student editing the file outside the recorder. Rotating only while nothing is being
+    // typed is what makes the seam empty by construction instead of by hope.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Crossing the threshold mid-burst ARMS the rotation and does not perform it; it fires only
+     * once a full quiet window has passed with no `doc.change`.
+     */
+    fun testCrossingTheThresholdMidBurstArmsTheRotationButDoesNotRotate() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // A burst that crosses the threshold: the cadence fires, the log is over 512 bytes, and
+        // the student is still typing.
+        repeat(20) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("the log must be over the threshold", Files.size(c.slogPath) > 512L)
+        assertTrue("a mid-burst crossing must NOT rotate", rotations.isEmpty())
+        assertTrue("but it must arm the quiet-window poll", sched.hasTaskAt(7_331L))
+
+        // The poll firing while the burst is still recent changes nothing.
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertTrue("one millisecond short of the quiet window is still a burst", rotations.isEmpty())
+
+        // A full quiet window later, it fires — once.
+        clock.advance(1L)
+        sched.tick(7_331L)
+        assertEquals("the rotation must fire once the session goes quiet", listOf(c.sessionId), rotations)
+        sched.tick(7_331L)
+        assertEquals("and only once", 1, rotations.size)
+        assertTrue("the poll must be cancelled once it has fired", 7_331L in sched.cancelled)
+        c.endSession("rotate")
+    }
+
+    /**
+     * THE HARD CEILING, and the one rotation path that can still lose an edit.
+     *
+     * A student who never pauses would otherwise defer the rotation forever and push the `.slog`
+     * past GitHub's refusal limit — an unpushable submission, which is the worse outcome. So past
+     * [RecordingSessionController.ROTATE_HARD_CEILING_BYTES] the recorder rotates mid-burst.
+     */
+    fun testATypingSessionPastTheHardCeilingRotatesWithoutEverGoingQuiet() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0) // never advanced: the student never stops typing
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 5,
+            maxSlogBytes = 512L,
+            rotateHardCeilingBytes = 20_000L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // Over the threshold but under the ceiling: armed, not rotated.
+        repeat(10) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("over the threshold, under the ceiling, still typing: no rotation", rotations.isEmpty())
+        assertTrue("the fixture must actually be in the deferred band", Files.size(c.slogPath) in 513L..19_999L)
+
+        // Keep typing until the ceiling is passed.
+        while (run { c.flush(); Files.size(c.slogPath) } < 20_000L) {
+            repeat(5) { c.onDocChange(typing("x")) }
+        }
+        assertEquals("past the hard ceiling a session rotates mid-burst", listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * A session that has recorded no CONTENT-MUTATING event at all counts as quiet — there is no
+     * in-flight change to lose an edit out of — so it rotates at the first cadence over the
+     * threshold without waiting for a window it could never observe. `git.event` is not
+     * content-mutating, which is what this fixture leans on.
+     */
+    fun testASessionThatHasNeverRecordedAContentMutatingEventIsAlreadyQuiet() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 3,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+        )
+        repeat(2) { c.append("git.event", gitEvent()) }
+        assertEquals(listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /** A session under the threshold is never rotated, however many checkpoints it reaches. */
+    fun testASmallLogIsNeverRotated() {
+        val rotations = mutableListOf<String>()
+        val c = controller(
+            checkpointInterval = 2,
+            maxSlogBytes = RecordingSessionController.ROTATE_AT_BYTES,
+            onRotationNeeded = { rotations.add(it) },
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue(rotations.isEmpty())
+    }
+
+    /**
+     * Requested at most once per session. The swap is asynchronous — the manager ends this
+     * session on another thread — so entries can keep arriving and tripping the cadence in
+     * between, and a second request would start a second successor for the same root.
+     */
+    fun testRotationIsRequestedOnlyOncePerSession() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val c = controller(
+            checkpointInterval = 2,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 100L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue("the burst itself must not rotate", rotations.isEmpty())
+        // The student stops, then more non-typing entries keep tripping the cadence.
+        clock.advance(100L)
+        repeat(10) { c.append("git.event", gitEvent()) }
+        assertEquals("exactly one rotation request, not one per checkpoint", 1, rotations.size)
+        c.endSession("rotate")
+    }
+
+    /** The threshold is 40 MiB: under GitHub's 100 MB push refusal and its 50 MB warning. */
+    fun testTheRotationThresholdIs40MiB() {
+        assertEquals(40L * 1024 * 1024, RecordingSessionController.ROTATE_AT_BYTES)
+    }
+
+    // -----------------------------------------------------------------------
+    // THE GATE QUIETS CONTENT, NOT TYPING (design §3.3). The flag this defuses compares file
+    // CONTENT and does not care which event changed it, so a `paste` or an `fs.external_change`
+    // inside the quiet window must defer the rotation exactly as a keystroke does. Both tests
+    // below run the poll EXPLICITLY before asserting "has not rotated", so the assertion cannot
+    // pass merely because the pending work had not been given a chance to run.
+    // -----------------------------------------------------------------------
+
+    /**
+     * A `paste` re-closes the quiet window.
+     *
+     * The case this is about: a student pauses to read documentation — legitimately opening the
+     * gate — and then hits paste just as the rotation fires. Under a `doc.change`-only gate that
+     * paste is dropped by the teardown guard, and because a paste is large the resulting
+     * divergence clears `highSeverityCharsChanged`, so the false `inter_session_external_change`
+     * is reported at HIGH severity.
+     */
+    fun testAPasteInsideTheQuietWindowDefersTheRotation() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+        repeat(20) { c.onDocChange(typing("x")) } // armed, over the threshold
+        assertTrue(rotations.isEmpty())
+
+        // The typing stops and the window all but elapses — then a paste lands.
+        clock.advance(7_330L)
+        c.onPaste(paste("some pasted block"))
+        clock.advance(1L) // the old window would now be open; the paste's is not
+        sched.tick(7_331L)
+        assertTrue("a paste must re-close the quiet window", rotations.isEmpty())
+
+        // A full window after the PASTE, it fires.
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertEquals(listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * An `fs.external_change` re-closes the quiet window.
+     *
+     * A formatter-on-save or a `git checkout` is a whole-file rewrite, so losing it at the seam is
+     * the same false finding as a lost keystroke and a larger one. Quieting only the keyboard
+     * would leave unguarded precisely the event class the flag is named after.
+     */
+    fun testAnExternalChangeInsideTheQuietWindowDefersTheRotation() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+        repeat(20) { c.onDocChange(typing("x")) }
+        assertTrue(rotations.isEmpty())
+
+        clock.advance(7_330L)
+        // Through `append`, which is the production path: the per-session
+        // ExternalChangeCoordinator emits fs.external_change through exactly this seam.
+        c.append("fs.external_change", externalChange())
+        clock.advance(1L)
+        sched.tick(7_331L)
+        assertTrue("an external write must re-close the quiet window", rotations.isEmpty())
+
+        clock.advance(7_330L)
+        sched.tick(7_331L)
+        assertEquals(listOf(c.sessionId), rotations)
+        c.endSession("rotate")
+    }
+
+    /**
+     * The gate's kind set, pinned — including the exclusions, which are the load-bearing half.
+     *
+     * `session.heartbeat` in particular must NOT be in it: heartbeats fire on a timer whether or
+     * not the student is present, so admitting one would mean an idle session never reaches a quiet
+     * window at all — silently making the hard ceiling the only rotation path there is.
+     *
+     * And all three included kinds must be on the CAPTURE FLOOR. If a course policy could suppress
+     * one, that policy setting would quietly re-narrow the gate and reintroduce the false-accusation
+     * path — a privacy knob must never be able to manufacture an accusation.
+     */
+    fun testTheContentMutatingKindSetIsExactlyTheThreeAndAllAreOnTheCaptureFloor() {
+        assertEquals(
+            setOf("doc.change", "paste", "fs.external_change"),
+            RecordingSessionController.CONTENT_MUTATING_KINDS,
+        )
+        for (kind in RecordingSessionController.CONTENT_MUTATING_KINDS) {
+            assertTrue(
+                "$kind must be on the capture floor, or a policy could re-narrow the idle gate",
+                kind in dev.provenance.core.FLOOR_EVENT_KINDS,
+            )
+        }
+        for (kind in listOf("session.heartbeat", "doc.save", "doc.open", "selection.change", "git.event")) {
+            assertFalse(
+                "$kind must not quiet the gate — see CONTENT_MUTATING_KINDS",
+                kind in RecordingSessionController.CONTENT_MUTATING_KINDS,
+            )
+        }
+    }
+
+    /**
+     * DEGRADED NEVER ROTATES — including from the idle poll, which is the path the structural
+     * argument never covered.
+     *
+     * "The degraded branch in `routeSessionEntry` returns before the checkpoint lambda" protects
+     * the CADENCE trigger only. The poll is a second, independent trigger: a session can arm it
+     * while healthy and degrade a moment later, and the student then pausing to read the disk-full
+     * dialog IS the quiet window the gate is waiting for. Without the explicit guard the poll
+     * fires with the byte count frozen above the threshold, `endSession("rotate")` runs on a
+     * session whose writes are failing — so its `session.end` is enqueued into the degraded ring
+     * rather than written, while teardown still claims `final = true` over that log — and a
+     * successor starts recording onto the same full disk.
+     *
+     * The handler is degraded through the real `handleWriteError` transition on the session's own
+     * handler, so this drives the production state machine rather than a stand-in.
+     */
+    fun testAnArmedRotationNeverFiresOnceTheSessionHasDegraded() {
+        val rotations = mutableListOf<String>()
+        val clock = FixedClock(0)
+        val sched = CapturingScheduler()
+        val c = controller(
+            checkpointInterval = 10,
+            maxSlogBytes = 512L,
+            rotateIdleQuietMs = 7_331L,
+            onRotationNeeded = { rotations.add(it) },
+            clock = clock,
+            scheduler = sched,
+        )
+
+        // Armed while healthy, mid-burst: over the threshold, poll scheduled, nothing rotated.
+        repeat(20) { c.onDocChange(typing("x")) }
+        c.flush()
+        assertTrue("the fixture must be over the threshold", Files.size(c.slogPath) > 512L)
+        assertTrue("armed, not rotated", rotations.isEmpty())
+        assertTrue("the poll must be armed for this test to mean anything", sched.hasTaskAt(7_331L))
+
+        // The disk fills.
+        c.diskFullHandlerForTest.handleWriteError(java.io.IOException("ENOSPC"))
+        assertTrue("the session must really be degraded", c.diskFullHandlerForTest.degraded)
+
+        // The student stops to read the dialog — the quiet window the gate waits for — and the
+        // still-armed poll fires. Without the degraded guard this is where it rotates.
+        clock.advance(7_331L)
+        sched.tick(7_331L)
+        assertTrue("a degraded session must never rotate, from ANY trigger", rotations.isEmpty())
+        assertTrue(
+            "and the poll must be stopped: degraded is one-way, so it can never rotate again",
+            7_331L in sched.cancelled,
+        )
+
+        // ABANDONED, NOT DEFERRED (design §3.2). Degraded never clears, so a rotation that is
+        // merely postponed is one that waits forever while pretending it might still happen. A
+        // full minute later — and after further cadence-driven evaluations, which is what would
+        // re-arm a rotation keyed on `idlePoll != null` — there is still no rotation, and still
+        // exactly one poll task ever registered (tick() fails if a second was scheduled).
+        clock.advance(60_000L)
+        repeat(30) { c.append("git.event", gitEvent()) }
+        sched.tick(7_331L)
+        assertTrue("a degraded session's rotation is abandoned, not deferred", rotations.isEmpty())
+    }
+
+    /** The idle gate and the hard ceiling, as the design fixes them (§3.3). */
+    fun testTheIdleGateAndHardCeilingConstants() {
+        assertEquals(2000L, RecordingSessionController.ROTATE_IDLE_QUIET_MS)
+        assertEquals(48L * 1024 * 1024, RecordingSessionController.ROTATE_HARD_CEILING_BYTES)
+        assertTrue(
+            "the ceiling must sit above the threshold, or the idle gate could never defer anything",
+            RecordingSessionController.ROTATE_HARD_CEILING_BYTES > RecordingSessionController.ROTATE_AT_BYTES,
+        )
+    }
+
+    /** `rotate` goes through the ordinary teardown path, so the log still ends cleanly. */
+    fun testEndSessionWithTheRotateReasonIsAnOrdinaryCleanEnd() {
+        val c = controller()
+        c.onDocChange(typing("x"))
+        c.endSession("rotate")
+        val entries = readEntries(c)
+        assertEquals("session.end", entries.last().kind)
+        assertEquals("rotate", entries.last().data["reason"]!!.jsonPrimitive.content)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+        // And a rotated session's seal is final, exactly like any other clean end.
+        assertEquals(true, rollingManifest(c)!!["final"]!!.jsonPrimitive.boolean)
+    }
+
+    /**
+     * A doc.change racing an OFF-THREAD `endSession` must never append past the end of the log.
+     *
+     * Rotation is what makes this reachable: every other teardown is either on the EDT (the
+     * Disposer hook) or a rare manual action, whereas rotation ends the session from a pooled
+     * thread automatically — and the only way a log reaches 40 MiB is a student typing fast, so
+     * the two interleave maximally. The guard in `record` and the latch in `endSession` therefore
+     * share one lock. Without it an emitter can pass `if (ended) return`, block, and then append
+     * to a writer that has since been disposed: `writer.append` throws, `routeSessionEntry` feeds
+     * it to the DiskFullHandler, and the student gets a FALSE disk-full balloon on a healthy disk.
+     * Landing on the other side of the window is no better — the sealed log would carry an entry
+     * AFTER `session.end`.
+     *
+     * HONEST LIMIT ON THIS TEST: it asserts the invariant, and it is the only test that runs an
+     * emitter concurrently with an off-thread teardown at all — but it does NOT fail when the lock
+     * is removed. I checked: with the lock stripped and a `Thread.yield()` inserted between the
+     * guard and the emit, eight iterations x three runs all still passed, because the gap between
+     * `ended = true` and `writer.dispose()` is a long stretch of teardown work that an emitter
+     * almost always clears. The lock's value is that it makes the invariant a guarantee rather
+     * than a probability; this test's value is that it pins the invariant and would catch a
+     * coarser regression. Forcing the bad interleaving deterministically would need a test-only
+     * hook between the guard and the emit, which is production surface added for a test.
+     */
+    fun testAnEmitRacingAnOffThreadEndSessionNeverAppendsPastTheEnd() {
+        repeat(8) {
+            val c = controller()
+            val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+            val emitting = java.util.concurrent.CountDownLatch(1)
+            val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+            val typist = Thread {
+                while (!stop.get()) {
+                    try {
+                        c.onDocChange(typing("x"))
+                    } catch (t: Throwable) {
+                        thrown.add(t)
+                    }
+                    emitting.countDown()
+                }
+            }
+            typist.start()
+            try {
+                // No sleep: wait until the other thread is demonstrably emitting, so the end
+                // genuinely overlaps it, then end from THIS thread as a rotation would.
+                assertTrue(emitting.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                c.endSession("rotate")
+            } finally {
+                stop.set(true)
+                typist.join(10_000)
+            }
+
+            assertTrue("an emit must never throw out of the sink: $thrown", thrown.isEmpty())
+            val entries = readEntries(c)
+            assertEquals("session.end must be the LAST entry", "session.end", entries.last().kind)
+            assertFalse(
+                "a healthy disk must not be reported degraded by the teardown race",
+                entries.any { it.kind == "recorder.degraded" },
+            )
+            assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+            provDir.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * Concurrent `endSession` calls must produce EXACTLY ONE `session.end`.
+     *
+     * Newly reachable because of rotation: the swap ends the session from a pooled thread while the
+     * Disposer hook can end the same one on the EDT, so two teardowns can genuinely arrive at once.
+     * Two `session.end` entries in one log is a format artifact in evidence — an entry after the
+     * log's own end — and it would also run the teardown twice.
+     *
+     * A [java.util.concurrent.CyclicBarrier] releases every thread into `endSession` at the same
+     * instant, which is as close to deterministic as this gets without a production seam.
+     *
+     * HONEST LIMIT, measured rather than assumed: this test does NOT fail when the re-check inside
+     * the `emitLock` block is removed. I instrumented it — with the re-check deleted, the log still
+     * contains exactly one `session.end`. The reason is that `endSession`'s FIRST statement is its
+     * own `if (ended) return`, and `peerWatcher.drain()` sits between that read and the latch while
+     * being monitor-serialized internally: the first thread through latches before any other thread
+     * has re-read `ended`, so the rest bail at the outer check. Widening the window via the
+     * `peerFiles` seam (parking inside `drain`) deadlocks, because `drain` takes its lock outside
+     * the parked call.
+     *
+     * The re-check is still correct and is kept: the JVM puts no bound on how long a thread can be
+     * descheduled between passing the outer read and reaching the latch, so the window is real even
+     * though it is not reachable on demand. Demonstrating it would need a test-only hook between
+     * the two, and removing the outer check to make the latch the only gate would trade a genuinely
+     * more defensive structure (no redundant drain on a second call) for testability. What this
+     * test does buy is the only coverage of eight concurrent teardowns of one session, and it pins
+     * the invariant against a coarser regression.
+     */
+    fun testConcurrentEndSessionCallsEmitExactlyOneSessionEnd() {
+        val threadCount = 8
+        val c = controller()
+        c.onDocChange(typing("x"))
+
+        val barrier = java.util.concurrent.CyclicBarrier(threadCount)
+        val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val threads = (0 until threadCount).map { i ->
+            Thread {
+                try {
+                    barrier.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                    c.endSession(if (i == 0) "rotate" else "dispose")
+                } catch (t: Throwable) {
+                    thrown.add(t)
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(30_000) }
+
+        assertTrue("no endSession call may throw: $thrown", thrown.isEmpty())
+        val entries = readEntries(c)
+        assertEquals(
+            "exactly one session.end, however many threads end the session at once",
+            1,
+            entries.count { it.kind == "session.end" },
+        )
+        assertEquals("and it must be the last entry", "session.end", entries.last().kind)
+        assertEquals(dev.provenance.core.ChainCheck.Valid, dev.provenance.core.validateChain(entries))
+    }
 
     private companion object {
         /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */
