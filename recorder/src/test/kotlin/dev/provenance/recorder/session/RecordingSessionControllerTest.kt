@@ -18,6 +18,36 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ScheduledFuture
 
+/** Deterministic [DebounceScheduler]: tasks run only when a test fires them. */
+internal class ManualDebounceScheduler : DebounceScheduler {
+    private class Entry(val task: Runnable, var cancelled: Boolean = false)
+
+    private val entries = mutableListOf<Entry>()
+
+    override fun schedule(delayMs: Long, task: Runnable): () -> Unit {
+        val e = Entry(task)
+        entries += e
+        return { e.cancelled = true }
+    }
+
+    fun pendingCount() = entries.count { !it.cancelled }
+
+    /** Run every live task; returns how many ran. */
+    fun fireAll(): Int {
+        val live = entries.filter { !it.cancelled }
+        entries.clear()
+        live.forEach { it.task.run() }
+        return live.size
+    }
+
+    /** Run even cancelled tasks, modelling a timer that had already fired when cancel() was called. */
+    fun fireCancelledToo() {
+        val all = entries.toList()
+        entries.clear()
+        all.forEach { it.task.run() }
+    }
+}
+
 class RecordingSessionControllerTest : BasePlatformTestCase() {
     private class NoopScheduler : FlushScheduler {
         override fun scheduleAtFixedRate(periodMs: Long, task: Runnable): ScheduledFuture<*> =
@@ -57,6 +87,7 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
             dev.provenance.recorder.identity.FakeSecretStore(),
         checkpointInterval: Int = CheckpointCadence.DEFAULT_INTERVAL,
         computeExtensionHash: () -> String = { EXT_HASH },
+        sealScheduler: DebounceScheduler = ManualDebounceScheduler(),
     ) = RecordingSessionController(
         activated = ActivatedWorkspace(m, provDir, wsRoot),
         project = project,
@@ -67,6 +98,7 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         parentDisposable = testRootDisposable,
         clock = FixedClock(0),
         scheduler = NoopScheduler(),
+        sealDebounceScheduler = sealScheduler,
         secrets = secrets,
         checkpointInterval = checkpointInterval,
         computeExtensionHash = computeExtensionHash,
@@ -445,6 +477,76 @@ class RecordingSessionControllerTest : BasePlatformTestCase() {
         assertNotNull(rollingManifest(controller(m = gitCourse)))
     }
 
+
+    // ---- post-save rolling seal ---------------------------------------------------------
+    // A student saves, then `git commit`s with the IDE open. The committed seal must cover
+    // the last save, so a save arms a debounced roll. Debounce mechanics are pinned in
+    // SealRollDebouncerTest; here we pin the wiring: save -> roll, the roll covers the save,
+    // teardown cancels pending work, and a bundle course never rolls.
+
+    private fun sealedSlogSha(c: RecordingSessionController): String =
+        rollingManifest(c)!!["sessions"]!!.jsonArray.single().jsonObject["slog_sha256"]!!.jsonPrimitive.content
+
+    fun testASaveRollsTheSealAfterTheDebounceAndTheSealCoversIt() {
+        val sched = ManualDebounceScheduler()
+        val c = controller(sealScheduler = sched)
+        val before = sealedSlogSha(c)
+
+        c.onSaveObserved("hw.py", "print(2)\n")
+        assertEquals("nothing rolls until the debounce elapses", before, sealedSlogSha(c))
+        assertEquals(1, sched.pendingCount())
+
+        sched.fireAll()
+        c.flush()
+        org.junit.Assert.assertNotEquals(before, sealedSlogSha(c))
+        assertEquals(
+            "the seal's .slog digest covers the doc.save entry",
+            dev.provenance.core.Sha256.hex(Files.readAllBytes(c.slogPath)),
+            sealedSlogSha(c),
+        )
+        assertTrue(readEntries(c).any { it.kind == "doc.save" })
+        assertNull("a live roll is never final", rollingManifest(c)!!["final"])
+    }
+
+    fun testABurstOfSavesIsOnePendingRoll() {
+        val sched = ManualDebounceScheduler()
+        val c = controller(sealScheduler = sched)
+        repeat(5) { c.onSaveObserved("hw.py", "print($it)\n") }
+        assertEquals(1, sched.pendingCount())
+        assertEquals(1, sched.fireAll())
+    }
+
+    fun testEndSessionCancelsPendingRollAndFinalIsTheLastWrite() {
+        val sched = ManualDebounceScheduler()
+        val c = controller(sealScheduler = sched)
+        c.onSaveObserved("hw.py", "print(2)\n")
+        assertEquals(1, sched.pendingCount())
+
+        c.endSession("shutdown")
+        assertEquals("the pending roll is cancelled", 0, sched.pendingCount())
+        val finalJson = Files.readAllBytes(provDir.resolve(dev.provenance.core.rollingManifestFilenames(c.sessionId).json))
+
+        // Even a timer that already escaped cancellation must not displace the final seal.
+        sched.fireCancelledToo()
+        org.junit.Assert.assertArrayEquals(
+            finalJson,
+            Files.readAllBytes(provDir.resolve(dev.provenance.core.rollingManifestFilenames(c.sessionId).json)),
+        )
+        assertEquals(true, rollingManifest(c)!!["final"]!!.jsonPrimitive.boolean)
+    }
+
+    fun testABundleCourseSchedulesNoPostSaveRoll() {
+        val sched = ManualDebounceScheduler()
+        val bundleCourse = manifest().copy(
+            formatVersion = "2.0",
+            submission = dev.provenance.core.ManifestSubmission.BUNDLE,
+        )
+        val c = controller(m = bundleCourse, sealScheduler = sched)
+        c.onSaveObserved("hw.py", "print(2)\n")
+        assertEquals(0, sched.pendingCount())
+        sched.fireAll()
+        assertNull(rollingManifest(c))
+    }
 
     private companion object {
         /** Stand-in for the installed plugin tree's hash; a unit fixture has no plugin. */
