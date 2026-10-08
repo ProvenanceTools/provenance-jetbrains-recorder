@@ -101,6 +101,10 @@ class RecordingSessionController(
     private val parentDisposable: Disposable,
     clock: Clock = SystemClock(),
     scheduler: FlushScheduler = DEFAULT_SCHEDULER,
+    /** Delay scheduler for the post-save rolling-seal debounce; injectable for tests. */
+    sealDebounceScheduler: DebounceScheduler = DEFAULT_DEBOUNCE_SCHEDULER,
+    /** Trailing debounce between the last `doc.save` and the rolling-seal rewrite it triggers. */
+    sealDebounceMs: Long = SEAL_DEBOUNCE_MS,
     /**
      * Explicit heartbeat cadence, overriding the course's capture policy. Null (the
      * default) means "use the policy", whose own default is [Heartbeat.DEFAULT_INTERVAL_MS]
@@ -227,6 +231,9 @@ class RecordingSessionController(
      * see the gate in `init` for why that asymmetry is the safe one.
      */
     private val rollingSeal: RollingSealMaintainer?
+
+    /** Post-save rolling-seal debounce; null exactly when [rollingSeal] is. */
+    private val sealDebouncer: SealRollDebouncer?
 
     /**
      * The LIVE `scope_capped` bit, read at every seal (rolling AND classic).
@@ -497,6 +504,16 @@ class RecordingSessionController(
             onError = { e -> LOG.warn("checkpoint sign/write error", e) },
         )
 
+        // ROLLING SEAL WRITE POINT (post-save): a trailing debounce after doc.save, so a seal
+        // committed to git right after a save covers that save. The roll flushes the writer
+        // first so the seal's `.slog` digest includes the doc.save entry.
+        sealDebouncer = rollingSeal?.let { maintainer ->
+            SealRollDebouncer(sealDebounceMs, sealDebounceScheduler) {
+                writer.flush()
+                maintainer.roll()
+            }
+        }
+
         // Step 6: session host — every emitted entry is routed through the disk-full/
         // checkpoint logic shared with SessionLifecycleIntegrationTest (routeSessionEntry).
         host = createSessionHost(sessionId, clock) { entry ->
@@ -633,6 +650,9 @@ class RecordingSessionController(
                 dev.provenance.core.Sha256.hex(onDiskContent),
             ).toJsonObject(),
         )
+        // After the entry is chained and handed to the writer (record() is synchronous), so
+        // the debounced roll's flush + digest covers it. No-op after endSession().
+        if (!ended) sealDebouncer?.request()
     }
 
     override fun onDocClose(payload: dev.provenance.core.DocClosePayload) = record("doc.close", payload.toJsonObject())
@@ -711,6 +731,9 @@ class RecordingSessionController(
             // The paste privacy gate is closed by RecorderSessionManager removing this session
             // from the registry before disposal, so the path-routed resolver stops handing out
             // this session's correlator; nothing to clear here anymore.
+            // Cancel any pending post-save roll first; the final roll below must be the last
+            // seal write (the maintainer also refuses non-final rolls after it).
+            sealDebouncer?.dispose()
             pasteTicker.dispose()
             heartbeat.dispose()
             peerWatcher.dispose()
@@ -757,6 +780,16 @@ class RecordingSessionController(
     companion object {
         private val LOG = Logger.getInstance(RecordingSessionController::class.java)
 
+        /** Quiet period after the last save before the rolling seal is rewritten. */
+        const val SEAL_DEBOUNCE_MS = 1_000L
+
+        val DEFAULT_DEBOUNCE_SCHEDULER: DebounceScheduler = DebounceScheduler { delayMs, task ->
+            val f = AppExecutorUtil.getAppScheduledExecutorService()
+                .schedule(task, delayMs, TimeUnit.MILLISECONDS)
+            val cancel: () -> Unit = { f.cancel(false) }
+            cancel
+        }
+
         val DEFAULT_SCHEDULER: FlushScheduler = FlushScheduler { periodMs, task ->
             AppExecutorUtil.getAppScheduledExecutorService()
                 .scheduleWithFixedDelay(task, periodMs, periodMs, TimeUnit.MILLISECONDS)
@@ -770,8 +803,9 @@ class RecordingSessionController(
  *
  * ## Why the lock
  *
- * The three rolls run on three different threads — the session-start roll on whatever thread
- * constructed the controller, each checkpoint roll on the checkpoint coroutine's dispatcher,
+ * The rolls run on several different threads — the session-start roll on whatever thread
+ * constructed the controller, each checkpoint roll on the checkpoint coroutine's dispatcher, each post-save
+ * roll on the app scheduler (see [SealRollDebouncer]),
  * the teardown roll on whoever called `endSession` (often the EDT, via the Disposer). Two
  * concurrent rewrites would interleave their `.json` and `.sig` renames and could leave a
  * mismatched pair on disk — the one thing the paired atomic write exists to prevent. This is
@@ -811,6 +845,9 @@ private class RollingSealMaintainer(
     /** Memoized under [lock]; the walk is far too expensive to repeat per checkpoint. */
     private var extensionHash: String? = null
 
+    /** Set under [lock] when the final roll starts; later non-final rolls are dropped. */
+    private var finalWritten = false
+
     /**
      * Rewrite this session's seal to reflect the state right now. Never throws.
      *
@@ -820,6 +857,11 @@ private class RollingSealMaintainer(
      *   the student's own next keystroke as an append past a final seal.
      */
     fun roll(isFinal: Boolean = false) = synchronized(lock) {
+        // Once the final roll is written it must stay the last write: a straggling debounced
+        // or checkpoint roll that lost the race to the lock would overwrite `final: true`
+        // with a prefix commitment.
+        if (finalWritten) return@synchronized
+        if (isFinal) finalWritten = true
         val result = try {
             val hash = extensionHash ?: computeExtensionHash().also { extensionHash = it }
             writeRollingSeal(

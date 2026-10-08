@@ -17,7 +17,9 @@ import java.nio.file.Path
  *
  * A git-submitted assignment has no seal step: the student pushes, the grader clones,
  * nothing ever runs "Prepare Submission Bundle". So the seal moves off the submission event
- * and onto the recording itself. This module rewrites, on every checkpoint,
+ * and onto the recording itself. This module rewrites, at session start, on every checkpoint,
+ * ~1 s after the last `doc.save` of a burst (a student saves then commits with the IDE still
+ * open), and at teardown,
  *
  *   .provenance/manifest-<session_id>.json   BundleManifest at format_version 1.2
  *   .provenance/manifest-<session_id>.sig    ed25519 over the canonical JSON
