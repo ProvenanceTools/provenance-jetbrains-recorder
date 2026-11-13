@@ -13,11 +13,13 @@ these files from it rather than editing them in place.
 
 | Token      | Light surface | Dark surface |
 | ---------- | ------------- | ------------ |
-| Ink / line | `#18181b`     | `#fafafa`    |
-| Accent     | `#EA580C`     | `#F97316`    |
+| Ink / line | `#002676`     | `#FFFFFF`    |
+| Accent     | `#FDB515`     | `#FDB515`    |
 | Subtitle   | `#52525b`     | `#a1a1aa`    |
 
-Same tokens as Provenance; the accent brightens on dark surfaces for contrast.
+Same tokens as Provenance: UC Berkeley's Berkeley Blue and California Gold (the
+monorepo's issue #36 replaced the original `#18181b` ink and `#EA580C` orange accent).
+Gold stays solid on both surfaces; the neutral subtitle grays are unchanged.
 
 ## Source masters
 
